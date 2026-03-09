@@ -1,0 +1,47 @@
+// LLMProvider.swift
+// Majoor — LLM Provider Protocol
+
+import Foundation
+
+// Nonisolated — LLM calls happen off the main thread
+nonisolated enum LLMResponse: Sendable {
+    case text(String)
+    case toolCalls([ToolCall])
+    case mixed(text: String, toolCalls: [ToolCall])
+}
+
+nonisolated struct ToolCall: Identifiable, Sendable {
+    let id: String
+    let toolName: String
+    let arguments: [String: String] // Simplified to String values for Sendable
+}
+
+protocol LLMProvider: Sendable {
+    var name: String { get }
+    var model: String { get }
+    
+    func complete(
+        systemPrompt: String,
+        messages: [AnthropicMessage],
+        tools: [AnthropicTool]
+    ) async throws -> (response: LLMResponse, usage: AnthropicUsage?)
+}
+
+enum LLMError: LocalizedError, Sendable {
+    case invalidAPIKey
+    case networkError(String)
+    case apiError(String)
+    case decodingError(String)
+    case rateLimited(retryAfter: Int?)
+    
+    nonisolated var errorDescription: String? {
+        switch self {
+        case .invalidAPIKey: return "Invalid or missing API key. Check Settings."
+        case .networkError(let msg): return "Network error: \(msg)"
+        case .apiError(let msg): return "API error: \(msg)"
+        case .decodingError(let msg): return "Failed to parse response: \(msg)"
+        case .rateLimited(let retry):
+            return retry.map { "Rate limited. Retry in \($0)s." } ?? "Rate limited."
+        }
+    }
+}
