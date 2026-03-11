@@ -32,6 +32,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             onQuitClick: { NSApplication.shared.terminate(nil) }
         )
         
+        // Clear any stale Keychain entry from previous testing
+        KeychainManager.shared.deleteAPIKey(for: .anthropic)
+
         registerLocalShortcuts()
         registerGlobalHotKey()
         setupAgentLoop()
@@ -54,15 +57,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     // MARK: - Agent
     
     private func setupAgentLoop() {
-        let apiKey = KeychainManager.shared.getAPIKey(for: .anthropic) ?? ""
+        let apiKey = APIConfig.claudeAPIKey
         if apiKey.isEmpty {
-            MajoorLogger.log("⚠️ No API key. Set one in Settings (⌘+,)")
+            MajoorLogger.log("⚠️ No API key configured in APIConfig.swift")
         }
         let provider = AnthropicProvider(apiKey: apiKey, model: "claude-sonnet-4-20250514")
         agentLoop = AgentLoop(provider: provider, tools: ToolRegistry.defaultTools(), taskManager: taskManager)
     }
-    
-    func refreshAgentLoop() { setupAgentLoop() }
     
     // MARK: - Command Handling
     
@@ -72,9 +73,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         commandBarWindow?.hide()
         statusBarController?.setState(.working)
         
-        guard let apiKey = KeychainManager.shared.getAPIKey(for: .anthropic), !apiKey.isEmpty else {
+        guard !APIConfig.claudeAPIKey.isEmpty else {
             statusBarController?.setState(.error)
-            sendNotification(title: "Majoor — Setup Required", body: "Set your API key in Settings (⌘+,)")
+            sendNotification(title: "Majoor — Setup Required", body: "API key not configured in APIConfig.swift")
             return
         }
         
