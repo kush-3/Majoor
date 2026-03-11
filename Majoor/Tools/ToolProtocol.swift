@@ -60,6 +60,7 @@ extension AgentTool {
 nonisolated struct ToolRegistry: Sendable {
     static func defaultTools() -> [any AgentTool] {
         return [
+            // File Management
             ListDirectoryTool(),
             ReadFileTool(),
             WriteFileTool(),
@@ -69,6 +70,24 @@ nonisolated struct ToolRegistry: Sendable {
             SearchFilesTool(),
             GetFileInfoTool(),
             CreateDirectoryTool(),
+            // Shell & Code Execution
+            ExecuteShellTool(),
+            ExecuteScriptTool(),
+            ReadProjectStructureTool(),
+            RunTestsTool(),
+            // Git Operations
+            GitStatusTool(),
+            GitDiffTool(),
+            GitLogTool(),
+            GitBranchTool(),
+            GitCheckoutTool(),
+            GitCommitTool(),
+            GitPushTool(),
+            GitCreatePRTool(),
+            // Web Research
+            WebSearchTool(),
+            FetchWebpageTool(),
+            FetchMultipleURLsTool(),
         ]
     }
 }
