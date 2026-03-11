@@ -33,6 +33,8 @@ final nonisolated class AgentLoop: @unchecked Sendable {
     - Git & GitHub: check status, view diffs/logs, create branches, commit, push, and open PRs via gh CLI
     - Web research: search the web (Tavily), fetch and extract text from webpages, batch-fetch URLs for comparison
     - Project analysis: read project structure trees, run test suites with auto-detection
+    - Calendar: read, create, update, and delete calendar events via Apple Calendar (EventKit)
+    - Email: fetch, read, search, draft, send, and reply to emails via Gmail API
 
     RULES:
     1. Be autonomous — complete the full task without asking unnecessary questions. Break complex tasks into steps and execute them.
@@ -45,6 +47,8 @@ final nonisolated class AgentLoop: @unchecked Sendable {
     8. Web research — when searching, synthesize results into a useful answer. Don't just dump raw search results. Fetch specific pages when you need deeper detail.
     9. Code changes — read the existing code first before modifying. Make minimal, focused changes. Run tests if a test command is available.
     10. File paths — support ~ for home directory. When the user mentions a relative path, assume it's relative to their home directory.
+    11. Email safety — NEVER send an email without using the send_email or reply_to_email tools, which trigger user confirmation via notification. Always show the user what you're about to send. If only drafting, use draft_email which saves but doesn't send.
+    12. Calendar — when the user asks about their schedule, use read_calendar_events. For creating events, always confirm the date/time before calling create_calendar_event.
     """
 
     init(tools: [any AgentTool], taskManager: TaskManager) {

@@ -5,7 +5,8 @@ import SwiftUI
 
 struct ActivityFeedView: View {
     @EnvironmentObject var taskManager: TaskManager
-    
+    var onViewResponse: ((AgentTask) -> Void)? = nil
+
     var body: some View {
         if taskManager.tasks.isEmpty {
             VStack(spacing: 12) {
@@ -19,7 +20,7 @@ struct ActivityFeedView: View {
             ScrollView {
                 LazyVStack(spacing: 8) {
                     ForEach(taskManager.tasks) { task in
-                        TaskCardView(task: task)
+                        TaskCardView(task: task, onViewResponse: onViewResponse)
                     }
                 }.padding(12)
             }
@@ -30,7 +31,8 @@ struct ActivityFeedView: View {
 struct TaskCardView: View {
     @ObservedObject var task: AgentTask
     @State private var isExpanded = false
-    
+    var onViewResponse: ((AgentTask) -> Void)? = nil
+
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
@@ -41,13 +43,13 @@ struct TaskCardView: View {
                 Spacer()
                 Text(task.createdAt.timeAgo()).font(.system(size: 11)).foregroundColor(.secondary)
             }
-            
+
             Text(task.userInput).font(.system(size: 13, weight: .medium)).lineLimit(isExpanded ? nil : 2)
-            
+
             if !task.summary.isEmpty && task.status == .completed {
                 Text(task.summary).font(.system(size: 12)).foregroundColor(.secondary).lineLimit(isExpanded ? nil : 2)
             }
-            
+
             if isExpanded {
                 Divider()
                 ForEach(task.steps) { step in
@@ -60,10 +62,15 @@ struct TaskCardView: View {
                     }
                 }
             }
-            
+
             HStack {
                 if !task.steps.isEmpty {
                     Button(isExpanded ? "Collapse" : "View Details") { withAnimation { isExpanded.toggle() } }
+                        .font(.system(size: 11)).buttonStyle(.plain).foregroundColor(.accentColor)
+                }
+                // Show "View Full Response" if the response is long
+                if hasLongResponse {
+                    Button("View Full Response") { onViewResponse?(task) }
                         .font(.system(size: 11)).buttonStyle(.plain).foregroundColor(.accentColor)
                 }
                 Spacer()
@@ -75,6 +82,12 @@ struct TaskCardView: View {
         .padding(12)
         .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.04)))
         .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.primary.opacity(0.08), lineWidth: 1))
+    }
+
+    private var hasLongResponse: Bool {
+        guard task.status == .completed else { return false }
+        guard let responseStep = task.steps.last(where: { $0.type == .response }) else { return false }
+        return responseStep.description.count > 200
     }
     
     private var statusColor: Color {

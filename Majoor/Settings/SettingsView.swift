@@ -10,6 +10,8 @@ struct SettingsView: View {
                 .tabItem { Label("General", systemImage: "gear") }
             ModelsSettingsTab()
                 .tabItem { Label("Models", systemImage: "cpu") }
+            AccountsSettingsView()
+                .tabItem { Label("Accounts", systemImage: "person.crop.circle") }
             MemorySettingsView()
                 .tabItem { Label("Memory", systemImage: "brain") }
             UsageSettingsView()
@@ -17,7 +19,7 @@ struct SettingsView: View {
             AboutTab()
                 .tabItem { Label("About", systemImage: "info.circle") }
         }
-        .frame(width: 500, height: 400)
+        .frame(width: 500, height: 420)
     }
 }
 
@@ -94,7 +96,7 @@ struct AboutTab: View {
             Image(systemName: "bolt.fill").font(.system(size: 48)).foregroundColor(.accentColor)
             Text("Majoor").font(.system(size: 24, weight: .bold))
             Text("Your AI that does the work").font(.system(size: 14)).foregroundColor(.secondary)
-            Text("Version 0.3.0 — Phase 3").font(.system(size: 12)).foregroundColor(.secondary.opacity(0.7))
+            Text("Version 0.4.0 — Phase 4").font(.system(size: 12)).foregroundColor(.secondary.opacity(0.7))
             Spacer()
             Link("majoor.ai", destination: URL(string: "https://majoor.ai")!).font(.caption)
             Spacer()

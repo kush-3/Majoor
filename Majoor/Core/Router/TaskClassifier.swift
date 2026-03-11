@@ -12,6 +12,7 @@ nonisolated enum TaskCategory: String, Sendable {
     case webResearchDeep // → Opus
     case webResearchQuick // → Sonnet
     case fileManagement  // → Sonnet
+    case emailCalendar   // → Sonnet
     case summarization   // → Sonnet
     case general         // → Sonnet (default)
 
@@ -19,7 +20,7 @@ nonisolated enum TaskCategory: String, Sendable {
         switch self {
         case .coding, .codeReview, .webResearchDeep:
             return .opus
-        case .webResearchQuick, .fileManagement, .summarization, .general:
+        case .webResearchQuick, .fileManagement, .emailCalendar, .summarization, .general:
             return .sonnet
         }
     }
@@ -55,6 +56,11 @@ nonisolated struct TaskClassifier: Sendable {
         // Quick web search — route to Sonnet
         (["search for", "look up", "find out", "what is", "who is", "google",
           "search the web", "latest news"], .webResearchQuick),
+
+        // Email & Calendar — route to Sonnet
+        (["email", "gmail", "inbox", "unread", "send email", "draft email",
+          "reply to", "email me", "calendar", "schedule meeting", "meeting",
+          "appointment", "event", "what's on my", "schedule a"], .emailCalendar),
 
         // File management — route to Sonnet
         (["file", "folder", "directory", "organize", "move file", "delete file",
