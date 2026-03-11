@@ -152,6 +152,20 @@ class AgentTask: ObservableObject, Identifiable {
         self.tokensUsed = 0
         self.modelUsed = ""
     }
+
+    /// Restore a task from persistence with its original ID and timestamps
+    init(id: UUID, userInput: String, createdAt: Date, status: TaskStatus, summary: String,
+         completedAt: Date?, tokensUsed: Int, modelUsed: String, steps: [TaskStep]) {
+        self.id = id
+        self.userInput = userInput
+        self.createdAt = createdAt
+        self.status = status
+        self.steps = steps
+        self.summary = summary
+        self.completedAt = completedAt
+        self.tokensUsed = tokensUsed
+        self.modelUsed = modelUsed
+    }
 }
 
 enum TaskStatus: String, Sendable {

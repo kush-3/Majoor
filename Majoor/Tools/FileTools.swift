@@ -104,7 +104,7 @@ struct WriteFileTool: AgentTool {
     
     func execute(arguments: [String: String]) async throws -> ToolResult {
         guard let path = arguments["path"], let content = arguments["content"] else {
-            return ToolResult(success: false, output: "Error: 'path' and 'content' required")
+            return ToolResult(success: false, output: "Error: 'path' and 'content' required. Received keys: \(arguments.keys.sorted().joined(separator: ", "))")
         }
         let expanded = NSString(string: path).expandingTildeInPath
         let parentDir = (expanded as NSString).deletingLastPathComponent
