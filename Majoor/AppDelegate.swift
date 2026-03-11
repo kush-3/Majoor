@@ -57,12 +57,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     // MARK: - Agent
     
     private func setupAgentLoop() {
-        let apiKey = APIConfig.claudeAPIKey
-        if apiKey.isEmpty {
+        if APIConfig.claudeAPIKey.isEmpty {
             MajoorLogger.log("⚠️ No API key configured in APIConfig.swift")
         }
-        let provider = AnthropicProvider(apiKey: apiKey, model: "claude-sonnet-4-20250514")
-        agentLoop = AgentLoop(provider: provider, tools: ToolRegistry.defaultTools(), taskManager: taskManager)
+        // Initialize database on launch
+        _ = DatabaseManager.shared
+        agentLoop = AgentLoop(tools: ToolRegistry.defaultTools(), taskManager: taskManager)
     }
     
     // MARK: - Command Handling
