@@ -11,7 +11,7 @@ final nonisolated class AgentLoop: @unchecked Sendable {
 
     private let tools: [any AgentTool]
     private let taskManager: TaskManager
-    private let maxIterations = 25
+    private let maxIterations = 75
     private let conversationTimeoutSeconds: TimeInterval = 600 // 10 minutes
 
     /// Stores conversation history for continuity
@@ -49,6 +49,25 @@ final nonisolated class AgentLoop: @unchecked Sendable {
     10. File paths — support ~ for home directory. When the user mentions a relative path, assume it's relative to their home directory.
     11. Email safety — NEVER send an email without using the send_email or reply_to_email tools, which trigger user confirmation via notification. Always show the user what you're about to send. If only drafting, use draft_email which saves but doesn't send.
     12. Calendar — when the user asks about their schedule, use read_calendar_events. For creating events, always confirm the date/time before calling create_calendar_event.
+    13. Batch operations — when performing repetitive actions on many files (move, rename, copy, delete), prefer using execute_shell or execute_script to handle them in a single command rather than calling individual file tools dozens of times. For example, use a bash loop or a short Python script to move 30 files instead of 30 separate move_file calls.
+
+    PIPELINE BEHAVIOR:
+    When the user describes a completed action, decision, or status change that implies work across 3 or more tools/services, DO NOT immediately start executing. Instead:
+    1. Silently gather context first (git status, search Linear, check Slack, etc.)
+    2. Present a specific, numbered plan based on real data — not generic placeholders
+    3. End with: "Want me to go ahead? %%PIPELINE_CONFIRM%%"
+    4. WAIT for the user to respond before executing anything
+    5. Once approved, execute ALL steps without per-step confirmations
+    6. Report a summary when complete
+    For simple single-tool or two-tool tasks, just execute normally without the pipeline flow.
+
+    CONTEXT GATHERING:
+    Before proposing a pipeline plan, silently gather context to make your plan specific:
+    - If the user mentions finishing code work → run git_status and git_diff first to know what actually changed, which branch, how many files
+    - If the user mentions a ticket/issue → search for it to get the ID and status
+    - If the user mentions a person → check recent messages for context
+    - If the user mentions a project → check for the project page
+    Use this context to make your plan specific. Instead of "Create a PR on GitHub", show "Create a PR 'Add JWT auth middleware' on kush/majoor (3 files, +142 -28)".
     """
 
     init(tools: [any AgentTool], taskManager: TaskManager) {
@@ -63,14 +82,28 @@ final nonisolated class AgentLoop: @unchecked Sendable {
         let category = TaskClassifier.classify(userInput)
         let provider = ModelRouter.provider(for: category)
 
-        // 2. Retrieve relevant memories and inject current date
+        // 2. Retrieve relevant memories, inject current date, and MCP summary
         let memoryContext = MemoryRetriever.relevantContext(for: userInput)
         let dateFormatter = DateFormatter()
         dateFormatter.dateFormat = "EEEE, MMMM d, yyyy 'at' h:mm a"
         let dateContext = "\n\nCurrent date and time: \(dateFormatter.string(from: Date()))"
-        let fullSystemPrompt = systemPrompt + dateContext + memoryContext
+        var fullSystemPrompt = systemPrompt + dateContext + memoryContext
 
-        // 3. Create task and add to UI
+        // Inject MCP server summary if any are running
+        if let mcpSummary = await MCPServerManager.shared.serverSummary() {
+            fullSystemPrompt += "\n\n" + mcpSummary
+        }
+
+        // 3. Build the full tool list: local tools + all running MCP tools
+        var activeTools: [any AgentTool] = Array(tools)
+        let mcpTools = await MCPServerManager.shared.allAvailableTools()
+        if !mcpTools.isEmpty {
+            activeTools.append(contentsOf: mcpTools)
+            MajoorLogger.log("🔌 Loaded \(mcpTools.count) MCP tool(s) from running servers")
+        }
+        let anthropicTools = activeTools.map { $0.toAnthropicTool() }
+
+        // 4. Create task and add to UI
         let task = AgentTask(userInput: userInput)
         await MainActor.run { taskManager.addTask(task) }
 
@@ -93,13 +126,13 @@ final nonisolated class AgentLoop: @unchecked Sendable {
             }
         }
         messages.append(AnthropicMessage(role: "user", content: .string(userInput)))
-        let anthropicTools = tools.map { $0.toAnthropicTool() }
 
         var totalInputTokens = 0
         var totalOutputTokens = 0
         var iteration = 0
         var finalText = ""
         var toolSummaries: [String] = []
+        var pipelineApproved = false
 
         // 5. Agent loop
         while iteration < maxIterations {
@@ -166,6 +199,42 @@ final nonisolated class AgentLoop: @unchecked Sendable {
 
             switch response {
             case .text(let text):
+                // Check for pipeline confirmation marker
+                if text.contains("%%PIPELINE_CONFIRM%%") {
+                    let planText = text.replacingOccurrences(of: "%%PIPELINE_CONFIRM%%", with: "").trimmingCharacters(in: .whitespacesAndNewlines)
+                    MajoorLogger.log("🔄 Pipeline plan proposed, waiting for approval...")
+
+                    let planStep = TaskStep(timestamp: Date(), type: .response, description: planText, detail: nil)
+                    await MainActor.run {
+                        task.steps.append(planStep)
+                        taskManager.showPipelinePlan(planText, taskId: task.id)
+                    }
+
+                    // Send notification with approve/deny and wait for response
+                    let approved = await ConfirmationManager.shared.requestConfirmation(
+                        title: "Majoor Pipeline",
+                        body: String(planText.prefix(200)),
+                        category: NotificationManager.pipelineConfirmCategory
+                    )
+
+                    await MainActor.run { taskManager.pipelineExecuting = approved }
+
+                    if approved {
+                        pipelineApproved = true
+                        messages.append(AnthropicMessage(role: "assistant", content: .string(planText)))
+                        messages.append(AnthropicMessage(role: "user", content: .string("User approved. Execute all steps now.")))
+                        MajoorLogger.log("✅ Pipeline approved — executing")
+                        continue // Continue agent loop to execute the plan
+                    } else {
+                        pipelineApproved = false
+                        messages.append(AnthropicMessage(role: "assistant", content: .string(planText)))
+                        messages.append(AnthropicMessage(role: "user", content: .string("User declined. Ask what they'd like to do differently.")))
+                        MajoorLogger.log("❌ Pipeline declined — asking follow-up")
+                        await MainActor.run { taskManager.clearPipelinePlan() }
+                        continue // Continue agent loop for follow-up
+                    }
+                }
+
                 MajoorLogger.log("✅ Done after \(iteration) iterations")
                 finalText = text
                 let step = TaskStep(timestamp: Date(), type: .response, description: text, detail: nil)
@@ -176,6 +245,7 @@ final nonisolated class AgentLoop: @unchecked Sendable {
                     task.completedAt = Date()
                     task.tokensUsed = totalTokens
                     task.modelUsed = provider.name
+                    taskManager.clearPipelinePlan()
                 }
 
                 // 5. Persist task and extract memories
@@ -195,14 +265,47 @@ final nonisolated class AgentLoop: @unchecked Sendable {
                 return TaskResult(summary: summarize(text), steps: task.steps, tokensUsed: totalTokens)
 
             case .toolCalls(let calls):
-                let (aMsg, rMsg, summaries) = try await handleToolCalls(calls, task: task)
+                let (aMsg, rMsg, summaries) = try await handleToolCalls(calls, task: task, activeTools: activeTools, pipelineApproved: pipelineApproved)
                 messages.append(aMsg)
                 messages.append(rMsg)
                 toolSummaries.append(contentsOf: summaries)
 
             case .mixed(let text, let calls):
+                // Check for pipeline confirmation in mixed responses too
+                if text.contains("%%PIPELINE_CONFIRM%%") {
+                    let planText = text.replacingOccurrences(of: "%%PIPELINE_CONFIRM%%", with: "").trimmingCharacters(in: .whitespacesAndNewlines)
+                    MajoorLogger.log("🔄 Pipeline plan proposed (mixed), waiting for approval...")
+
+                    let planStep = TaskStep(timestamp: Date(), type: .response, description: planText, detail: nil)
+                    await MainActor.run {
+                        task.steps.append(planStep)
+                        taskManager.showPipelinePlan(planText, taskId: task.id)
+                    }
+
+                    let approved = await ConfirmationManager.shared.requestConfirmation(
+                        title: "Majoor Pipeline",
+                        body: String(planText.prefix(200)),
+                        category: NotificationManager.pipelineConfirmCategory
+                    )
+
+                    await MainActor.run { taskManager.pipelineExecuting = approved }
+
+                    if approved {
+                        pipelineApproved = true
+                        messages.append(AnthropicMessage(role: "assistant", content: .string(planText)))
+                        messages.append(AnthropicMessage(role: "user", content: .string("User approved. Execute all steps now.")))
+                        continue
+                    } else {
+                        pipelineApproved = false
+                        messages.append(AnthropicMessage(role: "assistant", content: .string(planText)))
+                        messages.append(AnthropicMessage(role: "user", content: .string("User declined. Ask what they'd like to do differently.")))
+                        await MainActor.run { taskManager.clearPipelinePlan() }
+                        continue
+                    }
+                }
+
                 MajoorLogger.log("📝 \(text.prefix(100))...")
-                let (aMsg, rMsg, summaries) = try await handleToolCalls(calls, task: task, precedingText: text)
+                let (aMsg, rMsg, summaries) = try await handleToolCalls(calls, task: task, precedingText: text, activeTools: activeTools, pipelineApproved: pipelineApproved)
                 messages.append(aMsg)
                 messages.append(rMsg)
                 toolSummaries.append(contentsOf: summaries)
@@ -238,7 +341,9 @@ final nonisolated class AgentLoop: @unchecked Sendable {
     private func handleToolCalls(
         _ toolCalls: [ToolCall],
         task: AgentTask,
-        precedingText: String? = nil
+        precedingText: String? = nil,
+        activeTools: [any AgentTool],
+        pipelineApproved: Bool = false
     ) async throws -> (assistant: AnthropicMessage, result: AnthropicMessage, toolSummaries: [String]) {
 
         var assistantBlocks: [AnthropicContentBlock] = []
@@ -253,13 +358,31 @@ final nonisolated class AgentLoop: @unchecked Sendable {
 
         var resultBlocks: [AnthropicContentBlock] = []
         var summaries: [String] = []
+
         for call in toolCalls {
             MajoorLogger.log("🔧 Tool: \(call.toolName)")
             let callStep = TaskStep(timestamp: Date(), type: .toolCall, description: "Calling \(call.toolName)", detail: call.arguments.map { "\($0.key): \($0.value)" }.joined(separator: ", "))
             await MainActor.run { task.steps.append(callStep) }
 
             let output: String
-            if let tool = tools.first(where: { $0.name == call.toolName }) {
+            if let tool = activeTools.first(where: { $0.name == call.toolName }) {
+                // Skip per-tool confirmation if pipeline is approved
+                if tool.requiresConfirmation && !pipelineApproved {
+                    let approved = await ConfirmationManager.shared.requestConfirmation(
+                        title: "Majoor — Confirm Action",
+                        body: "\(call.toolName): \(call.arguments.map { "\($0.key)=\($0.value)" }.joined(separator: ", "))",
+                        category: NotificationManager.confirmGenericCategory
+                    )
+                    if !approved {
+                        output = "User declined to execute \(call.toolName)."
+                        let resultStep = TaskStep(timestamp: Date(), type: .toolResult, description: "Declined: \(call.toolName)", detail: nil)
+                        await MainActor.run { task.steps.append(resultStep) }
+                        resultBlocks.append(AnthropicContentBlock(type: "tool_result", text: nil, id: nil, name: nil, input: nil, toolUseId: call.id, content: output))
+                        summaries.append("• \(call.toolName) → declined by user")
+                        continue
+                    }
+                }
+
                 let normalizedArgs = normalizeArguments(call.arguments, for: tool)
                 if normalizedArgs != call.arguments {
                     MajoorLogger.log("🔄 Normalized args for \(call.toolName): \(call.arguments.keys.sorted()) → \(normalizedArgs.keys.sorted())")

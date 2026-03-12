@@ -11,6 +11,9 @@ import Combine
 class TaskManager: ObservableObject {
 
     @Published var tasks: [AgentTask] = []
+    @Published var pendingPipelinePlan: String?
+    @Published var pendingPipelineTaskId: UUID?
+    @Published var pipelineExecuting: Bool = false
 
     var runningTasks: [AgentTask] {
         tasks.filter { $0.status == .running }
@@ -18,6 +21,17 @@ class TaskManager: ObservableObject {
 
     var completedTasks: [AgentTask] {
         tasks.filter { $0.status == .completed }
+    }
+
+    func showPipelinePlan(_ plan: String, taskId: UUID) {
+        pendingPipelinePlan = plan
+        pendingPipelineTaskId = taskId
+    }
+
+    func clearPipelinePlan() {
+        pendingPipelinePlan = nil
+        pendingPipelineTaskId = nil
+        pipelineExecuting = false
     }
 
     init() {
