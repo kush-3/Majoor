@@ -33,10 +33,14 @@ private struct GmailAPI {
     /// Parse a Gmail message JSON into a readable format
     static func parseMessage(_ msg: [String: Any], fullBody: Bool = false) -> String {
         let headers = (msg["payload"] as? [String: Any])?["headers"] as? [[String: Any]] ?? []
-        let headerDict = Dictionary(uniqueKeysWithValues: headers.compactMap { h -> (String, String)? in
-            guard let name = h["name"] as? String, let value = h["value"] as? String else { return nil }
-            return (name.lowercased(), value)
-        })
+        let headerDict: [String: String] = headers.reduce(into: [:]) { dict, h in
+            guard let name = h["name"] as? String,
+                  let value = h["value"] as? String else { return }
+            let key = name.lowercased()
+            if dict[key] == nil {
+                dict[key] = value
+            }
+        }
 
         let id = msg["id"] as? String ?? "unknown"
         let subject = headerDict["subject"] ?? "(no subject)"
