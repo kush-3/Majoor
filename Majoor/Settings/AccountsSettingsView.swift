@@ -76,6 +76,9 @@ struct AccountsSettingsView: View {
                     } else if calendarStatus == .denied || calendarStatus == .restricted {
                         Button("Open Settings") { openCalendarSettings() }
                             .font(.caption)
+                        Button("Reset & Retry") { resetAndRetryCalendar() }
+                            .font(.caption)
+                            .foregroundColor(.orange)
                     } else {
                         Button("Request Access") { requestCalendarAccess() }
                             .font(.caption)
@@ -127,16 +130,34 @@ struct AccountsSettingsView: View {
     // MARK: - Calendar
 
     private func requestCalendarAccess() {
+        let currentStatus = EKEventStore.authorizationStatus(for: .event)
+
+        // If already denied, the system will NOT show a prompt again.
+        // The user must grant access manually in System Settings, or
+        // reset TCC via: tccutil reset Calendar com.Majoor
+        if currentStatus == .denied || currentStatus == .restricted {
+            MajoorLogger.log("Calendar status is .denied/.restricted — opening System Settings")
+            openCalendarSettings()
+            return
+        }
+
         // Must use the long-lived shared store — a local EKEventStore() gets
         // deallocated before the XPC round-trip completes, killing the prompt.
         let store = sharedEventStore
         Task { @MainActor in
             do {
-                MajoorLogger.log("Requesting calendar access via sharedEventStore... status before: \(EKEventStore.authorizationStatus(for: .event).rawValue)")
+                // LSUIElement apps (no dock icon) need explicit activation
+                // for the system permission dialog to appear in front.
+                NSApp.activate(ignoringOtherApps: true)
+                
+                MajoorLogger.log("Requesting calendar access via sharedEventStore... status before: \(currentStatus.rawValue)")
                 let granted = try await store.requestFullAccessToEvents()
                 MajoorLogger.log("Calendar access result: \(granted)")
+                if !granted {
+                    MajoorLogger.log("Access not granted. If no prompt appeared, try: tccutil reset Calendar com.Majoor")
+                }
             } catch {
-                MajoorLogger.error("Calendar access error: \(error)")
+                MajoorLogger.error("Calendar access error: \(error). Try: tccutil reset Calendar com.Majoor")
             }
             calendarStatus = EKEventStore.authorizationStatus(for: .event)
         }
@@ -146,6 +167,26 @@ struct AccountsSettingsView: View {
         if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Calendars") {
             NSWorkspace.shared.open(url)
         }
+    }
+
+    private func resetAndRetryCalendar() {
+        // Reset the TCC decision for this app's calendar access so the prompt can appear again
+        let bundleId = Bundle.main.bundleIdentifier ?? "com.Majoor"
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/tccutil")
+        process.arguments = ["reset", "Calendar", bundleId]
+        do {
+            try process.run()
+            process.waitUntilExit()
+            MajoorLogger.log("📅 TCC reset for Calendar (bundle: \(bundleId)), exit code: \(process.terminationStatus)")
+        } catch {
+            MajoorLogger.error("📅 TCC reset failed: \(error)")
+        }
+        // Refresh status — should now be .notDetermined
+        calendarStatus = EKEventStore.authorizationStatus(for: .event)
+        MajoorLogger.log("📅 Status after reset: \(calendarStatus.rawValue)")
+        // Now request access again (will show the prompt since status is reset)
+        requestCalendarAccess()
     }
 
     // MARK: - Status

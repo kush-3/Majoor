@@ -106,11 +106,46 @@ final nonisolated class AgentLoop: @unchecked Sendable {
             let thinkStep = TaskStep(timestamp: Date(), type: .thinking, description: "Thinking... (\(iteration))", detail: nil)
             await MainActor.run { task.steps.append(thinkStep) }
 
-            let (response, usage) = try await provider.complete(
-                systemPrompt: fullSystemPrompt,
-                messages: messages,
-                tools: anthropicTools
-            )
+            // API call with error recovery — provider handles retries internally,
+            // but if all retries are exhausted, we catch it here so the task
+            // gets marked as failed instead of hanging forever.
+            let response: LLMResponse
+            let usage: AnthropicUsage?
+            do {
+                (response, usage) = try await provider.complete(
+                    systemPrompt: fullSystemPrompt,
+                    messages: messages,
+                    tools: anthropicTools
+                )
+            } catch let error as LLMError {
+                MajoorLogger.error("❌ API call failed after retries: \(error.localizedDescription ?? "unknown")")
+                let errorStep = TaskStep(timestamp: Date(), type: .error, description: error.localizedDescription ?? "API error", detail: nil)
+                let totalTokens = totalInputTokens + totalOutputTokens
+                await MainActor.run {
+                    task.steps.append(errorStep)
+                    task.status = .failed
+                    task.summary = error.localizedDescription ?? "Task failed"
+                    task.completedAt = Date()
+                    task.tokensUsed = totalTokens
+                    task.modelUsed = provider.name
+                }
+                await MainActor.run { taskManager.persistTask(task) }
+                throw error
+            } catch {
+                MajoorLogger.error("❌ Unexpected error: \(error.localizedDescription)")
+                let errorStep = TaskStep(timestamp: Date(), type: .error, description: error.localizedDescription, detail: nil)
+                let totalTokens = totalInputTokens + totalOutputTokens
+                await MainActor.run {
+                    task.steps.append(errorStep)
+                    task.status = .failed
+                    task.summary = error.localizedDescription
+                    task.completedAt = Date()
+                    task.tokensUsed = totalTokens
+                    task.modelUsed = provider.name
+                }
+                await MainActor.run { taskManager.persistTask(task) }
+                throw error
+            }
 
             if let usage {
                 totalInputTokens += usage.inputTokens

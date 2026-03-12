@@ -76,6 +76,12 @@ struct ReadFileTool: AgentTool {
         guard FileManager.default.fileExists(atPath: expanded) else {
             return ToolResult(success: false, output: "Error: File not found: \(path)")
         }
+        
+        // Redirect PDFs to the dedicated tool
+        if expanded.lowercased().hasSuffix(".pdf") {
+            return ToolResult(success: false, output: "This is a PDF file. Use the read_pdf tool instead of read_file.")
+        }
+        
         do {
             let content = try String(contentsOfFile: expanded, encoding: .utf8)
             let lines = content.components(separatedBy: .newlines)
@@ -368,4 +374,82 @@ nonisolated func formatDate(_ date: Date) -> String {
     f.dateStyle = .medium
     f.timeStyle = .short
     return f.string(from: date)
+}
+
+// MARK: - Read PDF
+
+import PDFKit
+
+struct ReadPDFTool: AgentTool {
+    let name = "read_pdf"
+    let description = "Extract text content from a PDF file. Use this instead of read_file for .pdf files."
+    let parameters = [
+        ToolParameter(name: "path", description: "Path to the PDF file"),
+        ToolParameter(name: "max_pages", type: "integer", description: "Max pages to extract. Default all pages."),
+        ToolParameter(name: "page_range", description: "Specific page range to extract, e.g. '1-5' or '3'. 1-indexed.")
+    ]
+    let requiredParameters = ["path"]
+    let requiresConfirmation = false
+
+    func execute(arguments: [String: String]) async throws -> ToolResult {
+        guard let path = arguments["path"] else {
+            return ToolResult(success: false, output: "Error: 'path' is required")
+        }
+        let expanded = NSString(string: path).expandingTildeInPath
+
+        guard FileManager.default.fileExists(atPath: expanded) else {
+            return ToolResult(success: false, output: "Error: File not found: \(path)")
+        }
+
+        guard let doc = PDFDocument(url: URL(fileURLWithPath: expanded)) else {
+            return ToolResult(success: false, output: "Error: Could not open PDF at \(path). File may be corrupted or password-protected.")
+        }
+
+        let totalPages = doc.pageCount
+
+        // Determine which pages to extract
+        let startPage: Int
+        let endPage: Int
+
+        if let range = arguments["page_range"], !range.isEmpty {
+            let parts = range.split(separator: "-").compactMap { Int($0) }
+            if parts.count == 2 {
+                startPage = max(1, parts[0])
+                endPage = min(totalPages, parts[1])
+            } else if parts.count == 1 {
+                startPage = max(1, parts[0])
+                endPage = startPage
+            } else {
+                return ToolResult(success: false, output: "Error: Invalid page_range '\(range)'. Use '1-5' or '3'.")
+            }
+        } else {
+            startPage = 1
+            let maxPages = Int(arguments["max_pages"] ?? "0") ?? 0
+            endPage = maxPages > 0 ? min(totalPages, maxPages) : totalPages
+        }
+
+        var textParts: [String] = []
+        for i in (startPage - 1)..<endPage {
+            guard let page = doc.page(at: i) else { continue }
+            let pageText = page.string ?? ""
+            if !pageText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                textParts.append("--- Page \(i + 1) ---\n\(pageText)")
+            }
+        }
+
+        if textParts.isEmpty {
+            return ToolResult(success: true, output: "PDF: \(path) (\(totalPages) pages) — no extractable text. This PDF may be scanned/image-based.")
+        }
+
+        let extracted = textParts.joined(separator: "\n\n")
+
+        // Truncate if extremely long to avoid blowing up context
+        let maxChars = 30000
+        if extracted.count > maxChars {
+            let truncated = String(extracted.prefix(maxChars))
+            return ToolResult(success: true, output: "PDF: \(path) (\(totalPages) pages, showing \(startPage)-\(endPage), truncated):\n\n\(truncated)\n\n... [truncated at \(maxChars) characters]")
+        }
+
+        return ToolResult(success: true, output: "PDF: \(path) (\(totalPages) pages, showing \(startPage)-\(endPage)):\n\n\(extracted)")
+    }
 }

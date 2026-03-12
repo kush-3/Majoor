@@ -6,6 +6,7 @@
 
 import Foundation
 import EventKit
+import AppKit
 
 // MARK: - Shared Event Store (must be kept alive for XPC connection)
 
@@ -13,16 +14,43 @@ nonisolated(unsafe) let sharedEventStore = EKEventStore()
 
 private func ensureCalendarAccess() async throws {
     let status = EKEventStore.authorizationStatus(for: .event)
+    MajoorLogger.log("📅 Calendar auth status: \(status.rawValue) (\(describeAuthStatus(status)))")
+
     switch status {
     case .fullAccess, .authorized:
         return
     case .notDetermined:
+        MajoorLogger.log("📅 Requesting calendar access...")
+        // LSUIElement apps (menu bar only) won't surface the permission dialog
+        // unless the app is explicitly activated first.
+        await MainActor.run {
+            NSApp.activate(ignoringOtherApps: true)
+        }
         let granted = try await sharedEventStore.requestFullAccessToEvents()
-        guard granted else { throw CalendarError.accessDenied }
+        if granted {
+            MajoorLogger.log("📅 Calendar access granted!")
+        } else {
+            MajoorLogger.error("📅 Calendar access request returned false")
+            throw CalendarError.accessDenied
+        }
     case .denied, .restricted:
+        MajoorLogger.error("📅 Calendar access is denied. Reset with: tccutil reset Calendar com.Majoor")
         throw CalendarError.accessDenied
     @unknown default:
+        MajoorLogger.error("📅 Unknown calendar auth status: \(status.rawValue)")
         throw CalendarError.accessDenied
+    }
+}
+
+private func describeAuthStatus(_ status: EKAuthorizationStatus) -> String {
+    switch status {
+    case .notDetermined: return "notDetermined"
+    case .restricted: return "restricted"
+    case .denied: return "denied"
+    case .authorized: return "authorized (legacy)"
+    case .fullAccess: return "fullAccess"
+    case .writeOnly: return "writeOnly"
+    @unknown default: return "unknown(\(status.rawValue))"
     }
 }
 
@@ -34,7 +62,7 @@ private enum CalendarError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .accessDenied: return "Calendar access denied. Grant access in System Settings > Privacy & Security > Calendars."
+        case .accessDenied: return "Calendar access denied. Run 'tccutil reset Calendar com.Majoor' in Terminal, then relaunch Majoor to re-trigger the permission prompt. Or grant access in System Settings > Privacy & Security > Calendars."
         case .eventNotFound: return "Calendar event not found."
         case .parseDateFailed(let s): return "Could not parse date: \(s). Use ISO8601 format (e.g., 2026-03-15T14:00:00)."
         case .saveFailed(let s): return "Failed to save calendar event: \(s)"

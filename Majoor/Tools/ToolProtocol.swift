@@ -70,6 +70,7 @@ nonisolated struct ToolRegistry: Sendable {
             SearchFilesTool(),
             GetFileInfoTool(),
             CreateDirectoryTool(),
+            ReadPDFTool(),
             // Shell & Code Execution
             ExecuteShellTool(),
             ExecuteScriptTool(),
