@@ -22,6 +22,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     
     func applicationDidFinishLaunching(_ notification: Notification) {
         MajoorLogger.log("Majoor is starting up...")
+        MajoorLogger.log(Bundle.main.bundleIdentifier!)
 
         // Configure notification system with categories and delegate
         NotificationManager.shared.configure()

@@ -21,12 +21,20 @@ private func ensureCalendarAccess() async throws {
         return
     case .notDetermined:
         MajoorLogger.log("📅 Requesting calendar access...")
-        // LSUIElement apps (menu bar only) won't surface the permission dialog
-        // unless the app is explicitly activated first.
+        // LSUIElement apps have .accessory activation policy — TCC won't show
+        // permission dialogs. Temporarily switch to .regular.
         await MainActor.run {
+            NSApp.setActivationPolicy(.regular)
             NSApp.activate(ignoringOtherApps: true)
         }
-        let granted = try await sharedEventStore.requestFullAccessToEvents()
+        let granted: Bool
+        do {
+            granted = try await sharedEventStore.requestFullAccessToEvents()
+        } catch {
+            await MainActor.run { NSApp.setActivationPolicy(.accessory) }
+            throw error
+        }
+        await MainActor.run { NSApp.setActivationPolicy(.accessory) }
         if granted {
             MajoorLogger.log("📅 Calendar access granted!")
         } else {
