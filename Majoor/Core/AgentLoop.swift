@@ -63,9 +63,12 @@ final nonisolated class AgentLoop: @unchecked Sendable {
         let category = TaskClassifier.classify(userInput)
         let provider = ModelRouter.provider(for: category)
 
-        // 2. Retrieve relevant memories
+        // 2. Retrieve relevant memories and inject current date
         let memoryContext = MemoryRetriever.relevantContext(for: userInput)
-        let fullSystemPrompt = systemPrompt + memoryContext
+        let dateFormatter = DateFormatter()
+        dateFormatter.dateFormat = "EEEE, MMMM d, yyyy 'at' h:mm a"
+        let dateContext = "\n\nCurrent date and time: \(dateFormatter.string(from: Date()))"
+        let fullSystemPrompt = systemPrompt + dateContext + memoryContext
 
         // 3. Create task and add to UI
         let task = AgentTask(userInput: userInput)

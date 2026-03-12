@@ -141,23 +141,23 @@ struct AccountsSettingsView: View {
             return
         }
 
-        // Must use the long-lived shared store — a local EKEventStore() gets
-        // deallocated before the XPC round-trip completes, killing the prompt.
         let store = sharedEventStore
         Task { @MainActor in
+            // LSUIElement apps have .accessory activation policy — TCC won't show
+            // permission dialogs. Temporarily switch to .regular.
+            NSApp.setActivationPolicy(.regular)
+            NSApp.activate(ignoringOtherApps: true)
+            defer { NSApp.setActivationPolicy(.accessory) }
+
             do {
-                // LSUIElement apps (no dock icon) need explicit activation
-                // for the system permission dialog to appear in front.
-                NSApp.activate(ignoringOtherApps: true)
-                
-                MajoorLogger.log("Requesting calendar access via sharedEventStore... status before: \(currentStatus.rawValue)")
+                MajoorLogger.log("📅 Requesting calendar access... status before: \(currentStatus.rawValue)")
                 let granted = try await store.requestFullAccessToEvents()
-                MajoorLogger.log("Calendar access result: \(granted)")
+                MajoorLogger.log("📅 Calendar access result: \(granted)")
                 if !granted {
-                    MajoorLogger.log("Access not granted. If no prompt appeared, try: tccutil reset Calendar com.Majoor")
+                    MajoorLogger.log("📅 Access not granted. If no prompt appeared, try: tccutil reset Calendar com.Majoor")
                 }
             } catch {
-                MajoorLogger.error("Calendar access error: \(error). Try: tccutil reset Calendar com.Majoor")
+                MajoorLogger.error("📅 Calendar access error: \(error). Try: tccutil reset Calendar com.Majoor")
             }
             calendarStatus = EKEventStore.authorizationStatus(for: .event)
         }
