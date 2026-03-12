@@ -70,6 +70,7 @@ nonisolated struct ToolRegistry: Sendable {
             SearchFilesTool(),
             GetFileInfoTool(),
             CreateDirectoryTool(),
+            ReadPDFTool(),
             // Shell & Code Execution
             ExecuteShellTool(),
             ExecuteScriptTool(),
@@ -88,6 +89,18 @@ nonisolated struct ToolRegistry: Sendable {
             WebSearchTool(),
             FetchWebpageTool(),
             FetchMultipleURLsTool(),
+            // Calendar (EventKit)
+            ReadCalendarEventsTool(),
+            CreateCalendarEventTool(),
+            UpdateCalendarEventTool(),
+            DeleteCalendarEventTool(),
+            // Email (Gmail)
+            FetchEmailsTool(),
+            ReadEmailTool(),
+            SearchEmailsTool(),
+            DraftEmailTool(),
+            SendEmailTool(),
+            ReplyToEmailTool(),
         ]
     }
 }

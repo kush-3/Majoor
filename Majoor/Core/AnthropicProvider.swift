@@ -11,7 +11,11 @@ final nonisolated class AnthropicProvider: LLMProvider, @unchecked Sendable {
     private var apiKey: String
     private let baseURL = "https://api.anthropic.com/v1/messages"
     private let apiVersion = "2023-06-01"
-    private let maxTokens = 4096
+    private let maxTokens = 16384
+    
+    // Retry configuration
+    private let maxRetries = 3
+    private let baseDelaySeconds: Double = 2.0  // 2s, 4s, 8s exponential backoff
     
     init(apiKey: String, model: String = "claude-sonnet-4-20250514") {
         self.apiKey = apiKey
@@ -52,16 +56,89 @@ final nonisolated class AnthropicProvider: LLMProvider, @unchecked Sendable {
         urlRequest.setValue(apiVersion, forHTTPHeaderField: "anthropic-version")
         urlRequest.timeoutInterval = 120
         
-        let (data, httpResponse) = try await URLSession.shared.data(for: urlRequest)
-        
-        if let http = httpResponse as? HTTPURLResponse {
+        // Retry loop with exponential backoff for 429 and 529
+        var lastError: Error?
+        for attempt in 0...maxRetries {
+            if attempt > 0 {
+                let delay = baseDelaySeconds * pow(2.0, Double(attempt - 1))
+                MajoorLogger.log("⏳ Rate limited — retrying in \(Int(delay))s (attempt \(attempt + 1)/\(maxRetries + 1))")
+                try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            }
+            
+            let data: Data
+            let httpResponse: URLResponse
+            do {
+                (data, httpResponse) = try await URLSession.shared.data(for: urlRequest)
+            } catch {
+                // Network error — retry on transient failures
+                lastError = LLMError.networkError(error.localizedDescription)
+                if attempt < maxRetries { continue }
+                throw lastError!
+            }
+            
+            guard let http = httpResponse as? HTTPURLResponse else {
+                throw LLMError.apiError("Invalid HTTP response")
+            }
+            
             switch http.statusCode {
-            case 200: break
-            case 401: throw LLMError.invalidAPIKey
+            case 200:
+                // Success — decode and return
+                let response: AnthropicResponse
+                do {
+                    response = try JSONDecoder().decode(AnthropicResponse.self, from: data)
+                } catch {
+                    MajoorLogger.error("Decode failed: \(error)")
+                    throw LLMError.decodingError(error.localizedDescription)
+                }
+                
+                // Detect truncated tool calls — if stop_reason is "max_tokens" and
+                // there are tool_use blocks, the arguments were likely cut off.
+                // Return a text response telling the agent to use smaller writes.
+                if response.stopReason == "max_tokens" {
+                    let hasToolUse = response.content.contains { $0.type == "tool_use" }
+                    if hasToolUse {
+                        MajoorLogger.log("⚠️ Response truncated (max_tokens) with pending tool calls — requesting smaller output")
+                        let recoveryText = response.content
+                            .compactMap { $0.text }
+                            .joined(separator: "\n")
+                        let message = recoveryText.isEmpty
+                            ? "My previous response was truncated because the output was too large. I'll break this into smaller steps."
+                            : recoveryText + "\n\n[Output was truncated. Breaking into smaller steps.]"
+                        return (.text(message), response.usage)
+                    }
+                }
+                
+                let llmResponse = parseResponse(response)
+                MajoorLogger.log("✅ API: \(response.stopReason ?? "?"), tokens: \(response.usage?.inputTokens ?? 0)in/\(response.usage?.outputTokens ?? 0)out")
+                return (llmResponse, response.usage)
+                
+            case 401:
+                throw LLMError.invalidAPIKey
+                
             case 429:
-                let retry = http.value(forHTTPHeaderField: "retry-after").flatMap(Int.init)
-                throw LLMError.rateLimited(retryAfter: retry)
+                // Rate limited — use retry-after header if available, otherwise backoff
+                if let retryAfter = http.value(forHTTPHeaderField: "retry-after").flatMap(Double.init), attempt < maxRetries {
+                    MajoorLogger.log("⏳ 429 with retry-after: \(Int(retryAfter))s")
+                    try await Task.sleep(nanoseconds: UInt64(retryAfter * 1_000_000_000))
+                    lastError = LLMError.rateLimited(retryAfter: Int(retryAfter))
+                    continue  // Skip the normal backoff, we already waited
+                }
+                lastError = LLMError.rateLimited(retryAfter: http.value(forHTTPHeaderField: "retry-after").flatMap(Int.init))
+                if attempt < maxRetries { continue }
+                
+            case 529:
+                // API overloaded — always retry
+                MajoorLogger.log("⏳ 529 API overloaded")
+                lastError = LLMError.apiError("API overloaded (529)")
+                if attempt < maxRetries { continue }
+                
+            case 500, 502, 503:
+                // Server errors — retry
+                lastError = LLMError.apiError("Server error (HTTP \(http.statusCode))")
+                if attempt < maxRetries { continue }
+                
             default:
+                // Non-retryable error — fail immediately
                 if let err = try? JSONDecoder().decode(AnthropicError.self, from: data) {
                     throw LLMError.apiError(err.error.message)
                 }
@@ -69,18 +146,8 @@ final nonisolated class AnthropicProvider: LLMProvider, @unchecked Sendable {
             }
         }
         
-        let response: AnthropicResponse
-        do {
-            response = try JSONDecoder().decode(AnthropicResponse.self, from: data)
-        } catch {
-            MajoorLogger.error("Decode failed: \(error)")
-            throw LLMError.decodingError(error.localizedDescription)
-        }
-        
-        let llmResponse = parseResponse(response)
-        MajoorLogger.log("✅ API: \(response.stopReason ?? "?"), tokens: \(response.usage?.inputTokens ?? 0)in/\(response.usage?.outputTokens ?? 0)out")
-        
-        return (llmResponse, response.usage)
+        // All retries exhausted
+        throw lastError ?? LLMError.apiError("Request failed after \(maxRetries + 1) attempts")
     }
     
     private func parseResponse(_ response: AnthropicResponse) -> LLMResponse {
