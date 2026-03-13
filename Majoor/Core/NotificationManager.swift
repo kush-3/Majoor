@@ -18,14 +18,16 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate, @un
     static let confirmDeleteCategory = "CONFIRM_DELETE"
     static let confirmGenericCategory = "CONFIRM_GENERIC"
     static let pipelineConfirmCategory = "PIPELINE_CONFIRM"
+    static let authErrorCategory       = "AUTH_ERROR"
 
     // MARK: - Action IDs
-    static let actionView    = "ACTION_VIEW"
-    static let actionRetry   = "ACTION_RETRY"
-    static let actionApprove = "ACTION_APPROVE"
-    static let actionDeny    = "ACTION_DENY"
-    static let actionKeep    = "ACTION_KEEP"
-    static let actionDelete  = "ACTION_DELETE"
+    static let actionView         = "ACTION_VIEW"
+    static let actionRetry        = "ACTION_RETRY"
+    static let actionApprove      = "ACTION_APPROVE"
+    static let actionDeny         = "ACTION_DENY"
+    static let actionKeep         = "ACTION_KEEP"
+    static let actionDelete       = "ACTION_DELETE"
+    static let actionOpenSettings = "ACTION_OPEN_SETTINGS"
 
     private override init() { super.init() }
 
@@ -62,7 +64,11 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate, @un
         let pipelineDeny = UNNotificationAction(identifier: Self.actionDeny, title: "Cancel", options: .destructive)
         let pipelineConfirm = UNNotificationCategory(identifier: Self.pipelineConfirmCategory, actions: [pipelineApprove, pipelineDeny], intentIdentifiers: [])
 
-        center.setNotificationCategories([taskComplete, taskFailed, confirmEmail, confirmDelete, confirmGeneric, pipelineConfirm])
+        // Auth error: "Open Settings" button
+        let openSettings = UNNotificationAction(identifier: Self.actionOpenSettings, title: "Open Settings", options: .foreground)
+        let authError = UNNotificationCategory(identifier: Self.authErrorCategory, actions: [openSettings], intentIdentifiers: [])
+
+        center.setNotificationCategories([taskComplete, taskFailed, confirmEmail, confirmDelete, confirmGeneric, pipelineConfirm, authError])
 
         center.requestAuthorization(options: [.alert, .sound, .badge]) { granted, error in
             if let error { MajoorLogger.error("Notification auth error: \(error)") }
@@ -128,6 +134,13 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate, @un
             }
         }
 
+        // Handle "Open Settings" action
+        if actionId == Self.actionOpenSettings {
+            DispatchQueue.main.async {
+                NotificationCenter.default.post(name: .majoorOpenSettings, object: nil)
+            }
+        }
+
         // Handle "View" / default tap — post notification for UI to respond
         if actionId == Self.actionView || actionId == UNNotificationDefaultActionIdentifier {
             let taskId = userInfo["taskId"] as? String
@@ -155,4 +168,5 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate, @un
 
 extension Notification.Name {
     static let majoorOpenTaskDetail = Notification.Name("majoorOpenTaskDetail")
+    static let majoorOpenSettings = Notification.Name("majoorOpenSettings")
 }

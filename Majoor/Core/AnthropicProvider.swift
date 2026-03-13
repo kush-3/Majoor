@@ -76,8 +76,26 @@ final nonisolated class AnthropicProvider: LLMProvider, @unchecked Sendable {
             let httpResponse: URLResponse
             do {
                 (data, httpResponse) = try await URLSession.shared.data(for: urlRequest)
+            } catch let urlError as URLError {
+                // Classify network errors: no internet vs timeout vs other
+                switch urlError.code {
+                case .notConnectedToInternet, .networkConnectionLost, .dataNotAllowed:
+                    MajoorLogger.log("⚠️ No internet connection")
+                    throw LLMError.noInternet
+                case .timedOut:
+                    lastWasNetworkTimeout = true
+                    lastError = LLMError.networkError("Request timed out — API may be slow")
+                    MajoorLogger.log("⚠️ Request timed out (attempt \(attempt + 1)/\(maxRetries + 1))")
+                    if attempt < maxRetries { continue }
+                    throw lastError!
+                default:
+                    lastWasNetworkTimeout = true
+                    lastError = LLMError.networkError(urlError.localizedDescription)
+                    MajoorLogger.log("⚠️ Network error: \(urlError.localizedDescription)")
+                    if attempt < maxRetries { continue }
+                    throw lastError!
+                }
             } catch {
-                // Network error (timeout, connection reset, etc.)
                 lastWasNetworkTimeout = true
                 lastError = LLMError.networkError(error.localizedDescription)
                 MajoorLogger.log("⚠️ Network error: \(error.localizedDescription)")
@@ -126,26 +144,38 @@ final nonisolated class AnthropicProvider: LLMProvider, @unchecked Sendable {
                 
             case 429:
                 // Rate limited — use retry-after header if available, otherwise backoff
-                if let retryAfter = http.value(forHTTPHeaderField: "retry-after").flatMap(Double.init), attempt < maxRetries {
-                    MajoorLogger.log("⏳ 429 with retry-after: \(Int(retryAfter))s")
+                let retryAfterSec = http.value(forHTTPHeaderField: "retry-after").flatMap(Int.init)
+                lastError = LLMError.rateLimited(retryAfter: retryAfterSec)
+                if let retryAfter = retryAfterSec.map(Double.init), attempt < maxRetries {
+                    MajoorLogger.log("⏳ Rate limited — retrying in \(Int(retryAfter))s (attempt \(attempt + 1)/\(maxRetries + 1))")
                     try await Task.sleep(nanoseconds: UInt64(retryAfter * 1_000_000_000))
-                    lastError = LLMError.rateLimited(retryAfter: Int(retryAfter))
                     continue  // Skip the normal backoff, we already waited
                 }
-                lastError = LLMError.rateLimited(retryAfter: http.value(forHTTPHeaderField: "retry-after").flatMap(Int.init))
                 if attempt < maxRetries { continue }
                 
             case 529:
                 // API overloaded — always retry
                 MajoorLogger.log("⏳ 529 API overloaded")
-                lastError = LLMError.apiError("API overloaded (529)")
+                lastError = LLMError.serverOverloaded
                 if attempt < maxRetries { continue }
-                
+
             case 500, 502, 503:
                 // Server errors — retry
                 lastError = LLMError.apiError("Server error (HTTP \(http.statusCode))")
                 if attempt < maxRetries { continue }
-                
+
+            case 400:
+                // Check if this is a context overflow error
+                if let err = try? JSONDecoder().decode(AnthropicError.self, from: data) {
+                    let msg = err.error.message.lowercased()
+                    if msg.contains("too many tokens") || msg.contains("token") && msg.contains("limit")
+                        || msg.contains("context length") || msg.contains("max tokens") {
+                        throw LLMError.contextOverflow
+                    }
+                    throw LLMError.apiError(err.error.message)
+                }
+                throw LLMError.apiError("Bad request (HTTP 400)")
+
             default:
                 // Non-retryable error — fail immediately
                 if let err = try? JSONDecoder().decode(AnthropicError.self, from: data) {

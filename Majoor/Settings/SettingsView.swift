@@ -28,7 +28,7 @@ struct SettingsView: View {
 struct GeneralSettingsTab: View {
     @AppStorage("launchAtLogin") private var launchAtLogin = false
     @AppStorage("showNotifications") private var showNotifications = true
-    
+
     var body: some View {
         Form {
             Section("Startup") { Toggle("Launch Majoor at login", isOn: $launchAtLogin) }
@@ -42,6 +42,14 @@ struct GeneralSettingsTab: View {
                         .background(RoundedRectangle(cornerRadius: 4).fill(Color.primary.opacity(0.08)))
                         .font(.system(size: 12, design: .monospaced))
                 }
+            }
+            Section("Setup") {
+                Button("Run Setup Wizard") {
+                    if let delegate = NSApp.delegate as? AppDelegate {
+                        delegate.showOnboarding()
+                    }
+                }
+                .font(.system(size: 12))
             }
         }
         .formStyle(.grouped)
@@ -98,7 +106,7 @@ struct AboutTab: View {
             Image(systemName: "bolt.fill").font(.system(size: 48)).foregroundColor(.accentColor)
             Text("Majoor").font(.system(size: 24, weight: .bold))
             Text("Your AI that does the work").font(.system(size: 14)).foregroundColor(.secondary)
-            Text("Version 0.4.0 — Phase 4").font(.system(size: 12)).foregroundColor(.secondary.opacity(0.7))
+            Text("Version 0.6.0 — Phase 6").font(.system(size: 12)).foregroundColor(.secondary.opacity(0.7))
             Spacer()
             Link("majoor.ai", destination: URL(string: "https://majoor.ai")!).font(.caption)
             Spacer()

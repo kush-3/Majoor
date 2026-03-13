@@ -78,9 +78,8 @@ final nonisolated class AgentLoop: @unchecked Sendable {
     func execute(userInput: String) async throws -> TaskResult {
         MajoorLogger.log("🚀 Task: \(userInput)")
 
-        // 1. Classify task and route to the right model
-        let category = TaskClassifier.classify(userInput)
-        let provider = ModelRouter.provider(for: category)
+        // 1. Hybrid routing: keyword fast-path or LLM classification
+        let (provider, toolSets) = await ModelRouter.routeHybrid(userInput)
 
         // 2. Retrieve relevant memories, inject current date, and MCP summary
         let memoryContext = MemoryRetriever.relevantContext(for: userInput)
@@ -94,12 +93,24 @@ final nonisolated class AgentLoop: @unchecked Sendable {
             fullSystemPrompt += "\n\n" + mcpSummary
         }
 
-        // 3. Build the full tool list: local tools + all running MCP tools
+        // 3. Build the tool list: local tools + filtered MCP tools based on routing
         var activeTools: [any AgentTool] = Array(tools)
-        let mcpTools = await MCPServerManager.shared.allAvailableTools()
-        if !mcpTools.isEmpty {
-            activeTools.append(contentsOf: mcpTools)
-            MajoorLogger.log("🔌 Loaded \(mcpTools.count) MCP tool(s) from running servers")
+        let allMcpTools = await MCPServerManager.shared.allAvailableTools()
+        if !allMcpTools.isEmpty {
+            // Filter MCP tools by the tool sets the router selected
+            let includeAll = toolSets.isEmpty || toolSets.contains("all")
+            let filteredMcpTools: [MCPToolBridge]
+            if includeAll {
+                filteredMcpTools = allMcpTools
+            } else {
+                filteredMcpTools = allMcpTools.filter { tool in
+                    toolSets.contains(tool.serverName)
+                }
+            }
+            if !filteredMcpTools.isEmpty {
+                activeTools.append(contentsOf: filteredMcpTools)
+                MajoorLogger.log("🔌 Loaded \(filteredMcpTools.count)/\(allMcpTools.count) MCP tool(s) [sets: \(toolSets)]")
+            }
         }
         let anthropicTools = activeTools.map { $0.toAnthropicTool() }
 
@@ -142,9 +153,7 @@ final nonisolated class AgentLoop: @unchecked Sendable {
             let thinkStep = TaskStep(timestamp: Date(), type: .thinking, description: "Thinking... (\(iteration))", detail: nil)
             await MainActor.run { task.steps.append(thinkStep) }
 
-            // API call with error recovery — provider handles retries internally,
-            // but if all retries are exhausted, we catch it here so the task
-            // gets marked as failed instead of hanging forever.
+            // API call with structured error recovery
             let response: LLMResponse
             let usage: AnthropicUsage?
             do {
@@ -154,13 +163,33 @@ final nonisolated class AgentLoop: @unchecked Sendable {
                     tools: anthropicTools
                 )
             } catch let error as LLMError {
-                MajoorLogger.error("❌ API call failed after retries: \(error.localizedDescription ?? "unknown")")
-                let errorStep = TaskStep(timestamp: Date(), type: .error, description: error.localizedDescription ?? "API error", detail: nil)
+                // Context overflow: try to recover by trimming history
+                if case .contextOverflow = error {
+                    MajoorLogger.log("⚠️ Context overflow — attempting recovery by trimming history")
+                    let trimmed = trimConversationForRecovery(&messages)
+                    if trimmed {
+                        let recoveryStep = TaskStep(timestamp: Date(), type: .thinking, description: "Context too large — trimming history and retrying...", detail: nil)
+                        await MainActor.run { task.steps.append(recoveryStep) }
+                        continue // Retry with trimmed messages
+                    }
+                    // If we can't trim further, fall through to failure
+                    MajoorLogger.error("❌ Context overflow — cannot recover, conversation too complex")
+                }
+
+                // Auth errors: fail fast with actionable message
+                if case .invalidAPIKey = error {
+                    MajoorLogger.error("❌ Invalid API key — failing immediately")
+                }
+
+                // All other errors: mark task failed
+                let errorDesc = error.errorDescription ?? "API error"
+                MajoorLogger.error("❌ API error: \(errorDesc)")
+                let errorStep = TaskStep(timestamp: Date(), type: .error, description: errorDesc, detail: nil)
                 let totalTokens = totalInputTokens + totalOutputTokens
                 await MainActor.run {
                     task.steps.append(errorStep)
                     task.status = .failed
-                    task.summary = error.localizedDescription ?? "Task failed"
+                    task.summary = errorDesc
                     task.completedAt = Date()
                     task.tokensUsed = totalTokens
                     task.modelUsed = provider.name
@@ -204,10 +233,14 @@ final nonisolated class AgentLoop: @unchecked Sendable {
                     let planText = text.replacingOccurrences(of: "%%PIPELINE_CONFIRM%%", with: "").trimmingCharacters(in: .whitespacesAndNewlines)
                     MajoorLogger.log("🔄 Pipeline plan proposed, waiting for approval...")
 
+                    // Parse numbered steps from plan text
+                    let parsedSteps = parsePipelineSteps(from: planText)
+
                     let planStep = TaskStep(timestamp: Date(), type: .response, description: planText, detail: nil)
                     await MainActor.run {
                         task.steps.append(planStep)
                         taskManager.showPipelinePlan(planText, taskId: task.id)
+                        taskManager.setPipelineSteps(parsedSteps)
                     }
 
                     // Send notification with approve/deny and wait for response
@@ -221,17 +254,30 @@ final nonisolated class AgentLoop: @unchecked Sendable {
 
                     if approved {
                         pipelineApproved = true
+                        // Build approval message including which steps are disabled
+                        let skippedSteps = await MainActor.run { taskManager.pipelineSteps.enumerated().filter { !$0.element.enabled }.map { $0.offset + 1 } }
+                        var approvalMsg = "User approved. Execute all steps now."
+                        if !skippedSteps.isEmpty {
+                            let skippedList = skippedSteps.map(String.init).joined(separator: ", ")
+                            approvalMsg = "User approved but wants to SKIP step(s): \(skippedList). Execute the remaining steps only."
+                            // Mark skipped steps
+                            await MainActor.run {
+                                for idx in skippedSteps {
+                                    taskManager.updatePipelineStep(at: idx - 1, status: .skipped)
+                                }
+                            }
+                        }
                         messages.append(AnthropicMessage(role: "assistant", content: .string(planText)))
-                        messages.append(AnthropicMessage(role: "user", content: .string("User approved. Execute all steps now.")))
+                        messages.append(AnthropicMessage(role: "user", content: .string(approvalMsg)))
                         MajoorLogger.log("✅ Pipeline approved — executing")
-                        continue // Continue agent loop to execute the plan
+                        continue
                     } else {
                         pipelineApproved = false
                         messages.append(AnthropicMessage(role: "assistant", content: .string(planText)))
                         messages.append(AnthropicMessage(role: "user", content: .string("User declined. Ask what they'd like to do differently.")))
                         MajoorLogger.log("❌ Pipeline declined — asking follow-up")
                         await MainActor.run { taskManager.clearPipelinePlan() }
-                        continue // Continue agent loop for follow-up
+                        continue
                     }
                 }
 
@@ -276,10 +322,13 @@ final nonisolated class AgentLoop: @unchecked Sendable {
                     let planText = text.replacingOccurrences(of: "%%PIPELINE_CONFIRM%%", with: "").trimmingCharacters(in: .whitespacesAndNewlines)
                     MajoorLogger.log("🔄 Pipeline plan proposed (mixed), waiting for approval...")
 
+                    let parsedSteps = parsePipelineSteps(from: planText)
+
                     let planStep = TaskStep(timestamp: Date(), type: .response, description: planText, detail: nil)
                     await MainActor.run {
                         task.steps.append(planStep)
                         taskManager.showPipelinePlan(planText, taskId: task.id)
+                        taskManager.setPipelineSteps(parsedSteps)
                     }
 
                     let approved = await ConfirmationManager.shared.requestConfirmation(
@@ -292,8 +341,19 @@ final nonisolated class AgentLoop: @unchecked Sendable {
 
                     if approved {
                         pipelineApproved = true
+                        let skippedSteps = await MainActor.run { taskManager.pipelineSteps.enumerated().filter { !$0.element.enabled }.map { $0.offset + 1 } }
+                        var approvalMsg = "User approved. Execute all steps now."
+                        if !skippedSteps.isEmpty {
+                            let skippedList = skippedSteps.map(String.init).joined(separator: ", ")
+                            approvalMsg = "User approved but wants to SKIP step(s): \(skippedList). Execute the remaining steps only."
+                            await MainActor.run {
+                                for idx in skippedSteps {
+                                    taskManager.updatePipelineStep(at: idx - 1, status: .skipped)
+                                }
+                            }
+                        }
                         messages.append(AnthropicMessage(role: "assistant", content: .string(planText)))
-                        messages.append(AnthropicMessage(role: "user", content: .string("User approved. Execute all steps now.")))
+                        messages.append(AnthropicMessage(role: "user", content: .string(approvalMsg)))
                         continue
                     } else {
                         pipelineApproved = false
@@ -362,7 +422,14 @@ final nonisolated class AgentLoop: @unchecked Sendable {
         for call in toolCalls {
             MajoorLogger.log("🔧 Tool: \(call.toolName)")
             let callStep = TaskStep(timestamp: Date(), type: .toolCall, description: "Calling \(call.toolName)", detail: call.arguments.map { "\($0.key): \($0.value)" }.joined(separator: ", "))
-            await MainActor.run { task.steps.append(callStep) }
+            await MainActor.run {
+                task.steps.append(callStep)
+                // Update pipeline step tracking if executing a pipeline
+                if let matchedIndex = matchToolToPipelineStep(call.toolName, arguments: call.arguments) {
+                    taskManager.addToolCallToPipelineStep(at: matchedIndex, toolName: call.toolName)
+                    taskManager.updatePipelineStep(at: matchedIndex, status: .running)
+                }
+            }
 
             let output: String
             if let tool = activeTools.first(where: { $0.name == call.toolName }) {
@@ -409,7 +476,18 @@ final nonisolated class AgentLoop: @unchecked Sendable {
             summaries.append("• \(call.toolName)(\(String(argsPreview.prefix(100)))) → \(String(output.prefix(150)))")
 
             let resultStep = TaskStep(timestamp: Date(), type: .toolResult, description: "Result from \(call.toolName)", detail: String(output.prefix(500)))
-            await MainActor.run { task.steps.append(resultStep) }
+            await MainActor.run {
+                task.steps.append(resultStep)
+                // Update pipeline step status based on result
+                if let matchedIndex = matchToolToPipelineStep(call.toolName, arguments: call.arguments) {
+                    let isError = output.lowercased().hasPrefix("error")
+                    if isError {
+                        taskManager.updatePipelineStep(at: matchedIndex, status: .failed, error: String(output.prefix(200)))
+                    } else {
+                        taskManager.updatePipelineStep(at: matchedIndex, status: .completed, result: String(output.prefix(100)))
+                    }
+                }
+            }
 
             resultBlocks.append(AnthropicContentBlock(type: "tool_result", text: nil, id: nil, name: nil, input: nil, toolUseId: call.id, content: output))
         }
@@ -454,5 +532,142 @@ final nonisolated class AgentLoop: @unchecked Sendable {
     private func summarize(_ text: String) -> String {
         let first = text.components(separatedBy: CharacterSet(charactersIn: ".!?\n")).first ?? text
         return first.count <= 150 ? first.trimmingCharacters(in: .whitespacesAndNewlines) : String(text.prefix(147)).trimmingCharacters(in: .whitespacesAndNewlines) + "..."
+    }
+
+    // MARK: - Pipeline Step Parsing
+
+    /// Parse numbered plan text into PipelineStep objects
+    private func parsePipelineSteps(from planText: String) -> [PipelineStep] {
+        let lines = planText.components(separatedBy: "\n")
+        var steps: [PipelineStep] = []
+
+        for line in lines {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            // Match numbered lines: "1. Do something" or "1) Do something" or "- Do something"
+            let cleaned: String?
+            if let range = trimmed.range(of: #"^\d+[\.\)]\s*"#, options: .regularExpression) {
+                cleaned = String(trimmed[range.upperBound...]).trimmingCharacters(in: .whitespaces)
+            } else if trimmed.hasPrefix("- ") {
+                cleaned = String(trimmed.dropFirst(2)).trimmingCharacters(in: .whitespaces)
+            } else {
+                cleaned = nil
+            }
+
+            if let desc = cleaned, !desc.isEmpty {
+                steps.append(PipelineStep(planDescription: desc))
+            }
+        }
+
+        return steps
+    }
+
+    /// Step-to-tool mapping heuristic
+    private static let stepToolMapping: [String: [String]] = [
+        "commit": ["git_commit"],
+        "push": ["git_push"],
+        "pr": ["github__create_pull_request", "git_create_pr", "github__create-pull-request"],
+        "pull request": ["github__create_pull_request", "git_create_pr"],
+        "issue": ["linear__create_issue", "linear__update_issue", "github__create_issue", "linear__create-issue", "linear__update-issue"],
+        "ticket": ["linear__create_issue", "linear__update_issue", "linear__create-issue", "linear__update-issue"],
+        "slack": ["slack__"],
+        "post": ["slack__slack_post_message", "slack__post-message"],
+        "message": ["slack__slack_post_message", "slack__post-message"],
+        "notion": ["notion__"],
+        "page": ["notion__create_page", "notion__create-page"],
+        "email": ["send_email", "draft_email", "reply_to_email"],
+        "calendar": ["create_calendar_event", "update_calendar_event"],
+        "branch": ["git_create_branch"],
+        "merge": ["github__merge_pull_request", "github__merge-pull-request"],
+        "status": ["git_status"],
+        "diff": ["git_diff"],
+    ]
+
+    /// Match a tool call to the best pipeline step.
+    /// Returns the index into taskManager.pipelineSteps, or nil if no match.
+    private func matchToolToPipelineStep(_ toolName: String, arguments: [String: String]) -> Int? {
+        let steps = taskManager.pipelineSteps
+        guard !steps.isEmpty else { return nil }
+
+        // First: find steps that are currently running (already matched to this tool)
+        if let runningIdx = steps.firstIndex(where: { $0.status == .running && $0.toolCalls.contains(toolName) }) {
+            return runningIdx
+        }
+
+        // Second: keyword match between step description and tool name
+        for (index, step) in steps.enumerated() {
+            guard step.enabled, step.status == .pending || step.status == .running else { continue }
+            let desc = step.planDescription.lowercased()
+
+            // Check the mapping table
+            for (keyword, toolPrefixes) in Self.stepToolMapping {
+                if desc.contains(keyword) {
+                    for prefix in toolPrefixes {
+                        if toolName.hasPrefix(prefix) || toolName == prefix {
+                            return index
+                        }
+                    }
+                }
+            }
+
+            // Direct tool name match (e.g., step says "git_push" literally)
+            if desc.contains(toolName.replacingOccurrences(of: "_", with: " ")) {
+                return index
+            }
+        }
+
+        // Third: if there's exactly one pending step, it's probably the next one
+        let pendingSteps = steps.enumerated().filter { $0.element.status == .pending && $0.element.enabled }
+        if pendingSteps.count == 1 {
+            return pendingSteps[0].offset
+        }
+
+        // Fourth: find first pending step (sequential assumption)
+        return steps.firstIndex { $0.status == .pending && $0.enabled }
+    }
+
+    // MARK: - Context Overflow Recovery
+
+    /// Attempts to reduce conversation size when context overflows.
+    /// Returns true if messages were trimmed (caller should retry), false if no further trimming possible.
+    private func trimConversationForRecovery(_ messages: inout [AnthropicMessage]) -> Bool {
+        // Strategy 1: Remove oldest conversation history pairs (keep at least the latest user message)
+        guard messages.count > 1 else { return false }
+
+        // Find tool_result blocks and truncate their content to 500 chars
+        var didTruncate = false
+        for i in 0..<messages.count {
+            if case .blocks(var blocks) = messages[i].content {
+                var modified = false
+                for j in 0..<blocks.count {
+                    if blocks[j].type == "tool_result",
+                       let content = blocks[j].content,
+                       content.count > 500 {
+                        blocks[j] = AnthropicContentBlock(
+                            type: "tool_result", text: nil, id: nil, name: nil,
+                            input: nil, toolUseId: blocks[j].toolUseId,
+                            content: String(content.prefix(500)) + "\n[... truncated ...]"
+                        )
+                        modified = true
+                        didTruncate = true
+                    }
+                }
+                if modified {
+                    messages[i] = AnthropicMessage(role: messages[i].role, content: .blocks(blocks))
+                }
+            }
+        }
+        if didTruncate {
+            MajoorLogger.log("✂️ Truncated tool results to 500 chars")
+            return true
+        }
+
+        // Strategy 2: Remove the oldest pair of messages (user + assistant) if there are conversation history pairs
+        if messages.count > 3 {
+            messages.removeFirst(2) // Remove oldest user+assistant pair
+            MajoorLogger.log("✂️ Removed oldest conversation pair, \(messages.count) messages remain")
+            return true
+        }
+
+        return false
     }
 }

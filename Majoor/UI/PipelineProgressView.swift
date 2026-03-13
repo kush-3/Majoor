@@ -2,13 +2,14 @@
 // Majoor — Real-time Pipeline Progress
 //
 // Shows step-by-step progress during pipeline execution.
-// Each step shows pending/running/completed/failed status.
+// Observes TaskManager.pipelineSteps for real-time updates.
+// Each step shows pending/running/completed/failed/skipped status.
 
 import SwiftUI
 
 struct PipelineProgressView: View {
-    @ObservedObject var task: AgentTask
-    let planText: String
+    @EnvironmentObject var taskManager: TaskManager
+    let title: String
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -16,42 +17,61 @@ struct PipelineProgressView: View {
             HStack {
                 Image(systemName: "arrow.triangle.branch")
                     .foregroundColor(.accentColor)
-                Text("Pipeline Running")
+                Text("Pipeline: \"\(title)\"")
                     .font(.system(size: 13, weight: .semibold))
+                    .lineLimit(1)
                 Spacer()
-                if task.status == .completed {
-                    Image(systemName: "checkmark.circle.fill")
-                        .foregroundColor(.green)
-                } else if task.status == .failed {
-                    Image(systemName: "xmark.circle.fill")
-                        .foregroundColor(.red)
-                } else {
-                    ProgressView()
-                        .scaleEffect(0.6)
-                }
+                overallStatusIcon
             }
 
             Divider()
 
             // Steps
             ScrollView {
-                VStack(alignment: .leading, spacing: 8) {
-                    ForEach(pipelineSteps) { step in
-                        HStack(alignment: .top, spacing: 8) {
-                            stepIcon(for: step)
-                                .frame(width: 18)
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(step.label)
-                                    .font(.system(size: 12, weight: step.status == .running ? .medium : .regular))
-                                    .foregroundColor(step.status == .pending ? .secondary : .primary)
-                                if let detail = step.detail {
-                                    Text(detail)
-                                        .font(.system(size: 10))
-                                        .foregroundColor(.secondary)
-                                        .lineLimit(2)
-                                }
-                            }
-                        }
+                VStack(alignment: .leading, spacing: 10) {
+                    ForEach(Array(taskManager.pipelineSteps.enumerated()), id: \.element.id) { index, step in
+                        PipelineStepRow(step: step, index: index + 1)
+                    }
+                }
+            }
+
+            Divider()
+
+            // Footer: progress summary
+            HStack {
+                let completed = taskManager.pipelineSteps.filter { $0.status == .completed }.count
+                let total = taskManager.pipelineSteps.filter { $0.enabled }.count
+                let failed = taskManager.pipelineSteps.filter { $0.status == .failed }.count
+                let currentStep = taskManager.pipelineSteps.firstIndex { $0.status == .running }.map { $0 + 1 }
+
+                if let current = currentStep {
+                    Text("Step \(current) of \(total)")
+                        .font(.system(size: 11))
+                        .foregroundColor(.secondary)
+                } else if completed == total && total > 0 {
+                    Text("All \(total) steps completed")
+                        .font(.system(size: 11))
+                        .foregroundColor(.green)
+                } else {
+                    Text("\(completed)/\(total) steps completed")
+                        .font(.system(size: 11))
+                        .foregroundColor(.secondary)
+                }
+
+                if failed > 0 {
+                    Text("(\(failed) failed)")
+                        .font(.system(size: 11))
+                        .foregroundColor(.red)
+                }
+
+                Spacer()
+
+                if let start = taskManager.pipelineStartTime {
+                    TimelineView(.periodic(from: start, by: 1)) { _ in
+                        let elapsed = Int(Date().timeIntervalSince(start))
+                        Text("\(elapsed)s elapsed")
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundColor(.secondary)
                     }
                 }
             }
@@ -59,135 +79,102 @@ struct PipelineProgressView: View {
         .padding(12)
     }
 
-    // MARK: - Step Tracking
+    @ViewBuilder
+    private var overallStatusIcon: some View {
+        let allDone = taskManager.pipelineSteps.allSatisfy {
+            $0.status == .completed || $0.status == .failed || $0.status == .skipped || !$0.enabled
+        }
+        let hasFailure = taskManager.pipelineSteps.contains { $0.status == .failed }
 
-    struct PipelineStep: Identifiable {
-        let id = UUID()
-        let label: String
-        let status: StepStatus
-        let detail: String?
-
-        enum StepStatus {
-            case pending, running, completed, failed
+        if allDone && !taskManager.pipelineSteps.isEmpty {
+            if hasFailure {
+                Image(systemName: "exclamationmark.circle.fill")
+                    .foregroundColor(.orange)
+            } else {
+                Image(systemName: "checkmark.circle.fill")
+                    .foregroundColor(.green)
+            }
+        } else {
+            ProgressView()
+                .scaleEffect(0.6)
         }
     }
+}
 
-    private var pipelineSteps: [PipelineStep] {
-        // Map task steps to pipeline progress
-        var steps: [PipelineStep] = []
-        var currentToolCall: String?
+// MARK: - Pipeline Step Row
 
-        for taskStep in task.steps {
-            switch taskStep.type {
-            case .toolCall:
-                let toolName = extractToolName(from: taskStep.description)
-                currentToolCall = toolName
-                // Check if there's a result for this tool call
-                let hasResult = task.steps.contains { $0.type == .toolResult && $0.description.contains(toolName) }
-                let hasFailed = taskStep.detail?.contains("Error") == true
+struct PipelineStepRow: View {
+    let step: PipelineStep
+    let index: Int
 
-                if hasResult {
-                    steps.append(PipelineStep(
-                        label: friendlyName(for: toolName),
-                        status: hasFailed ? .failed : .completed,
-                        detail: taskStep.detail
-                    ))
-                } else {
-                    steps.append(PipelineStep(
-                        label: friendlyName(for: toolName),
-                        status: .running,
-                        detail: nil
-                    ))
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            stepIcon
+                .frame(width: 20)
+
+            VStack(alignment: .leading, spacing: 2) {
+                HStack {
+                    Text("\(index). \(step.planDescription)")
+                        .font(.system(size: 12, weight: step.status == .running ? .medium : .regular))
+                        .foregroundColor(textColor)
+                        .strikethrough(!step.enabled && step.status == .pending)
                 }
 
-            case .toolResult:
-                // Already handled above
-                break
-
-            case .response:
-                if task.status == .completed {
-                    steps.append(PipelineStep(
-                        label: "Pipeline complete",
-                        status: .completed,
-                        detail: String(taskStep.description.prefix(100))
-                    ))
+                if let result = step.result {
+                    Text(result)
+                        .font(.system(size: 10))
+                        .foregroundColor(.secondary)
+                        .lineLimit(2)
                 }
 
-            case .error:
-                steps.append(PipelineStep(
-                    label: "Error",
-                    status: .failed,
-                    detail: taskStep.description
-                ))
-
-            case .thinking:
-                break
+                if let error = step.error {
+                    Text(error)
+                        .font(.system(size: 10))
+                        .foregroundColor(.red)
+                        .lineLimit(2)
+                }
             }
         }
-
-        // If no steps yet, show the plan as pending
-        if steps.isEmpty {
-            let planLines = planText.components(separatedBy: "\n")
-                .filter { $0.trimmingCharacters(in: .whitespaces).hasPrefix("-") || $0.trimmingCharacters(in: .whitespaces).first?.isNumber == true }
-            for line in planLines.prefix(8) {
-                let cleanLine = line.trimmingCharacters(in: .whitespaces)
-                    .replacingOccurrences(of: "^[0-9]+\\.\\s*", with: "", options: .regularExpression)
-                    .replacingOccurrences(of: "^-\\s*", with: "", options: .regularExpression)
-                steps.append(PipelineStep(label: cleanLine, status: .pending, detail: nil))
-            }
-        }
-
-        return steps
     }
 
-    private func extractToolName(from description: String) -> String {
-        // "Calling github__create_pull_request" → "github__create_pull_request"
-        description.replacingOccurrences(of: "Calling ", with: "")
-    }
-
-    private func friendlyName(for toolName: String) -> String {
-        // Convert tool names to readable labels
-        let mappings: [String: String] = [
-            "git_status": "Check git status",
-            "git_diff": "View changes",
-            "git_commit": "Commit changes",
-            "git_push": "Push to remote",
-            "git_create_pr": "Create pull request",
-        ]
-        if let mapped = mappings[toolName] { return mapped }
-
-        // For MCP tools: "github__create_pull_request" → "Create pull request (GitHub)"
-        if toolName.contains("__") {
-            let parts = toolName.split(separator: "_", maxSplits: 1)
-            if parts.count == 2 {
-                let server = parts[0].replacingOccurrences(of: "_", with: "")
-                let tool = String(parts[1]).replacingOccurrences(of: "_", with: " ")
-                    .replacingOccurrences(of: "  ", with: " ")
-                return "\(tool.capitalized) (\(server.capitalized))"
-            }
+    private var textColor: Color {
+        switch step.status {
+        case .pending: return step.enabled ? .secondary : .secondary.opacity(0.4)
+        case .running: return .primary
+        case .completed: return .primary
+        case .failed: return .red
+        case .skipped: return .secondary.opacity(0.5)
         }
-
-        return toolName.replacingOccurrences(of: "_", with: " ").capitalized
     }
 
     @ViewBuilder
-    private func stepIcon(for step: PipelineStep) -> some View {
+    private var stepIcon: some View {
         switch step.status {
+        case .pending:
+            if step.enabled {
+                Image(systemName: "circle.dashed")
+                    .font(.system(size: 14))
+                    .foregroundColor(.secondary.opacity(0.4))
+            } else {
+                Image(systemName: "forward.circle")
+                    .font(.system(size: 14))
+                    .foregroundColor(.orange.opacity(0.5))
+            }
+        case .running:
+            ProgressView()
+                .scaleEffect(0.5)
         case .completed:
             Image(systemName: "checkmark.circle.fill")
                 .font(.system(size: 14))
                 .foregroundColor(.green)
-        case .running:
-            ProgressView()
-                .scaleEffect(0.5)
         case .failed:
             Image(systemName: "xmark.circle.fill")
                 .font(.system(size: 14))
                 .foregroundColor(.red)
-        case .pending:
-            Image(systemName: "circle")
+        case .skipped:
+            Image(systemName: "forward.circle")
                 .font(.system(size: 14))
-                .foregroundColor(.secondary.opacity(0.4))
+                .foregroundColor(.orange)
         }
     }
 }

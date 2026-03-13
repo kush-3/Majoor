@@ -21,6 +21,8 @@ actor MCPServerManager {
     private var configs: [String: MCPServerConfig] = [:]
     private var serverErrors: [String: String] = [:]
     private var monitorTasks: [String: Task<Void, Never>] = [:]
+    private var restartCounts: [String: Int] = [:]
+    private let maxRestarts = 5
 
     private init() {}
 
@@ -191,18 +193,47 @@ actor MCPServerManager {
         configs
     }
 
+    /// Reset restart count for a server (call after successful manual start/token update)
+    func resetRestartCount(for name: String) {
+        restartCounts[name] = 0
+    }
+
     // MARK: - Health Monitor
 
     private func monitorServer(name: String, config: MCPServerConfig) async {
         while !Task.isCancelled {
-            try? await Task.sleep(nanoseconds: 10_000_000_000) // Check every 10s
+            try? await Task.sleep(nanoseconds: 30_000_000_000) // Check every 30s
             guard !Task.isCancelled else { break }
 
             if let client = clients[name] {
                 let running = await client.isRunning
                 if !running {
-                    MajoorLogger.log("MCP[\(name)] crashed — restarting...")
+                    let count = (restartCounts[name] ?? 0) + 1
+                    restartCounts[name] = count
+
+                    if count > maxRestarts {
+                        MajoorLogger.error("MCP[\(name)] exceeded max restarts (\(maxRestarts)) — giving up")
+                        serverErrors[name] = "Server crashed repeatedly. Check Settings > Integrations."
+                        clients.removeValue(forKey: name)
+                        // Notify user that the server failed permanently
+                        await MainActor.run {
+                            NotificationManager.shared.sendSimple(
+                                title: "Majoor — \(name.capitalized) Integration Failed",
+                                body: "\(name.capitalized) server crashed \(maxRestarts) times. Check your token in Settings > Integrations.",
+                                category: NotificationManager.taskFailedCategory
+                            )
+                        }
+                        break
+                    }
+
+                    // Exponential backoff: 5s, 10s, 20s, 40s, 80s
+                    let backoff = 5.0 * pow(2.0, Double(count - 1))
+                    MajoorLogger.log("MCP[\(name)] crashed — restart \(count)/\(maxRestarts) in \(Int(backoff))s")
+                    try? await Task.sleep(nanoseconds: UInt64(backoff * 1_000_000_000))
+                    guard !Task.isCancelled else { break }
+
                     await startServer(name: name, config: config)
+                    // Silent recovery — no notification unless it fails permanently
                     break // New monitor will be started by startServer
                 }
             }

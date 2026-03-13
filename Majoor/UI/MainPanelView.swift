@@ -28,26 +28,16 @@ struct MainPanelView: View {
                 ResponseDetailView(task: task)
             } else if let planText = taskManager.pendingPipelinePlan,
                       let taskId = taskManager.pendingPipelineTaskId {
-                // Pipeline plan view
-                if taskManager.pipelineExecuting,
-                   let pipelineTask = taskManager.tasks.first(where: { $0.id == taskId }) {
+                // Pipeline plan or progress view
+                if taskManager.pipelineExecuting {
                     // Pipeline is executing — show progress
-                    PipelineProgressView(task: pipelineTask, planText: planText)
+                    let title = taskManager.tasks.first(where: { $0.id == taskId })?.userInput ?? "Pipeline"
+                    PipelineProgressView(title: String(title.prefix(50)))
+                        .environmentObject(taskManager)
                 } else {
-                    // Pipeline waiting for approval
-                    PipelinePlanView(planText: planText, onApprove: {
-                        // Resolve confirmation as approved
-                        // The notification action handler does this — but panel buttons
-                        // need to resolve it too. We find the pending confirmation.
-                        Task {
-                            // The confirmation is handled by the notification system.
-                            // Panel buttons are a visual complement — the actual
-                            // approval/denial happens via notification actions.
-                        }
-                    }, onDeny: {
-                        Task {
-                            // Same as above — notification handles the actual confirmation
-                        }
+                    // Pipeline waiting for approval — show plan with inline editing
+                    PipelinePlanView(planText: planText, steps: $taskManager.pipelineSteps, onToggleStep: { index in
+                        taskManager.togglePipelineStep(at: index)
                     })
                 }
             } else {
@@ -93,12 +83,12 @@ struct MainPanelView: View {
     }
 }
 
-// MARK: - Pipeline Plan View
+// MARK: - Pipeline Plan View (with inline step editing)
 
 struct PipelinePlanView: View {
     let planText: String
-    var onApprove: () -> Void
-    var onDeny: () -> Void
+    @Binding var steps: [PipelineStep]
+    var onToggleStep: (Int) -> Void
 
     var body: some View {
         VStack(spacing: 0) {
@@ -109,26 +99,60 @@ struct PipelinePlanView: View {
                 Text("Pipeline Plan")
                     .font(.system(size: 14, weight: .semibold))
                 Spacer()
+                let enabled = steps.filter(\.enabled).count
+                let total = steps.count
+                if total > 0 {
+                    Text("\(enabled)/\(total) steps")
+                        .font(.system(size: 11))
+                        .foregroundColor(.secondary)
+                }
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 12)
 
             Divider()
 
-            // Plan text
+            // Steps with toggle
             ScrollView {
-                Text(planText)
-                    .font(.system(size: 12))
-                    .textSelection(.enabled)
-                    .padding(16)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                VStack(alignment: .leading, spacing: 6) {
+                    if steps.isEmpty {
+                        // Fallback: show raw plan text if steps weren't parsed
+                        Text(planText)
+                            .font(.system(size: 12))
+                            .textSelection(.enabled)
+                            .padding(16)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    } else {
+                        ForEach(Array(steps.enumerated()), id: \.element.id) { index, step in
+                            HStack(alignment: .top, spacing: 8) {
+                                Button(action: { onToggleStep(index) }) {
+                                    Image(systemName: step.enabled ? "checkmark.circle.fill" : "circle")
+                                        .font(.system(size: 16))
+                                        .foregroundColor(step.enabled ? .accentColor : .secondary.opacity(0.4))
+                                }
+                                .buttonStyle(.plain)
+
+                                Text("\(index + 1). \(step.planDescription)")
+                                    .font(.system(size: 12))
+                                    .foregroundColor(step.enabled ? .primary : .secondary.opacity(0.5))
+                                    .strikethrough(!step.enabled)
+                            }
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 2)
+                        }
+                    }
+                }
+                .padding(.vertical, 8)
             }
 
             Divider()
 
-            // Action buttons
+            // Footer
             HStack(spacing: 12) {
-                Text("Approve via notification")
+                Image(systemName: "info.circle")
+                    .font(.system(size: 11))
+                    .foregroundColor(.secondary)
+                Text("Toggle steps to skip. Approve via notification.")
                     .font(.system(size: 10))
                     .foregroundColor(.secondary)
                 Spacer()
