@@ -38,7 +38,7 @@ struct MCPSettingsView: View {
         ("slack", "slack_bot_token", "Bot Token (xoxb-)", "SLACK_BOT_TOKEN", "api.slack.com/apps",
          [("slack_team_id", "Team ID (T0...)", "SLACK_TEAM_ID")]),
         ("linear", "linear_api_key", "API Key", "LINEAR_API_KEY", "linear.app/settings/api", []),
-        ("notion", "notion_token", "Integration Token", "NOTION_API_TOKEN", "notion.so/my-integrations", []),
+        ("notion", "notion_token", "Integration Token", "NOTION_TOKEN", "notion.so/my-integrations", []),
     ]
 
     var body: some View {
@@ -281,7 +281,7 @@ struct MCPSettingsView: View {
         case "linear":
             return MCPServerConfig(command: "npx", args: ["-y", "mcp-linear"], env: ["LINEAR_API_KEY": "keychain:linear_api_key"])
         case "notion":
-            return MCPServerConfig(command: "npx", args: ["-y", "@modelcontextprotocol/server-notion"], env: ["NOTION_API_TOKEN": "keychain:notion_token"])
+            return MCPServerConfig(command: "npx", args: ["-y", "@notionhq/notion-mcp-server"], env: ["NOTION_TOKEN": "keychain:notion_token"])
         default:
             return MCPServerConfig(command: "echo", args: ["unknown"], env: nil)
         }

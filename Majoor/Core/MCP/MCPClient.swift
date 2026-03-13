@@ -134,6 +134,8 @@ actor MCPClient {
                 let data = stdout.availableData
                 if data.isEmpty {
                     MajoorLogger.log("MCP[\(name)] stdout EOF — process terminated")
+                    // Resume all pending continuations so callers don't hang forever
+                    await self?.failAllPending(error: MCPError.notRunning)
                     break
                 }
                 await self?.handleIncomingData(data)
@@ -180,10 +182,20 @@ actor MCPClient {
         stdinHandle = nil
         stdoutHandle = nil
         process = nil
-        pending.removeAll()
+        failAllPending(error: MCPError.notRunning)
         buffer = Data()
 
         MajoorLogger.log("MCP[\(serverName)] shut down")
+    }
+
+    /// Resume all pending continuations with an error (called when process dies or on shutdown).
+    private func failAllPending(error: Error) {
+        let orphaned = pending
+        pending.removeAll()
+        for (id, continuation) in orphaned {
+            MajoorLogger.log("MCP[\(serverName)] failing pending request id=\(id)")
+            continuation.resume(throwing: error)
+        }
     }
 
     // MARK: - Tool Discovery
