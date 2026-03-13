@@ -38,8 +38,22 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         registerGlobalHotKey()
         setupAgentLoop()
 
-        // Start MCP servers in the background (don't block the agent loop)
-        Task { await MCPServerManager.shared.startAll() }
+        // Load MCP configs — servers start lazily on first tool use
+        Task { await MCPServerManager.shared.loadConfigs() }
+
+        // Power state awareness: stop MCP servers before sleep, lazy restart on wake
+        NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.willSleepNotification, object: nil, queue: nil
+        ) { _ in
+            MajoorLogger.log("💤 System sleeping — stopping MCP servers")
+            Task { await MCPServerManager.shared.stopAll() }
+        }
+        NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification, object: nil, queue: nil
+        ) { _ in
+            MajoorLogger.log("☀️ System woke — MCP servers will restart on next use")
+            Task { await MCPServerManager.shared.loadConfigs() }
+        }
 
         // Listen for "Open Settings" from notification actions
         NotificationCenter.default.addObserver(forName: .majoorOpenSettings, object: nil, queue: .main) { [weak self] _ in

@@ -23,6 +23,23 @@ class StatusBarController {
         self.onSettingsClick = onSettingsClick
         self.onQuitClick = onQuitClick
         setupStatusItem()
+        observePowerState()
+    }
+
+    /// Stop animation when system sleeps, restore when it wakes.
+    private func observePowerState() {
+        NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.willSleepNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            self?.pulseTimer?.invalidate()
+            self?.pulseTimer = nil
+        }
+        NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            guard let self, self.currentState == .working else { return }
+            self.setState(.working) // Re-start the pulse timer
+        }
     }
     
     private func setupStatusItem() {

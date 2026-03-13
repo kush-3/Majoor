@@ -24,11 +24,27 @@ actor MCPServerManager {
     private var restartCounts: [String: Int] = [:]
     private let maxRestarts = 5
 
+    /// Track last tool call time per server for idle timeout
+    private var lastToolCallTime: [String: Date] = [:]
+    private let idleTimeoutSeconds: TimeInterval = 600 // 10 minutes
+    private var idleMonitorTask: Task<Void, Never>?
+
     private init() {}
 
     // MARK: - Lifecycle
 
-    /// Load config and start all configured servers.
+    /// Load config only — servers start lazily on first tool use.
+    func loadConfigs() {
+        configs = MCPConfig.load()
+        if configs.isEmpty {
+            MajoorLogger.log("MCP: No servers configured")
+        } else {
+            MajoorLogger.log("MCP: \(configs.count) server(s) configured (lazy start)")
+        }
+        startIdleMonitor()
+    }
+
+    /// Start all configured servers immediately (used by onboarding/settings reload).
     func startAll() async {
         configs = MCPConfig.load()
         guard !configs.isEmpty else {
@@ -40,10 +56,38 @@ actor MCPServerManager {
         for (name, config) in configs {
             await startServer(name: name, config: config)
         }
+        startIdleMonitor()
+    }
+
+    /// Ensure a specific server is running — starts it on demand if needed.
+    func ensureRunning(_ serverName: String) async throws {
+        // Already running
+        if let client = clients[serverName], await client.isRunning {
+            return
+        }
+        // Check if configured
+        guard let config = configs[serverName] else {
+            // Reload config in case it was added after launch
+            configs = MCPConfig.load()
+            guard let freshConfig = configs[serverName] else {
+                throw MCPClient.MCPError.startFailed("\(serverName) is not configured")
+            }
+            await startServer(name: serverName, config: freshConfig)
+            return
+        }
+        MajoorLogger.log("MCP[\(serverName)] lazy start — first use")
+        await startServer(name: serverName, config: config)
+    }
+
+    /// Record that a tool was called on a server (for idle timeout tracking).
+    func recordToolCall(for serverName: String) {
+        lastToolCallTime[serverName] = Date()
     }
 
     /// Stop all servers gracefully.
     func stopAll() async {
+        idleMonitorTask?.cancel()
+        idleMonitorTask = nil
         for (name, _) in clients {
             monitorTasks[name]?.cancel()
             monitorTasks[name] = nil
@@ -53,6 +97,7 @@ actor MCPServerManager {
         }
         clients.removeAll()
         serverErrors.removeAll()
+        lastToolCallTime.removeAll()
         MajoorLogger.log("MCP: All servers stopped")
     }
 
@@ -151,6 +196,7 @@ actor MCPServerManager {
     }
 
     /// Get a summary of available MCP servers for system prompt injection.
+    /// Includes both running and configured-but-idle servers (they start on demand).
     func serverSummary() async -> String? {
         var lines: [String] = []
         for (name, _) in configs {
@@ -161,7 +207,12 @@ actor MCPServerManager {
                     let toolNames = tools.prefix(5).map(\.name).joined(separator: ", ")
                     let suffix = tools.count > 5 ? ", ..." : ""
                     lines.append("- \(name): \(tools.count) tools (\(toolNames)\(suffix))")
+                } else {
+                    lines.append("- \(name): available (starts on demand)")
                 }
+            } else if serverErrors[name] == nil {
+                // Configured but not yet started — will start on first use
+                lines.append("- \(name): available (starts on demand)")
             }
         }
         guard !lines.isEmpty else { return nil }
@@ -182,10 +233,45 @@ actor MCPServerManager {
         return tools
     }
 
+    /// Get names of all configured servers (even if not yet running).
+    func configuredServerNames() -> [String] {
+        Array(configs.keys)
+    }
+
     /// Reload config from disk and restart all servers.
     func reload() async {
         await stopAll()
         await startAll()
+    }
+
+    // MARK: - Idle Timeout Monitor
+
+    /// Periodically checks for idle servers and shuts them down.
+    private func startIdleMonitor() {
+        idleMonitorTask?.cancel()
+        idleMonitorTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 60_000_000_000) // Check every 60s
+                guard !Task.isCancelled else { break }
+                await self?.shutdownIdleServers()
+            }
+        }
+    }
+
+    private func shutdownIdleServers() async {
+        let now = Date()
+        for (name, _) in clients {
+            guard let lastCall = lastToolCallTime[name] else {
+                // Never used — if it's been running for > idle timeout, shut it down
+                // (handles servers started by onboarding/reload but never used)
+                continue
+            }
+            if now.timeIntervalSince(lastCall) >= idleTimeoutSeconds {
+                MajoorLogger.log("MCP[\(name)] idle for \(Int(idleTimeoutSeconds))s — shutting down")
+                await stopServer(name: name)
+                lastToolCallTime.removeValue(forKey: name)
+            }
+        }
     }
 
     /// Get current server configs.

@@ -13,6 +13,8 @@ final nonisolated class AgentLoop: @unchecked Sendable {
     private let taskManager: TaskManager
     private let maxIterations = 75
     private let conversationTimeoutSeconds: TimeInterval = 600 // 10 minutes
+    private let maxConversationEntries = 5
+    private let maxResponseTextLength = 1000
 
     /// Stores conversation history for continuity
     private struct ConversationContext: @unchecked Sendable {
@@ -298,15 +300,19 @@ final nonisolated class AgentLoop: @unchecked Sendable {
                 await MainActor.run { taskManager.persistTask(task) }
                 MemoryRetriever.extractAndSaveMemories(from: text, userInput: userInput, taskId: task.id.uuidString)
 
-                // 6. Store conversation for continuity and prune stale entries
+                // 6. Store conversation for continuity and prune stale/excess entries
                 let completedAt = Date()
                 conversationHistory.removeAll { completedAt.timeIntervalSince($0.timestamp) >= conversationTimeoutSeconds }
                 conversationHistory.append(ConversationContext(
                     userInput: userInput,
-                    responseText: String(text.prefix(2000)),
-                    toolSummaries: toolSummaries,
+                    responseText: String(text.prefix(maxResponseTextLength)),
+                    toolSummaries: Array(toolSummaries.suffix(10)),
                     timestamp: completedAt
                 ))
+                // Cap at maxConversationEntries
+                if conversationHistory.count > maxConversationEntries {
+                    conversationHistory.removeFirst(conversationHistory.count - maxConversationEntries)
+                }
 
                 return TaskResult(summary: summarize(text), steps: task.steps, tokensUsed: totalTokens)
 
@@ -383,15 +389,18 @@ final nonisolated class AgentLoop: @unchecked Sendable {
         }
         await MainActor.run { taskManager.persistTask(task) }
 
-        // Store conversation for continuity and prune stale entries
+        // Store conversation for continuity and prune stale/excess entries
         let completedAt = Date()
         conversationHistory.removeAll { completedAt.timeIntervalSince($0.timestamp) >= conversationTimeoutSeconds }
         conversationHistory.append(ConversationContext(
             userInput: userInput,
-            responseText: finalText.isEmpty ? "Completed (max iterations)" : String(finalText.prefix(2000)),
-            toolSummaries: toolSummaries,
+            responseText: finalText.isEmpty ? "Completed (max iterations)" : String(finalText.prefix(maxResponseTextLength)),
+            toolSummaries: Array(toolSummaries.suffix(10)),
             timestamp: completedAt
         ))
+        if conversationHistory.count > maxConversationEntries {
+            conversationHistory.removeFirst(conversationHistory.count - maxConversationEntries)
+        }
 
         return TaskResult(summary: task.summary, steps: task.steps, tokensUsed: totalTokens)
     }
