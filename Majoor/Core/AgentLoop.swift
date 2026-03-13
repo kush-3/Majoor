@@ -258,16 +258,25 @@ final nonisolated class AgentLoop: @unchecked Sendable {
                         task.steps.append(planStep)
                         taskManager.showPipelinePlan(planText, taskId: task.id)
                         taskManager.setPipelineSteps(parsedSteps)
+                        // Auto-open the panel so user can see the plan and toggle steps
+                        NotificationCenter.default.post(name: .majoorOpenPanel, object: nil)
                     }
 
-                    // Send notification with approve/deny and wait for response
+                    // Show in-app confirmation + notification fallback
                     let approved = await ConfirmationManager.shared.requestConfirmation(
                         title: "Majoor Pipeline",
                         body: String(planText.prefix(200)),
-                        category: NotificationManager.pipelineConfirmCategory
+                        category: NotificationManager.pipelineConfirmCategory,
+                        onPending: { [taskManager] confirmId in
+                            Task { @MainActor in
+                                taskManager.showConfirmation(id: confirmId, title: "Majoor Pipeline", body: "Approve the pipeline plan?")
+                            }
+                        }
                     )
-
-                    await MainActor.run { taskManager.pipelineExecuting = approved }
+                    await MainActor.run {
+                        taskManager.clearConfirmation()
+                        taskManager.pipelineExecuting = approved
+                    }
 
                     if approved {
                         pipelineApproved = true
@@ -351,15 +360,24 @@ final nonisolated class AgentLoop: @unchecked Sendable {
                         task.steps.append(planStep)
                         taskManager.showPipelinePlan(planText, taskId: task.id)
                         taskManager.setPipelineSteps(parsedSteps)
+                        // Auto-open the panel so user can see the plan and toggle steps
+                        NotificationCenter.default.post(name: .majoorOpenPanel, object: nil)
                     }
 
                     let approved = await ConfirmationManager.shared.requestConfirmation(
                         title: "Majoor Pipeline",
                         body: String(planText.prefix(200)),
-                        category: NotificationManager.pipelineConfirmCategory
+                        category: NotificationManager.pipelineConfirmCategory,
+                        onPending: { [taskManager] confirmId in
+                            Task { @MainActor in
+                                taskManager.showConfirmation(id: confirmId, title: "Majoor Pipeline", body: "Approve the pipeline plan?")
+                            }
+                        }
                     )
-
-                    await MainActor.run { taskManager.pipelineExecuting = approved }
+                    await MainActor.run {
+                        taskManager.clearConfirmation()
+                        taskManager.pipelineExecuting = approved
+                    }
 
                     if approved {
                         pipelineApproved = true
@@ -461,11 +479,20 @@ final nonisolated class AgentLoop: @unchecked Sendable {
             if let tool = activeTools.first(where: { $0.name == call.toolName }) {
                 // Skip per-tool confirmation if pipeline is approved
                 if tool.requiresConfirmation && !pipelineApproved {
+                    let confirmTitle = "Majoor — Confirm Action"
+                    let confirmBody = "\(call.toolName): \(call.arguments.map { "\($0.key)=\($0.value)" }.joined(separator: ", "))"
                     let approved = await ConfirmationManager.shared.requestConfirmation(
-                        title: "Majoor — Confirm Action",
-                        body: "\(call.toolName): \(call.arguments.map { "\($0.key)=\($0.value)" }.joined(separator: ", "))",
-                        category: NotificationManager.confirmGenericCategory
+                        title: confirmTitle,
+                        body: confirmBody,
+                        category: NotificationManager.confirmGenericCategory,
+                        onPending: { [taskManager] confirmId in
+                            Task { @MainActor in
+                                taskManager.showConfirmation(id: confirmId, title: confirmTitle, body: confirmBody)
+                                NotificationCenter.default.post(name: .majoorOpenPanel, object: nil)
+                            }
+                        }
                     )
+                    await MainActor.run { taskManager.clearConfirmation() }
                     if !approved {
                         output = "User declined to execute \(call.toolName)."
                         let resultStep = TaskStep(timestamp: Date(), type: .toolResult, description: "Declined: \(call.toolName)", detail: nil)

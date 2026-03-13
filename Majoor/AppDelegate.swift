@@ -61,6 +61,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             self?.openSettings()
         }
 
+        // Listen for "Open Panel" (e.g., when a pipeline plan is proposed)
+        NotificationCenter.default.addObserver(forName: .majoorOpenPanel, object: nil, queue: .main) { [weak self] _ in
+            guard let self else { return }
+            if self.panelWindow == nil || self.panelWindow?.isVisible == false {
+                self.showPanel()
+            }
+        }
+
         commandBarWindow = CommandBarWindow(onSubmit: { [weak self] input in
             self?.handleCommand(input)
         })

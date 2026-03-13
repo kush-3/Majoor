@@ -26,6 +26,20 @@ struct MainPanelView: View {
                 .padding(.horizontal, 16).padding(.vertical, 8)
                 Divider()
                 ResponseDetailView(task: task)
+            } else if let confirmId = taskManager.pendingConfirmationId,
+                      let confirmTitle = taskManager.pendingConfirmationTitle,
+                      let confirmBody = taskManager.pendingConfirmationBody {
+                // In-app confirmation view
+                ConfirmationView(
+                    confirmTitle: confirmTitle,
+                    confirmBody: confirmBody,
+                    onApprove: {
+                        Task { await ConfirmationManager.shared.resolve(id: confirmId, approved: true) }
+                    },
+                    onDeny: {
+                        Task { await ConfirmationManager.shared.resolve(id: confirmId, approved: false) }
+                    }
+                )
             } else if let planText = taskManager.pendingPipelinePlan,
                       let taskId = taskManager.pendingPipelineTaskId {
                 // Pipeline plan or progress view
@@ -35,10 +49,25 @@ struct MainPanelView: View {
                     PipelineProgressView(title: String(title.prefix(50)))
                         .environmentObject(taskManager)
                 } else {
-                    // Pipeline waiting for approval — show plan with inline editing
-                    PipelinePlanView(planText: planText, steps: $taskManager.pipelineSteps, onToggleStep: { index in
-                        taskManager.togglePipelineStep(at: index)
-                    })
+                    // Pipeline waiting for approval — show plan with inline editing + approve/deny
+                    PipelinePlanView(
+                        planText: planText,
+                        steps: $taskManager.pipelineSteps,
+                        confirmationId: taskManager.pendingConfirmationId,
+                        onToggleStep: { index in
+                            taskManager.togglePipelineStep(at: index)
+                        },
+                        onApprove: {
+                            if let id = taskManager.pendingConfirmationId {
+                                Task { await ConfirmationManager.shared.resolve(id: id, approved: true) }
+                            }
+                        },
+                        onDeny: {
+                            if let id = taskManager.pendingConfirmationId {
+                                Task { await ConfirmationManager.shared.resolve(id: id, approved: false) }
+                            }
+                        }
+                    )
                 }
             } else {
                 // Normal panel
@@ -83,12 +112,68 @@ struct MainPanelView: View {
     }
 }
 
+// MARK: - Confirmation View
+
+struct ConfirmationView: View {
+    let confirmTitle: String
+    let confirmBody: String
+    var onApprove: () -> Void
+    var onDeny: () -> Void
+
+    var body: some View {
+        VStack(spacing: 0) {
+            // Header
+            HStack {
+                Image(systemName: "exclamationmark.shield")
+                    .foregroundColor(.orange)
+                Text("Confirmation Required")
+                    .font(.system(size: 14, weight: .semibold))
+                Spacer()
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+
+            Divider()
+
+            // Content
+            VStack(alignment: .leading, spacing: 12) {
+                Text(confirmTitle)
+                    .font(.system(size: 13, weight: .medium))
+                Text(confirmBody)
+                    .font(.system(size: 12))
+                    .foregroundColor(.secondary)
+                    .textSelection(.enabled)
+            }
+            .padding(16)
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            Spacer()
+
+            Divider()
+
+            // Buttons
+            HStack(spacing: 12) {
+                Spacer()
+                Button("Deny") { onDeny() }
+                    .buttonStyle(.bordered)
+                Button("Approve") { onApprove() }
+                    .buttonStyle(.borderedProminent)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+        }
+    }
+}
+
 // MARK: - Pipeline Plan View (with inline step editing)
 
 struct PipelinePlanView: View {
     let planText: String
     @Binding var steps: [PipelineStep]
+    let confirmationId: String?
     var onToggleStep: (Int) -> Void
+    var onApprove: () -> Void
+    var onDeny: () -> Void
 
     var body: some View {
         VStack(spacing: 0) {
@@ -147,15 +232,28 @@ struct PipelinePlanView: View {
 
             Divider()
 
-            // Footer
+            // Footer with approve/deny buttons
             HStack(spacing: 12) {
-                Image(systemName: "info.circle")
-                    .font(.system(size: 11))
-                    .foregroundColor(.secondary)
-                Text("Toggle steps to skip. Approve via notification.")
-                    .font(.system(size: 10))
-                    .foregroundColor(.secondary)
-                Spacer()
+                if confirmationId != nil {
+                    Text("Toggle steps to skip.")
+                        .font(.system(size: 10))
+                        .foregroundColor(.secondary)
+                    Spacer()
+                    Button("Deny") { onDeny() }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                    Button("Approve") { onApprove() }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.small)
+                } else {
+                    Image(systemName: "hourglass")
+                        .font(.system(size: 11))
+                        .foregroundColor(.secondary)
+                    Text("Waiting for confirmation...")
+                        .font(.system(size: 10))
+                        .foregroundColor(.secondary)
+                    Spacer()
+                }
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 10)

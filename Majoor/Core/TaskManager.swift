@@ -17,6 +17,11 @@ class TaskManager: ObservableObject {
     @Published var pipelineSteps: [PipelineStep] = []
     @Published var pipelineStartTime: Date?
 
+    // In-app confirmation UI state
+    @Published var pendingConfirmationId: String?
+    @Published var pendingConfirmationTitle: String?
+    @Published var pendingConfirmationBody: String?
+
     var runningTasks: [AgentTask] {
         tasks.filter { $0.status == .running }
     }
@@ -58,6 +63,18 @@ class TaskManager: ObservableObject {
     func togglePipelineStep(at index: Int) {
         guard index < pipelineSteps.count else { return }
         pipelineSteps[index].enabled.toggle()
+    }
+
+    func showConfirmation(id: String, title: String, body: String) {
+        pendingConfirmationId = id
+        pendingConfirmationTitle = title
+        pendingConfirmationBody = body
+    }
+
+    func clearConfirmation() {
+        pendingConfirmationId = nil
+        pendingConfirmationTitle = nil
+        pendingConfirmationBody = nil
     }
 
     init() {

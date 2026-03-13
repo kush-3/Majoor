@@ -73,32 +73,50 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate, @un
         center.requestAuthorization(options: [.alert, .sound, .badge]) { granted, error in
             if let error { MajoorLogger.error("Notification auth error: \(error)") }
             MajoorLogger.log("Notifications authorized: \(granted)")
+
+            // Log current notification settings for diagnostics
+            center.getNotificationSettings { settings in
+                MajoorLogger.log("Notification settings — auth: \(settings.authorizationStatus.rawValue), alert: \(settings.alertSetting.rawValue), banner: \(settings.alertStyle.rawValue), sound: \(settings.soundSetting.rawValue)")
+            }
         }
     }
 
     // MARK: - Send Notifications
 
-    func sendSimple(title: String, body: String, category: String = taskCompleteCategory) {
+    nonisolated func sendSimple(title: String, body: String, category: String = taskCompleteCategory) {
         let content = UNMutableNotificationContent()
         content.title = title
         content.body = body
         content.sound = .default
         content.categoryIdentifier = category
+        content.interruptionLevel = .timeSensitive
 
         let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
-        UNUserNotificationCenter.current().add(request)
+        UNUserNotificationCenter.current().add(request) { error in
+            if let error {
+                MajoorLogger.error("❌ Notification delivery failed: \(error.localizedDescription)")
+            }
+        }
     }
 
-    func sendActionable(id: String, title: String, body: String, category: String) {
+    nonisolated func sendActionable(id: String, title: String, body: String, category: String) {
         let content = UNMutableNotificationContent()
         content.title = title
         content.body = body
         content.sound = .default
         content.categoryIdentifier = category
         content.userInfo = ["confirmationId": id]
+        content.interruptionLevel = .timeSensitive
 
         let request = UNNotificationRequest(identifier: id, content: content, trigger: nil)
-        UNUserNotificationCenter.current().add(request)
+        MajoorLogger.log("📬 Sending actionable notification: \(title) [category: \(category), id: \(id)]")
+        UNUserNotificationCenter.current().add(request) { error in
+            if let error {
+                MajoorLogger.error("❌ Actionable notification delivery failed: \(error.localizedDescription)")
+            } else {
+                MajoorLogger.log("📬 Notification delivered: \(id)")
+            }
+        }
     }
 
     // MARK: - Delegate (handle user tapping actions)
@@ -160,7 +178,8 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate, @un
         willPresent notification: UNNotification,
         withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
     ) {
-        completionHandler([.banner, .sound])
+        MajoorLogger.log("📬 willPresent called for: \(notification.request.content.title)")
+        completionHandler([.banner, .sound, .list])
     }
 }
 
@@ -169,4 +188,5 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate, @un
 extension Notification.Name {
     static let majoorOpenTaskDetail = Notification.Name("majoorOpenTaskDetail")
     static let majoorOpenSettings = Notification.Name("majoorOpenSettings")
+    static let majoorOpenPanel = Notification.Name("majoorOpenPanel")
 }

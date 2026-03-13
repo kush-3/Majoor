@@ -101,6 +101,19 @@
 - Notarization is opt-in via `--notarize` flag so local dev builds are fast
 - Version and team ID auto-extracted from pbxproj — no manual config needed
 - Entitlements match what the app actually needs: shell execution, MCP subprocesses, network, calendar
+### Post-Implementation Bug Fixes
+
+**Follow-up routing fix:**
+- `Core/AgentLoop.swift` — Follow-up messages (e.g. "the team name is Majoor-tests" after "create a Linear issue") now inherit MCP tool sets from recent conversations. Recent conversation context passed to `ModelRouter.routeHybrid()` so the router understands the ongoing task. Tool sets merged from last 3 conversation entries within the timeout window.
+- `Core/Router/ModelRouter.swift` — `routeHybrid()` accepts conversation context string to improve routing accuracy for follow-up messages.
+
+**Notification delivery improvements:**
+- `Core/NotificationManager.swift` — All notifications set `interruptionLevel = .timeSensitive` to break through Focus/DND modes. Added error logging on delivery failure. Added diagnostic logging for notification settings on launch.
+
+**Pipeline auto-open panel:**
+- `Core/AgentLoop.swift` — Both pipeline confirmation paths (text response and mixed response) now post `.majoorOpenPanel` notification to auto-open the panel when a pipeline plan is proposed, so the user can see and toggle steps before approving via notification.
+- `AppDelegate.swift` — Listens for `.majoorOpenPanel` and opens the panel if not already visible.
+
 ### 6F — Auto-Update Mechanism: COMPLETE
 
 **New dependency:**
@@ -128,7 +141,7 @@
 1. **Apple Developer Program** — User likely has it; 6E/6F will be implemented but deferred if cert not available.
 2. **Tool subset filtering** — Implemented as part of 6B hybrid router. Keyword detection + LLM fallback for ambiguous cases. No new TaskClassifier categories needed.
 3. **Onboarding re-entry** — Yes, "Run Setup Wizard" button added in Settings > General.
-4. **MCP idle timeout** — Fixed at 10 minutes (not configurable). To be implemented in 6D.
+4. **MCP idle timeout** — Removed. Servers stay on while the app is active (eager start). Idle timeout added unnecessary complexity for minimal savings.
 5. **Pipeline step editing** — Implemented as remove-only toggle in 6B. Users can disable steps before approving. No add/reorder.
 
 ---
