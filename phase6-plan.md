@@ -86,8 +86,41 @@
 - Conversation history: 5 entries × 1000 chars + 10 tool summaries ≈ bounded memory footprint
 - Memory retrieval cache: 60s TTL avoids redundant SQLite queries for rapid sequential tasks
 - Status bar animation: stops on sleep, avoids timer ticks when system is suspended
-### 6E — App Notarization & Distribution: NOT STARTED
-### 6F — Auto-Update Mechanism: NOT STARTED
+### 6E — App Notarization & Distribution: COMPLETE
+
+**New files (1):**
+- `Scripts/build-dmg.sh` — Single script for build + sign + notarize + staple. Auto-detects version and team ID from pbxproj. `--notarize` flag triggers notarization (requires `APPLE_ID` and `APP_PASSWORD` env vars). Without the flag, produces an unsigned DMG. Outputs to `dist/Majoor-X.Y.Z.dmg`.
+
+**Modified files (4):**
+- `Majoor/Majoor.entitlements` — Added `cs.allow-unsigned-executable-memory` (for shell/Process execution), `cs.disable-library-validation` (for MCP server subprocesses), `network.client` (for API calls). Calendar entitlement was already present.
+- `Majoor.xcodeproj/project.pbxproj` — `MARKETING_VERSION` updated to 0.6.0 (both Debug and Release). `RUNTIME_EXCEPTION_ALLOW_UNSIGNED_EXECUTABLE_MEMORY` and `RUNTIME_EXCEPTION_DISABLE_LIBRARY_VALIDATION` set to YES (matches entitlements). Hardened runtime was already enabled.
+- `Majoor/Info.plist` — Added `CFBundleShortVersionString` (= `$(MARKETING_VERSION)`) and `CFBundleVersion` (= `$(CURRENT_PROJECT_VERSION)`) so version is readable at runtime.
+- `Majoor/Settings/SettingsView.swift` — About tab now reads version from `Bundle.main.infoDictionary` instead of hardcoded string. Shows "Version X.Y.Z (build)" format.
+
+**Key design decisions:**
+- Single script (`build-dmg.sh`) handles the full pipeline — no separate notarize.sh needed
+- Notarization is opt-in via `--notarize` flag so local dev builds are fast
+- Version and team ID auto-extracted from pbxproj — no manual config needed
+- Entitlements match what the app actually needs: shell execution, MCP subprocesses, network, calendar
+### 6F — Auto-Update Mechanism: COMPLETE
+
+**New dependency:**
+- Sparkle 2.9.0 via SPM (`https://github.com/sparkle-project/Sparkle`, upToNextMajorVersion from 2.0.0)
+
+**New files (1):**
+- `Core/UpdateManager.swift` — `ObservableObject` wrapper around `SPUStandardUpdaterController`. Publishes `canCheckForUpdates` via Combine. Exposes `checkForUpdates()`, `automaticallyChecksForUpdates` get/set, and `lastUpdateCheckDate`. Sparkle starts automatically on init.
+
+**Modified files (4):**
+- `Majoor.xcodeproj/project.pbxproj` — Added Sparkle SPM package reference, build file, framework link, and product dependency. Now 2 dependencies: GRDB + Sparkle.
+- `Majoor/Info.plist` — Added `SUFeedURL` pointing to `https://kush-3.github.io/majoor-releases/appcast.xml` (GitHub Pages appcast).
+- `Majoor/AppDelegate.swift` — Added `updateManager = UpdateManager()` property. Sparkle initializes on app launch.
+- `Majoor/Settings/SettingsView.swift` — General tab: added "Updates" section with "Automatically check for updates" toggle (syncs with Sparkle's setting) and "Check for Updates" button with last-checked timestamp. Reads `UpdateManager` from AppDelegate.
+
+**Key design decisions:**
+- Sparkle 2.x (standard macOS update framework) — handles download, verification, and installation
+- Appcast hosted on GitHub Pages (`kush-3/majoor-releases`) — free, simple, version-controlled
+- Auto-check enabled by default, togglable in Settings
+- SUFeedURL in Info.plist (Sparkle's standard config location)
 
 ---
 

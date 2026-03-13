@@ -17,6 +17,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     private var hotKeyRef: EventHotKeyRef?
     
     let taskManager = TaskManager()
+    let updateManager = UpdateManager()
     private var agentLoop: AgentLoop?
     
     // MARK: - Lifecycle
