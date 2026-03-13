@@ -383,13 +383,20 @@ final nonisolated class AgentLoop: @unchecked Sendable {
                     }
                 }
 
-                let normalizedArgs = normalizeArguments(call.arguments, for: tool)
-                if normalizedArgs != call.arguments {
-                    MajoorLogger.log("🔄 Normalized args for \(call.toolName): \(call.arguments.keys.sorted()) → \(normalizedArgs.keys.sorted())")
-                }
                 do {
-                    let result = try await tool.execute(arguments: normalizedArgs)
-                    output = result.output
+                    if let mcpTool = tool as? MCPToolBridge {
+                        // MCP tools: pass raw JSON to preserve complex types, skip arg normalization
+                        let result = try await mcpTool.executeWithRawJSON(call.rawInputJSON, stringArgs: call.arguments)
+                        output = result.output
+                    } else {
+                        // Native tools: normalize argument aliases
+                        let normalizedArgs = normalizeArguments(call.arguments, for: tool)
+                        if normalizedArgs != call.arguments {
+                            MajoorLogger.log("🔄 Normalized args for \(call.toolName): \(call.arguments.keys.sorted()) → \(normalizedArgs.keys.sorted())")
+                        }
+                        let result = try await tool.execute(arguments: normalizedArgs)
+                        output = result.output
+                    }
                 } catch {
                     output = "Error: \(error.localizedDescription)"
                 }

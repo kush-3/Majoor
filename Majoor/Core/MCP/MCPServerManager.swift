@@ -102,6 +102,7 @@ actor MCPServerManager {
             }
         } catch {
             serverErrors[name] = error.localizedDescription
+            clients.removeValue(forKey: name) // Don't leave a dead client in the dict
             MajoorLogger.error("MCP[\(name)] failed to start: \(error)")
         }
     }

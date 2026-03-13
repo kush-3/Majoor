@@ -15,7 +15,8 @@ final nonisolated class AnthropicProvider: LLMProvider, @unchecked Sendable {
     
     // Retry configuration
     private let maxRetries = 3
-    private let baseDelaySeconds: Double = 2.0  // 2s, 4s, 8s exponential backoff
+    private let baseDelaySeconds: Double = 2.0      // For 429s: 2s, 4s, 8s
+    private let networkRetryBaseSeconds: Double = 10.0 // For network timeouts: 10s, 20s, 40s
     
     init(apiKey: String, model: String = "claude-sonnet-4-20250514") {
         self.apiKey = apiKey
@@ -54,24 +55,32 @@ final nonisolated class AnthropicProvider: LLMProvider, @unchecked Sendable {
         urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
         urlRequest.setValue(apiKey, forHTTPHeaderField: "x-api-key")
         urlRequest.setValue(apiVersion, forHTTPHeaderField: "anthropic-version")
-        urlRequest.timeoutInterval = 120
+        // Opus with large contexts can take 3+ minutes to respond
+        urlRequest.timeoutInterval = model.contains("opus") ? 300 : 180
         
-        // Retry loop with exponential backoff for 429 and 529
+        // Retry loop with exponential backoff for 429, 529, and network errors
         var lastError: Error?
+        var lastWasNetworkTimeout = false
         for attempt in 0...maxRetries {
             if attempt > 0 {
-                let delay = baseDelaySeconds * pow(2.0, Double(attempt - 1))
-                MajoorLogger.log("⏳ Rate limited — retrying in \(Int(delay))s (attempt \(attempt + 1)/\(maxRetries + 1))")
+                // Use longer backoff after network timeouts (server was likely still processing)
+                let base = lastWasNetworkTimeout ? networkRetryBaseSeconds : baseDelaySeconds
+                let delay = base * pow(2.0, Double(attempt - 1))
+                let reason = lastWasNetworkTimeout ? "Network timeout" : "Rate limited"
+                MajoorLogger.log("⏳ \(reason) — retrying in \(Int(delay))s (attempt \(attempt + 1)/\(maxRetries + 1))")
                 try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
             }
-            
+            lastWasNetworkTimeout = false
+
             let data: Data
             let httpResponse: URLResponse
             do {
                 (data, httpResponse) = try await URLSession.shared.data(for: urlRequest)
             } catch {
-                // Network error — retry on transient failures
+                // Network error (timeout, connection reset, etc.)
+                lastWasNetworkTimeout = true
                 lastError = LLMError.networkError(error.localizedDescription)
+                MajoorLogger.log("⚠️ Network error: \(error.localizedDescription)")
                 if attempt < maxRetries { continue }
                 throw lastError!
             }
@@ -150,6 +159,18 @@ final nonisolated class AnthropicProvider: LLMProvider, @unchecked Sendable {
         throw lastError ?? LLMError.apiError("Request failed after \(maxRetries + 1) attempts")
     }
     
+    /// Recursively convert AnyCodable to native types for JSON serialization.
+    private static func anyCodableToAny(_ value: AnyCodable) -> Any {
+        switch value.value {
+        case let arr as [AnyCodable]:
+            return arr.map { anyCodableToAny($0) }
+        case let dict as [String: AnyCodable]:
+            return dict.mapValues { anyCodableToAny($0) }
+        default:
+            return value.value
+        }
+    }
+
     private func parseResponse(_ response: AnthropicResponse) -> LLMResponse {
         var textParts: [String] = []
         var toolCalls: [ToolCall] = []
@@ -160,7 +181,7 @@ final nonisolated class AnthropicProvider: LLMProvider, @unchecked Sendable {
                 if let text = block.text, !text.isEmpty { textParts.append(text) }
             case "tool_use":
                 if let id = block.id, let name = block.name {
-                    // Convert AnyCodable input to [String: String] for Sendable
+                    // Convert AnyCodable input to [String: String] for native tools
                     var args: [String: String] = [:]
                     if let input = block.input {
                         for (key, val) in input {
@@ -170,7 +191,13 @@ final nonisolated class AnthropicProvider: LLMProvider, @unchecked Sendable {
                             else { args[key] = "\(val.value)" }
                         }
                     }
-                    toolCalls.append(ToolCall(id: id, toolName: name, arguments: args))
+                    // Also preserve raw JSON for MCP tools that need complex types (arrays, objects)
+                    var rawJSON: Data? = nil
+                    if let input = block.input {
+                        let rawDict = input.mapValues { Self.anyCodableToAny($0) }
+                        rawJSON = try? JSONSerialization.data(withJSONObject: rawDict)
+                    }
+                    toolCalls.append(ToolCall(id: id, toolName: name, arguments: args, rawInputJSON: rawJSON))
                 }
             default: break
             }

@@ -13,7 +13,8 @@ nonisolated enum LLMResponse: Sendable {
 nonisolated struct ToolCall: Identifiable, Sendable {
     let id: String
     let toolName: String
-    let arguments: [String: String] // Simplified to String values for Sendable
+    let arguments: [String: String] // Simplified to String values for native tools
+    let rawInputJSON: Data?         // Raw JSON input for MCP tools (preserves arrays, objects, etc.)
 }
 
 protocol LLMProvider: Sendable {

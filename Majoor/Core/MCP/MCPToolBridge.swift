@@ -38,12 +38,23 @@ nonisolated struct MCPToolBridge: AgentTool, Sendable {
     }
 
     func execute(arguments: [String: String]) async throws -> ToolResult {
+        // Prefer rawInputJSON if available (preserves arrays, objects, numbers).
+        // Falls back to string arguments for simple cases.
+        return try await executeWithRawJSON(nil, stringArgs: arguments)
+    }
+
+    /// Execute with raw JSON arguments (preserves complex types for MCP).
+    func executeWithRawJSON(_ rawJSON: Data?, stringArgs: [String: String]) async throws -> ToolResult {
         guard let client = await MCPServerManager.shared.client(for: serverName) else {
             return ToolResult(success: false, output: "MCP server '\(serverName)' is not running.")
         }
 
-        // Convert String args to Any for JSON-RPC
-        let anyArgs: [String: Any] = arguments.mapValues { $0 as Any }
+        let anyArgs: [String: Any]
+        if let rawJSON, let parsed = try? JSONSerialization.jsonObject(with: rawJSON) as? [String: Any] {
+            anyArgs = parsed
+        } else {
+            anyArgs = stringArgs.mapValues { $0 as Any }
+        }
 
         let result = try await client.callTool(name: originalName, arguments: anyArgs)
         return ToolResult(success: !result.isError, output: result.content)

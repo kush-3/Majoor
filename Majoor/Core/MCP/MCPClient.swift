@@ -252,12 +252,11 @@ actor MCPClient {
         ]
 
         let jsonData = try JSONSerialization.data(withJSONObject: request)
-        let header = "Content-Length: \(jsonData.count)\r\n\r\n"
-        guard let headerData = header.data(using: .utf8) else {
-            throw MCPError.invalidResponse("Failed to encode header")
+        // MCP stdio transport uses newline-delimited JSON (NOT Content-Length like LSP)
+        guard var message = jsonData as Data? else {
+            throw MCPError.invalidResponse("Failed to encode request")
         }
-
-        let message = headerData + jsonData
+        message.append(contentsOf: [0x0A]) // append \n
 
         // Wait for response with timeout
         // IMPORTANT: Store continuation BEFORE writing to stdin to avoid race condition.
@@ -285,10 +284,10 @@ actor MCPClient {
             "params": params
         ]
 
-        guard let jsonData = try? JSONSerialization.data(withJSONObject: notification) else { return }
-        let header = "Content-Length: \(jsonData.count)\r\n\r\n"
-        guard let headerData = header.data(using: .utf8) else { return }
-        stdinHandle.write(headerData + jsonData)
+        guard var jsonData = try? JSONSerialization.data(withJSONObject: notification) else { return }
+        // MCP stdio: newline-delimited JSON
+        jsonData.append(contentsOf: [0x0A]) // \n
+        stdinHandle.write(jsonData)
     }
 
     // MARK: - Read Loop
@@ -304,38 +303,25 @@ actor MCPClient {
     }
 
     private func processBuffer() {
+        // MCP stdio transport: newline-delimited JSON — each line is a complete JSON-RPC message
         while true {
-            // Look for Content-Length header
-            guard let headerRange = buffer.range(of: Data("\r\n\r\n".utf8)) else {
-                MajoorLogger.log("MCP[\(serverName)] buffer(\(buffer.count) bytes): no \\r\\n\\r\\n found yet")
+            guard let newlineIndex = buffer.firstIndex(of: 0x0A) else {
+                // No complete line yet — wait for more data
                 break
             }
 
-            let headerData = buffer[buffer.startIndex..<headerRange.lowerBound]
-            guard let headerStr = String(data: headerData, encoding: .utf8),
-                  let lengthLine = headerStr.components(separatedBy: "\r\n").first(where: { $0.lowercased().hasPrefix("content-length:") }),
-                  let length = Int(lengthLine.components(separatedBy: ":").last?.trimmingCharacters(in: .whitespaces) ?? "")
-            else {
-                MajoorLogger.log("MCP[\(serverName)] failed to parse Content-Length from header")
-                if let headerStr = String(data: headerData, encoding: .utf8) {
-                    MajoorLogger.log("MCP[\(serverName)] header was: \(headerStr)")
+            let lineData = buffer[buffer.startIndex..<newlineIndex]
+            buffer = Data(buffer[buffer.index(after: newlineIndex)...])
+
+            // Skip empty lines
+            if lineData.isEmpty { continue }
+
+            // Parse JSON-RPC message
+            guard let json = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any] else {
+                // Could be a non-JSON line (some servers emit debug text) — skip it
+                if let text = String(data: lineData, encoding: .utf8) {
+                    MajoorLogger.log("MCP[\(serverName)] skipping non-JSON line: \(String(text.prefix(200)))")
                 }
-                break
-            }
-
-            let bodyStart = headerRange.upperBound
-            let bodyEnd = buffer.index(bodyStart, offsetBy: length, limitedBy: buffer.endIndex)
-            guard let bodyEnd, buffer.distance(from: bodyStart, to: bodyEnd) == length else {
-                MajoorLogger.log("MCP[\(serverName)] waiting for full body (need \(length) bytes)")
-                break
-            }
-
-            let bodyData = buffer[bodyStart..<bodyEnd]
-            buffer = Data(buffer[bodyEnd...])
-
-            // Parse JSON-RPC response
-            guard let json = try? JSONSerialization.jsonObject(with: bodyData) as? [String: Any] else {
-                MajoorLogger.log("MCP[\(serverName)] failed to parse JSON from body")
                 continue
             }
 
