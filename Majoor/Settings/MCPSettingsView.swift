@@ -11,6 +11,15 @@ struct MCPSettingsView: View {
     @State private var showAddCustom = false
     @State private var isLoading = true
 
+    struct ExtraCredential: Identifiable {
+        var id: String { keychainKey }
+        let keychainKey: String
+        let label: String
+        let envKey: String
+        var hasValue: Bool
+        var preview: String?
+    }
+
     struct ServerEntry: Identifiable {
         let id: String  // server name
         let name: String
@@ -19,14 +28,17 @@ struct MCPSettingsView: View {
         var error: String?
         var hasToken: Bool
         var tokenPreview: String?
+        var extraCredentials: [ExtraCredential]
     }
 
     // Known MCP servers with their token keychain keys and setup info
-    private static let knownServers: [(name: String, keychainKey: String, tokenLabel: String, envKey: String, helpURL: String)] = [
-        ("github", "github_pat", "Personal Access Token", "GITHUB_PERSONAL_ACCESS_TOKEN", "github.com/settings/tokens"),
-        ("slack", "slack_bot_token", "Bot Token (xoxb-)", "SLACK_BOT_TOKEN", "api.slack.com/apps"),
-        ("linear", "linear_api_key", "API Key", "LINEAR_API_KEY", "linear.app/settings/api"),
-        ("notion", "notion_token", "Integration Token", "NOTION_API_TOKEN", "notion.so/my-integrations"),
+    // extraCredentials: additional keychain keys needed beyond the primary token (e.g. Slack Team ID)
+    private static let knownServers: [(name: String, keychainKey: String, tokenLabel: String, envKey: String, helpURL: String, extraCredentials: [(keychainKey: String, label: String, envKey: String)])] = [
+        ("github", "github_pat", "Personal Access Token", "GITHUB_PERSONAL_ACCESS_TOKEN", "github.com/settings/tokens", []),
+        ("slack", "slack_bot_token", "Bot Token (xoxb-)", "SLACK_BOT_TOKEN", "api.slack.com/apps",
+         [("slack_team_id", "Team ID (T0...)", "SLACK_TEAM_ID")]),
+        ("linear", "linear_api_key", "API Key", "LINEAR_API_KEY", "linear.app/settings/api", []),
+        ("notion", "notion_token", "Integration Token", "NOTION_API_TOKEN", "notion.so/my-integrations", []),
     ]
 
     var body: some View {
@@ -45,6 +57,8 @@ struct MCPSettingsView: View {
                     ForEach(servers) { server in
                         MCPServerRow(server: server, onTokenChange: { newToken in
                             saveToken(for: server.name, token: newToken)
+                        }, onExtraCredentialChange: { keychainKey, value in
+                            saveExtraCredential(for: server.name, keychainKey: keychainKey, value: value)
                         }, onRemoveToken: {
                             removeToken(for: server.name)
                         }, onTest: {
@@ -102,6 +116,18 @@ struct MCPSettingsView: View {
             let status = statusMap[known.name]
             let isConfigured = configs[known.name] != nil
 
+            // Build extra credentials list
+            let extras: [ExtraCredential] = known.extraCredentials.map { extra in
+                let val = KeychainManager.shared.retrieve(key: extra.keychainKey)
+                return ExtraCredential(
+                    keychainKey: extra.keychainKey,
+                    label: extra.label,
+                    envKey: extra.envKey,
+                    hasValue: val != nil,
+                    preview: val.map { maskToken($0) }
+                )
+            }
+
             if isConfigured || hasToken {
                 let tokenValue = KeychainManager.shared.retrieve(key: known.keychainKey)
                 let preview = tokenValue.map { maskToken($0) }
@@ -112,7 +138,8 @@ struct MCPSettingsView: View {
                     toolCount: status?.toolCount ?? 0,
                     error: status?.error,
                     hasToken: hasToken,
-                    tokenPreview: preview
+                    tokenPreview: preview,
+                    extraCredentials: extras
                 ))
             } else {
                 entries.append(ServerEntry(
@@ -122,7 +149,8 @@ struct MCPSettingsView: View {
                     toolCount: 0,
                     error: nil,
                     hasToken: false,
-                    tokenPreview: nil
+                    tokenPreview: nil,
+                    extraCredentials: extras
                 ))
             }
         }
@@ -138,7 +166,8 @@ struct MCPSettingsView: View {
                 toolCount: status?.toolCount ?? 0,
                 error: status?.error,
                 hasToken: true,  // Custom servers don't need separate token management
-                tokenPreview: nil
+                tokenPreview: nil,
+                extraCredentials: []
             ))
         }
 
@@ -167,9 +196,31 @@ struct MCPSettingsView: View {
         }
     }
 
+    private func saveExtraCredential(for serverName: String, keychainKey: String, value: String) {
+        KeychainManager.shared.save(key: keychainKey, value: value)
+
+        // Ensure config exists and restart
+        var configs = MCPConfig.load()
+        if configs[serverName] == nil {
+            configs[serverName] = defaultConfig(for: serverName)
+            MCPConfig.save(configs)
+        }
+
+        Task {
+            if let config = MCPConfig.load()[serverName] {
+                await MCPServerManager.shared.startServer(name: serverName, config: config)
+            }
+            await refresh()
+        }
+    }
+
     private func removeToken(for serverName: String) {
         guard let known = Self.knownServers.first(where: { $0.name == serverName }) else { return }
         KeychainManager.shared.delete(key: known.keychainKey)
+        // Also remove extra credentials
+        for extra in known.extraCredentials {
+            KeychainManager.shared.delete(key: extra.keychainKey)
+        }
 
         // Stop the server
         Task {
@@ -226,7 +277,7 @@ struct MCPSettingsView: View {
         case "github":
             return MCPServerConfig(command: "npx", args: ["-y", "@modelcontextprotocol/server-github"], env: ["GITHUB_PERSONAL_ACCESS_TOKEN": "keychain:github_pat"])
         case "slack":
-            return MCPServerConfig(command: "npx", args: ["-y", "@modelcontextprotocol/server-slack"], env: ["SLACK_BOT_TOKEN": "keychain:slack_bot_token"])
+            return MCPServerConfig(command: "npx", args: ["-y", "@modelcontextprotocol/server-slack"], env: ["SLACK_BOT_TOKEN": "keychain:slack_bot_token", "SLACK_TEAM_ID": "keychain:slack_team_id"])
         case "linear":
             return MCPServerConfig(command: "npx", args: ["-y", "mcp-linear"], env: ["LINEAR_API_KEY": "keychain:linear_api_key"])
         case "notion":
@@ -248,11 +299,14 @@ struct MCPSettingsView: View {
 struct MCPServerRow: View {
     let server: MCPSettingsView.ServerEntry
     var onTokenChange: (String) -> Void
+    var onExtraCredentialChange: (String, String) -> Void  // (keychainKey, value)
     var onRemoveToken: () -> Void
     var onTest: () -> Void
 
     @State private var showTokenInput = false
     @State private var tokenText = ""
+    @State private var extraInputs: [String: String] = [:]  // keychainKey -> text
+    @State private var showExtraInput: String? = nil          // keychainKey being edited
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -315,6 +369,51 @@ struct MCPServerRow: View {
                         showTokenInput = false
                     }
                     .font(.caption)
+                }
+            }
+
+            // Extra credentials (e.g. Slack Team ID)
+            ForEach(server.extraCredentials) { extra in
+                HStack {
+                    if extra.hasValue {
+                        Text("\(extra.label): \(extra.preview ?? "set")")
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundColor(.secondary)
+                        Spacer()
+                        Button("Change") { showExtraInput = extra.keychainKey }
+                            .font(.caption)
+                    } else {
+                        Text("\(extra.label): not set")
+                            .font(.system(size: 10))
+                            .foregroundColor(.orange)
+                        Spacer()
+                        Button("Add") { showExtraInput = extra.keychainKey }
+                            .font(.caption)
+                    }
+                }
+
+                if showExtraInput == extra.keychainKey {
+                    HStack {
+                        TextField(extra.label, text: Binding(
+                            get: { extraInputs[extra.keychainKey] ?? "" },
+                            set: { extraInputs[extra.keychainKey] = $0 }
+                        ))
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(size: 11))
+                        Button("Save") {
+                            let value = extraInputs[extra.keychainKey] ?? ""
+                            guard !value.isEmpty else { return }
+                            onExtraCredentialChange(extra.keychainKey, value)
+                            extraInputs[extra.keychainKey] = nil
+                            showExtraInput = nil
+                        }
+                        .font(.caption)
+                        Button("Cancel") {
+                            extraInputs[extra.keychainKey] = nil
+                            showExtraInput = nil
+                        }
+                        .font(.caption)
+                    }
                 }
             }
         }
