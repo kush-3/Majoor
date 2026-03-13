@@ -12,6 +12,8 @@ struct SettingsView: View {
                 .tabItem { Label("Models", systemImage: "cpu") }
             AccountsSettingsView()
                 .tabItem { Label("Accounts", systemImage: "person.crop.circle") }
+            MCPSettingsView()
+                .tabItem { Label("Integrations", systemImage: "puzzlepiece") }
             MemorySettingsView()
                 .tabItem { Label("Memory", systemImage: "brain") }
             UsageSettingsView()

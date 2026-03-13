@@ -39,11 +39,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         registerLocalShortcuts()
         registerGlobalHotKey()
         setupAgentLoop()
-        
+
+        // Start MCP servers in the background (don't block the agent loop)
+        Task { await MCPServerManager.shared.startAll() }
+
         commandBarWindow = CommandBarWindow(onSubmit: { [weak self] input in
             self?.handleCommand(input)
         })
-        
+
         MajoorLogger.log("Majoor is ready. ⌘+Shift+Space to open.")
     }
     
@@ -53,6 +56,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             localKeyMonitor = nil
         }
         if let ref = hotKeyRef { UnregisterEventHotKey(ref) }
+
+        // Stop MCP servers
+        Task { await MCPServerManager.shared.stopAll() }
     }
     
     // MARK: - Agent
@@ -63,7 +69,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         }
         // Initialize database on launch
         _ = DatabaseManager.shared
-        agentLoop = AgentLoop(tools: ToolRegistry.defaultTools(), taskManager: taskManager)
+
+        let tools = ToolRegistry.defaultTools()
+        agentLoop = AgentLoop(tools: tools, taskManager: taskManager)
     }
     
     // MARK: - Command Handling

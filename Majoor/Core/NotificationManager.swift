@@ -17,6 +17,7 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate, @un
     static let confirmEmailCategory = "CONFIRM_EMAIL"
     static let confirmDeleteCategory = "CONFIRM_DELETE"
     static let confirmGenericCategory = "CONFIRM_GENERIC"
+    static let pipelineConfirmCategory = "PIPELINE_CONFIRM"
 
     // MARK: - Action IDs
     static let actionView    = "ACTION_VIEW"
@@ -56,7 +57,12 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate, @un
         // Confirm generic: "Approve" + "Deny"
         let confirmGeneric = UNNotificationCategory(identifier: Self.confirmGenericCategory, actions: [approve, deny], intentIdentifiers: [])
 
-        center.setNotificationCategories([taskComplete, taskFailed, confirmEmail, confirmDelete, confirmGeneric])
+        // Pipeline confirm: "Go ahead" + "Cancel"
+        let pipelineApprove = UNNotificationAction(identifier: Self.actionApprove, title: "Go ahead", options: .foreground)
+        let pipelineDeny = UNNotificationAction(identifier: Self.actionDeny, title: "Cancel", options: .destructive)
+        let pipelineConfirm = UNNotificationCategory(identifier: Self.pipelineConfirmCategory, actions: [pipelineApprove, pipelineDeny], intentIdentifiers: [])
+
+        center.setNotificationCategories([taskComplete, taskFailed, confirmEmail, confirmDelete, confirmGeneric, pipelineConfirm])
 
         center.requestAuthorization(options: [.alert, .sound, .badge]) { granted, error in
             if let error { MajoorLogger.error("Notification auth error: \(error)") }
