@@ -21,6 +21,7 @@ final nonisolated class AgentLoop: @unchecked Sendable {
         let userInput: String
         let responseText: String
         let toolSummaries: [String]
+        let toolSets: [String]  // Which MCP services were used (for follow-up routing)
         let timestamp: Date
     }
     private var conversationHistory: [ConversationContext] = []
@@ -81,7 +82,22 @@ final nonisolated class AgentLoop: @unchecked Sendable {
         MajoorLogger.log("🚀 Task: \(userInput)")
 
         // 1. Hybrid routing: keyword fast-path or LLM classification
-        let (provider, toolSets) = await ModelRouter.routeHybrid(userInput)
+        // Include recent conversation context so the router understands follow-ups
+        let recentContext = conversationHistory.suffix(3).map { $0.userInput }.joined(separator: " | ")
+        let routingInput = recentContext.isEmpty ? userInput : "\(userInput) [recent context: \(recentContext)]"
+        let (provider, routedToolSets) = await ModelRouter.routeHybrid(routingInput)
+
+        // Merge tool sets from recent conversations so follow-ups retain access
+        var toolSets = routedToolSets
+        let now = Date()
+        let recentToolSets = conversationHistory
+            .filter { now.timeIntervalSince($0.timestamp) < conversationTimeoutSeconds }
+            .flatMap { $0.toolSets }
+        for ts in recentToolSets {
+            if !toolSets.contains(ts) {
+                toolSets.append(ts)
+            }
+        }
 
         // 2. Retrieve relevant memories, inject current date, and MCP summary
         let memoryContext = MemoryRetriever.relevantContext(for: userInput)
@@ -122,7 +138,6 @@ final nonisolated class AgentLoop: @unchecked Sendable {
 
         // 4. Build messages — inject all conversations from the last 10 minutes
         var messages: [AnthropicMessage] = []
-        let now = Date()
         let recentConversations = conversationHistory.filter {
             now.timeIntervalSince($0.timestamp) < conversationTimeoutSeconds
         }
@@ -307,6 +322,7 @@ final nonisolated class AgentLoop: @unchecked Sendable {
                     userInput: userInput,
                     responseText: String(text.prefix(maxResponseTextLength)),
                     toolSummaries: Array(toolSummaries.suffix(10)),
+                    toolSets: toolSets,
                     timestamp: completedAt
                 ))
                 // Cap at maxConversationEntries
@@ -396,6 +412,7 @@ final nonisolated class AgentLoop: @unchecked Sendable {
             userInput: userInput,
             responseText: finalText.isEmpty ? "Completed (max iterations)" : String(finalText.prefix(maxResponseTextLength)),
             toolSummaries: Array(toolSummaries.suffix(10)),
+            toolSets: toolSets,
             timestamp: completedAt
         ))
         if conversationHistory.count > maxConversationEntries {

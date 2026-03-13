@@ -69,20 +69,19 @@
 
 ### 6D — Performance & Battery Optimization: COMPLETE
 
-**Files modified (4):**
-- `Core/MCP/MCPServerManager.swift` — Lazy startup: `loadConfigs()` replaces `startAll()` on app launch (just loads config, no server processes). New `ensureRunning(_:)` method starts a server on demand when first tool call needs it. `recordToolCall(for:)` tracks last use per server. Idle monitor runs every 60s and shuts down servers idle for 10+ minutes. `configuredServerNames()` exposes configured names. `serverSummary()` now includes configured-but-not-running servers as "available (starts on demand)" so the LLM knows they exist. `stopAll()` cancels idle monitor and clears all tracking state.
-- `Core/MCP/MCPToolBridge.swift` — `executeWithRawJSON()` now calls `ensureRunning()` before tool execution (lazy start) and `recordToolCall()` after (idle timeout tracking). If `ensureRunning()` fails, returns a clean error message.
+**Files modified (6):**
+- `Core/MCP/MCPServerManager.swift` — Removed `loadConfigs()`, idle timeout monitor, `recordToolCall()`, and `lastToolCallTime` tracking. Servers start eagerly via `startAll()` on launch and stay running. `ensureRunning(_:)` kept as safety net for mid-session crash recovery. `serverSummary()` reverted to only show running servers. `configuredServerNames()` still available.
+- `Core/MCP/MCPToolBridge.swift` — `executeWithRawJSON()` calls `ensureRunning()` as a safety net (restarts crashed servers before tool calls). Removed `recordToolCall()` call.
 - `Core/AgentLoop.swift` — Conversation history capped at 5 entries (was unlimited within 10-min window). Response text truncated to 1000 chars (was 2000). Tool summaries capped at 10 per entry. Both storage points (normal completion + max iterations) updated.
-- `AppDelegate.swift` — Changed from `startAll()` to `loadConfigs()` on launch. Added `NSWorkspace.willSleepNotification` observer to stop all MCP servers before system sleep. Added `NSWorkspace.didWakeNotification` observer to reload configs on wake (servers restart lazily on next use).
-
+- `AppDelegate.swift` — `startAll()` on launch (eager start). `willSleepNotification` stops all MCP servers. `didWakeNotification` restarts all MCP servers immediately.
 - `Core/Memory/MemoryRetriever.swift` — Added `MemoryRetrievalCache` (thread-safe, NSLock, 60s TTL, max 20 entries). `relevantContext()` checks cache first before querying SQLite. Cache key is normalized (lowercase + trimmed). Stale entries evicted when cache exceeds 20 entries.
 - `UI/StatusBarController.swift` — Added `observePowerState()`: stops pulse timer on system sleep (no wasted CPU), re-starts it on wake if still in `.working` state.
 
 **Key design decisions:**
-- Lazy over eager: servers only start when a tool is actually called, saving ~80MB RSS per unused server on launch
-- 10-min fixed idle timeout, checked every 60s — minimal overhead, predictable behavior
-- Power-aware: sleep stops everything cleanly, wake just reloads config (no eager restarts)
-- Server summary includes idle servers so the LLM can still route tools to them (they'll start on demand)
+- Eager start: all configured servers start on app launch, stay running until sleep/quit
+- `ensureRunning()` kept as safety net — if a server crashes mid-session, it auto-restarts before the next tool call
+- Power-aware: sleep stops all servers, wake restarts all servers immediately
+- No idle timeout — servers stay on while the app is active
 - Conversation history: 5 entries × 1000 chars + 10 tool summaries ≈ bounded memory footprint
 - Memory retrieval cache: 60s TTL avoids redundant SQLite queries for rapid sequential tasks
 - Status bar animation: stops on sleep, avoids timer ticks when system is suspended

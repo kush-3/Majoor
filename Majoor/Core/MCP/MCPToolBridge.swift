@@ -45,7 +45,7 @@ nonisolated struct MCPToolBridge: AgentTool, Sendable {
 
     /// Execute with raw JSON arguments (preserves complex types for MCP).
     func executeWithRawJSON(_ rawJSON: Data?, stringArgs: [String: String]) async throws -> ToolResult {
-        // Lazy start: ensure the server is running before calling tools
+        // Safety net: ensure the server is running (handles mid-session crashes)
         do {
             try await MCPServerManager.shared.ensureRunning(serverName)
         } catch {
@@ -55,9 +55,6 @@ nonisolated struct MCPToolBridge: AgentTool, Sendable {
         guard let client = await MCPServerManager.shared.client(for: serverName) else {
             return ToolResult(success: false, output: "\(serverName.capitalized) integration is not running. Check your token in Settings > Integrations.")
         }
-
-        // Record tool call for idle timeout tracking
-        await MCPServerManager.shared.recordToolCall(for: serverName)
 
         let anyArgs: [String: Any]
         if let rawJSON, let parsed = try? JSONSerialization.jsonObject(with: rawJSON) as? [String: Any] {
