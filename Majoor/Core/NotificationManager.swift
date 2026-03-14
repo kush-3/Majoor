@@ -37,6 +37,10 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate, @un
         let center = UNUserNotificationCenter.current()
         center.delegate = self
 
+        // Clear stale delivered notifications — macOS throttles banners
+        // when too many accumulate from the same app.
+        center.removeAllDeliveredNotifications()
+
         // Task complete: "View" button
         let viewAction = UNNotificationAction(identifier: Self.actionView, title: "View", options: .foreground)
         let taskComplete = UNNotificationCategory(identifier: Self.taskCompleteCategory, actions: [viewAction], intentIdentifiers: [])
@@ -81,32 +85,58 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate, @un
         }
     }
 
+    // MARK: - Delegate Guard
+
+    /// Re-assert ourselves as the UNUserNotificationCenter delegate.
+    /// Sparkle's SPUUserNotificationDriver can override the delegate at any time,
+    /// so we must check and re-set before every notification send.
+    nonisolated private func ensureDelegate() {
+        let center = UNUserNotificationCenter.current()
+        let currentDelegate = center.delegate
+        if !(currentDelegate is NotificationManager) {
+            MajoorLogger.log("⚠️ Notification delegate was overridden by \(String(describing: type(of: currentDelegate))) — reclaiming")
+            center.delegate = NotificationManager.shared
+        }
+    }
+
     // MARK: - Send Notifications
 
     nonisolated func sendSimple(title: String, body: String, category: String = taskCompleteCategory) {
+        ensureDelegate()
+
         let content = UNMutableNotificationContent()
         content.title = title
         content.body = body
         content.sound = .default
         content.categoryIdentifier = category
-        content.interruptionLevel = .timeSensitive
 
-        let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
-        UNUserNotificationCenter.current().add(request) { error in
+        let center = UNUserNotificationCenter.current()
+
+        // Clear previous non-actionable notifications so they don't pile up
+        // and trigger macOS banner throttling.
+        center.removeAllDeliveredNotifications()
+
+        let id = UUID().uuidString
+        let request = UNNotificationRequest(identifier: id, content: content, trigger: nil)
+        MajoorLogger.log("📬 Sending notification: \(title) — \(body.prefix(80))")
+        center.add(request) { error in
             if let error {
                 MajoorLogger.error("❌ Notification delivery failed: \(error.localizedDescription)")
+            } else {
+                MajoorLogger.log("📬 Notification added to center: \(id)")
             }
         }
     }
 
     nonisolated func sendActionable(id: String, title: String, body: String, category: String) {
+        ensureDelegate()
+
         let content = UNMutableNotificationContent()
         content.title = title
         content.body = body
         content.sound = .default
         content.categoryIdentifier = category
         content.userInfo = ["confirmationId": id]
-        content.interruptionLevel = .timeSensitive
 
         let request = UNNotificationRequest(identifier: id, content: content, trigger: nil)
         MajoorLogger.log("📬 Sending actionable notification: \(title) [category: \(category), id: \(id)]")

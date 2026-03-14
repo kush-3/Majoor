@@ -29,6 +29,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         // Configure notification system with categories and delegate
         NotificationManager.shared.configure()
 
+        // Start Sparkle updater AFTER notification delegate is set,
+        // then re-assert our delegate so Sparkle doesn't override it.
+        updateManager.startUpdater()
+
         statusBarController = StatusBarController(
             onLeftClick: { [weak self] in self?.togglePanel() },
             onSettingsClick: { [weak self] in self?.openSettings() },
@@ -111,6 +115,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         guard !input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
 
         commandBarWindow?.hide()
+        NSApp.hide(nil)  // Deactivate so notifications show as system banners
         statusBarController?.setState(.working)
 
         guard !APIConfig.claudeAPIKey.isEmpty else {
