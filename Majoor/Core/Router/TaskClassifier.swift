@@ -2,7 +2,7 @@
 // Majoor — Classify User Input to Route to the Right Model
 //
 // Tier 1: Keyword pattern matching (instant, free)
-// Tier 2: Haiku classifier (fallback for ambiguous inputs)
+// Tier 2: Sonnet LLM classifier (fallback for ambiguous inputs) — picks model + tool sets
 
 import Foundation
 
@@ -32,7 +32,17 @@ nonisolated enum ModelTier: String, Sendable {
     case haiku
 }
 
+/// Result of LLM-based classification (Tier 2)
+nonisolated struct ClassificationResult: Sendable {
+    let modelTier: ModelTier
+    let toolSets: [String]  // e.g. ["local", "github", "linear"]
+    let category: TaskCategory
+}
+
 nonisolated struct TaskClassifier: Sendable {
+
+    /// Minimum keyword score to be considered "confident" (skip LLM classification)
+    private static let confidenceThreshold = 2
 
     // Keyword groups with associated categories
     private static let patterns: [(keywords: [String], category: TaskCategory)] = [
@@ -71,8 +81,15 @@ nonisolated struct TaskClassifier: Sendable {
           "short version", "key points"], .summarization),
     ]
 
-    /// Classify user input into a task category using keyword matching
+    /// Classify user input into a task category using keyword matching.
+    /// Returns the category and the confidence score.
     static func classify(_ input: String) -> TaskCategory {
+        let (category, _) = classifyWithConfidence(input)
+        return category
+    }
+
+    /// Classify with confidence score. Score >= confidenceThreshold means "confident".
+    static func classifyWithConfidence(_ input: String) -> (category: TaskCategory, score: Int) {
         let lower = input.lowercased()
 
         var bestMatch: TaskCategory = .general
@@ -93,13 +110,29 @@ nonisolated struct TaskClassifier: Sendable {
 
         // Simple heuristic: if the input mentions git commands specifically
         if lower.contains("git ") || lower.contains("commit") || lower.contains("push") || lower.contains("pr ") {
-            // If it also mentions code changes, use Opus
             if lower.contains("fix") || lower.contains("implement") || lower.contains("add") || lower.contains("write") {
-                return .coding
+                return (.coding, max(bestScore, 3))
             }
         }
 
-        MajoorLogger.log("Task classified as: \(bestMatch.rawValue) (score: \(bestScore))")
-        return bestMatch
+        MajoorLogger.log("Task classified as: \(bestMatch.rawValue) (score: \(bestScore), confident: \(bestScore >= confidenceThreshold))")
+        return (bestMatch, bestScore)
+    }
+
+    /// Whether the classification is confident enough to skip LLM routing
+    static func isConfident(_ input: String) -> Bool {
+        let (_, score) = classifyWithConfidence(input)
+        return score >= confidenceThreshold
+    }
+
+    /// Detect which MCP services are explicitly mentioned in input
+    static func detectMentionedServices(_ input: String) -> [String] {
+        let lower = input.lowercased()
+        var services: [String] = []
+        if lower.contains("github") || lower.contains("pr ") || lower.contains("pull request") { services.append("github") }
+        if lower.contains("slack") || lower.contains("channel") { services.append("slack") }
+        if lower.contains("linear") || lower.contains("ticket") || lower.contains("issue") { services.append("linear") }
+        if lower.contains("notion") || lower.contains("page") || lower.contains("wiki") { services.append("notion") }
+        return services
     }
 }

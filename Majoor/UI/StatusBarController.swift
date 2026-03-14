@@ -11,7 +11,9 @@ class StatusBarController {
     private let onQuitClick: () -> Void
     private var pulseTimer: Timer?
     private var pulseOn = true
-    
+    private var currentState: AgentState = .idle
+    private var errorMessage: String?
+
     enum AgentState { case idle, working, attention, error }
     
     init(onLeftClick: @escaping () -> Void,
@@ -21,6 +23,23 @@ class StatusBarController {
         self.onSettingsClick = onSettingsClick
         self.onQuitClick = onQuitClick
         setupStatusItem()
+        observePowerState()
+    }
+
+    /// Stop animation when system sleeps, restore when it wakes.
+    private func observePowerState() {
+        NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.willSleepNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            self?.pulseTimer?.invalidate()
+            self?.pulseTimer = nil
+        }
+        NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            guard let self, self.currentState == .working else { return }
+            self.setState(.working) // Re-start the pulse timer
+        }
     }
     
     private func setupStatusItem() {
@@ -37,7 +56,13 @@ class StatusBarController {
     @objc private func handleClick() {
         guard let event = NSApp.currentEvent else { return }
         if event.type == .rightMouseUp { showContextMenu() }
-        else { onLeftClick() }
+        else {
+            // Clicking the icon acknowledges the error state
+            if currentState == .error {
+                setState(.idle)
+            }
+            onLeftClick()
+        }
     }
     
     private func showContextMenu() {
@@ -65,16 +90,21 @@ class StatusBarController {
     @objc private func doSettings() { onSettingsClick() }
     @objc private func doQuit() { onQuitClick() }
     
-    func setState(_ state: AgentState) {
+    func setState(_ state: AgentState, message: String? = nil) {
         pulseTimer?.invalidate()
         pulseTimer = nil
+        currentState = state
         guard let button = statusItem?.button else { return }
-        
+
         switch state {
         case .idle:
             button.image = NSImage(systemSymbolName: "bolt.fill", accessibilityDescription: "Ready")
             button.image?.isTemplate = true
+            button.toolTip = "Majoor — Ready"
+            errorMessage = nil
         case .working:
+            let tooltip = message ?? "Working..."
+            button.toolTip = "Majoor — \(tooltip)"
             pulseOn = true
             pulseTimer = Timer.scheduledTimer(withTimeInterval: 0.6, repeats: true) { [weak self] _ in
                 guard let self, let btn = self.statusItem?.button else { return }
@@ -85,9 +115,13 @@ class StatusBarController {
         case .attention:
             button.image = NSImage(systemSymbolName: "bolt.badge.clock.fill", accessibilityDescription: "Needs Input")
             button.image?.isTemplate = true
+            button.toolTip = "Majoor — Waiting for input"
         case .error:
             button.image = NSImage(systemSymbolName: "exclamationmark.triangle.fill", accessibilityDescription: "Error")
             button.image?.isTemplate = true
+            errorMessage = message
+            button.toolTip = message != nil ? "Majoor — \(message!)" : "Majoor — Error (click to dismiss)"
+            // Error state persists until user clicks the icon (no auto-dismiss)
         }
     }
 }

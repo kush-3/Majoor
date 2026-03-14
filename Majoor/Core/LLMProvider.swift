@@ -31,18 +31,40 @@ protocol LLMProvider: Sendable {
 enum LLMError: LocalizedError, Sendable {
     case invalidAPIKey
     case networkError(String)
+    case noInternet
     case apiError(String)
     case decodingError(String)
     case rateLimited(retryAfter: Int?)
-    
+    case contextOverflow
+    case serverOverloaded
+
     nonisolated var errorDescription: String? {
         switch self {
-        case .invalidAPIKey: return "Invalid or missing API key. Check Settings."
+        case .invalidAPIKey: return "Invalid or missing API key. Update it in Settings."
         case .networkError(let msg): return "Network error: \(msg)"
+        case .noInternet: return "No internet connection. Check your network and try again."
         case .apiError(let msg): return "API error: \(msg)"
         case .decodingError(let msg): return "Failed to parse response: \(msg)"
         case .rateLimited(let retry):
             return retry.map { "Rate limited. Retry in \($0)s." } ?? "Rate limited."
+        case .contextOverflow: return "Task too complex — conversation exceeded context limit. Try breaking it into smaller steps."
+        case .serverOverloaded: return "Claude API is overloaded. Try again in a few minutes."
+        }
+    }
+
+    /// Whether this error is transient and worth retrying
+    nonisolated var isTransient: Bool {
+        switch self {
+        case .rateLimited, .serverOverloaded, .networkError: return true
+        case .invalidAPIKey, .noInternet, .contextOverflow, .apiError, .decodingError: return false
+        }
+    }
+
+    /// Whether this error should prompt the user to open Settings
+    nonisolated var shouldOpenSettings: Bool {
+        switch self {
+        case .invalidAPIKey: return true
+        default: return false
         }
     }
 }

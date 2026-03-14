@@ -2,6 +2,7 @@
 // Majoor — Manages all MCP server connections
 //
 // Starts configured servers on launch, monitors health, restarts on crash.
+// Servers run for the lifetime of the app — stopped on sleep, restarted on wake.
 // Provides server status and tool summaries for the two-pass loading system.
 
 import Foundation
@@ -21,6 +22,8 @@ actor MCPServerManager {
     private var configs: [String: MCPServerConfig] = [:]
     private var serverErrors: [String: String] = [:]
     private var monitorTasks: [String: Task<Void, Never>] = [:]
+    private var restartCounts: [String: Int] = [:]
+    private let maxRestarts = 5
 
     private init() {}
 
@@ -38,6 +41,27 @@ actor MCPServerManager {
         for (name, config) in configs {
             await startServer(name: name, config: config)
         }
+    }
+
+    /// Ensure a specific server is running — safety net for crash recovery.
+    /// If a server died mid-session, this restarts it before the tool call fails.
+    func ensureRunning(_ serverName: String) async throws {
+        // Already running
+        if let client = clients[serverName], await client.isRunning {
+            return
+        }
+        // Check if configured
+        guard let config = configs[serverName] else {
+            // Reload config in case it was added after launch
+            configs = MCPConfig.load()
+            guard let freshConfig = configs[serverName] else {
+                throw MCPClient.MCPError.startFailed("\(serverName) is not configured")
+            }
+            await startServer(name: serverName, config: freshConfig)
+            return
+        }
+        MajoorLogger.log("MCP[\(serverName)] restarting — was not running")
+        await startServer(name: serverName, config: config)
     }
 
     /// Stop all servers gracefully.
@@ -180,6 +204,11 @@ actor MCPServerManager {
         return tools
     }
 
+    /// Get names of all configured servers (even if not yet running).
+    func configuredServerNames() -> [String] {
+        Array(configs.keys)
+    }
+
     /// Reload config from disk and restart all servers.
     func reload() async {
         await stopAll()
@@ -191,18 +220,47 @@ actor MCPServerManager {
         configs
     }
 
+    /// Reset restart count for a server (call after successful manual start/token update)
+    func resetRestartCount(for name: String) {
+        restartCounts[name] = 0
+    }
+
     // MARK: - Health Monitor
 
     private func monitorServer(name: String, config: MCPServerConfig) async {
         while !Task.isCancelled {
-            try? await Task.sleep(nanoseconds: 10_000_000_000) // Check every 10s
+            try? await Task.sleep(nanoseconds: 30_000_000_000) // Check every 30s
             guard !Task.isCancelled else { break }
 
             if let client = clients[name] {
                 let running = await client.isRunning
                 if !running {
-                    MajoorLogger.log("MCP[\(name)] crashed — restarting...")
+                    let count = (restartCounts[name] ?? 0) + 1
+                    restartCounts[name] = count
+
+                    if count > maxRestarts {
+                        MajoorLogger.error("MCP[\(name)] exceeded max restarts (\(maxRestarts)) — giving up")
+                        serverErrors[name] = "Server crashed repeatedly. Check Settings > Integrations."
+                        clients.removeValue(forKey: name)
+                        // Notify user that the server failed permanently
+                        await MainActor.run {
+                            NotificationManager.shared.sendSimple(
+                                title: "Majoor — \(name.capitalized) Integration Failed",
+                                body: "\(name.capitalized) server crashed \(maxRestarts) times. Check your token in Settings > Integrations.",
+                                category: NotificationManager.taskFailedCategory
+                            )
+                        }
+                        break
+                    }
+
+                    // Exponential backoff: 5s, 10s, 20s, 40s, 80s
+                    let backoff = 5.0 * pow(2.0, Double(count - 1))
+                    MajoorLogger.log("MCP[\(name)] crashed — restart \(count)/\(maxRestarts) in \(Int(backoff))s")
+                    try? await Task.sleep(nanoseconds: UInt64(backoff * 1_000_000_000))
+                    guard !Task.isCancelled else { break }
+
                     await startServer(name: name, config: config)
+                    // Silent recovery — no notification unless it fails permanently
                     break // New monitor will be started by startServer
                 }
             }

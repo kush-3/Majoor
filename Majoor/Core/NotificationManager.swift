@@ -18,14 +18,16 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate, @un
     static let confirmDeleteCategory = "CONFIRM_DELETE"
     static let confirmGenericCategory = "CONFIRM_GENERIC"
     static let pipelineConfirmCategory = "PIPELINE_CONFIRM"
+    static let authErrorCategory       = "AUTH_ERROR"
 
     // MARK: - Action IDs
-    static let actionView    = "ACTION_VIEW"
-    static let actionRetry   = "ACTION_RETRY"
-    static let actionApprove = "ACTION_APPROVE"
-    static let actionDeny    = "ACTION_DENY"
-    static let actionKeep    = "ACTION_KEEP"
-    static let actionDelete  = "ACTION_DELETE"
+    static let actionView         = "ACTION_VIEW"
+    static let actionRetry        = "ACTION_RETRY"
+    static let actionApprove      = "ACTION_APPROVE"
+    static let actionDeny         = "ACTION_DENY"
+    static let actionKeep         = "ACTION_KEEP"
+    static let actionDelete       = "ACTION_DELETE"
+    static let actionOpenSettings = "ACTION_OPEN_SETTINGS"
 
     private override init() { super.init() }
 
@@ -34,6 +36,10 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate, @un
     func configure() {
         let center = UNUserNotificationCenter.current()
         center.delegate = self
+
+        // Clear stale delivered notifications — macOS throttles banners
+        // when too many accumulate from the same app.
+        center.removeAllDeliveredNotifications()
 
         // Task complete: "View" button
         let viewAction = UNNotificationAction(identifier: Self.actionView, title: "View", options: .foreground)
@@ -62,28 +68,69 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate, @un
         let pipelineDeny = UNNotificationAction(identifier: Self.actionDeny, title: "Cancel", options: .destructive)
         let pipelineConfirm = UNNotificationCategory(identifier: Self.pipelineConfirmCategory, actions: [pipelineApprove, pipelineDeny], intentIdentifiers: [])
 
-        center.setNotificationCategories([taskComplete, taskFailed, confirmEmail, confirmDelete, confirmGeneric, pipelineConfirm])
+        // Auth error: "Open Settings" button
+        let openSettings = UNNotificationAction(identifier: Self.actionOpenSettings, title: "Open Settings", options: .foreground)
+        let authError = UNNotificationCategory(identifier: Self.authErrorCategory, actions: [openSettings], intentIdentifiers: [])
+
+        center.setNotificationCategories([taskComplete, taskFailed, confirmEmail, confirmDelete, confirmGeneric, pipelineConfirm, authError])
 
         center.requestAuthorization(options: [.alert, .sound, .badge]) { granted, error in
             if let error { MajoorLogger.error("Notification auth error: \(error)") }
             MajoorLogger.log("Notifications authorized: \(granted)")
+
+            // Log current notification settings for diagnostics
+            center.getNotificationSettings { settings in
+                MajoorLogger.log("Notification settings — auth: \(settings.authorizationStatus.rawValue), alert: \(settings.alertSetting.rawValue), banner: \(settings.alertStyle.rawValue), sound: \(settings.soundSetting.rawValue)")
+            }
+        }
+    }
+
+    // MARK: - Delegate Guard
+
+    /// Re-assert ourselves as the UNUserNotificationCenter delegate.
+    /// Sparkle's SPUUserNotificationDriver can override the delegate at any time,
+    /// so we must check and re-set before every notification send.
+    nonisolated private func ensureDelegate() {
+        let center = UNUserNotificationCenter.current()
+        let currentDelegate = center.delegate
+        if !(currentDelegate is NotificationManager) {
+            MajoorLogger.log("⚠️ Notification delegate was overridden by \(String(describing: type(of: currentDelegate))) — reclaiming")
+            center.delegate = NotificationManager.shared
         }
     }
 
     // MARK: - Send Notifications
 
-    func sendSimple(title: String, body: String, category: String = taskCompleteCategory) {
+    nonisolated func sendSimple(title: String, body: String, category: String = taskCompleteCategory) {
+        ensureDelegate()
+
         let content = UNMutableNotificationContent()
         content.title = title
         content.body = body
         content.sound = .default
         content.categoryIdentifier = category
 
-        let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
-        UNUserNotificationCenter.current().add(request)
+        let center = UNUserNotificationCenter.current()
+
+        // Clear previous non-actionable notifications so they don't pile up
+        // and trigger macOS banner throttling.
+        center.removeAllDeliveredNotifications()
+
+        let id = UUID().uuidString
+        let request = UNNotificationRequest(identifier: id, content: content, trigger: nil)
+        MajoorLogger.log("📬 Sending notification: \(title) — \(body.prefix(80))")
+        center.add(request) { error in
+            if let error {
+                MajoorLogger.error("❌ Notification delivery failed: \(error.localizedDescription)")
+            } else {
+                MajoorLogger.log("📬 Notification added to center: \(id)")
+            }
+        }
     }
 
-    func sendActionable(id: String, title: String, body: String, category: String) {
+    nonisolated func sendActionable(id: String, title: String, body: String, category: String) {
+        ensureDelegate()
+
         let content = UNMutableNotificationContent()
         content.title = title
         content.body = body
@@ -92,7 +139,14 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate, @un
         content.userInfo = ["confirmationId": id]
 
         let request = UNNotificationRequest(identifier: id, content: content, trigger: nil)
-        UNUserNotificationCenter.current().add(request)
+        MajoorLogger.log("📬 Sending actionable notification: \(title) [category: \(category), id: \(id)]")
+        UNUserNotificationCenter.current().add(request) { error in
+            if let error {
+                MajoorLogger.error("❌ Actionable notification delivery failed: \(error.localizedDescription)")
+            } else {
+                MajoorLogger.log("📬 Notification delivered: \(id)")
+            }
+        }
     }
 
     // MARK: - Delegate (handle user tapping actions)
@@ -128,6 +182,13 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate, @un
             }
         }
 
+        // Handle "Open Settings" action
+        if actionId == Self.actionOpenSettings {
+            DispatchQueue.main.async {
+                NotificationCenter.default.post(name: .majoorOpenSettings, object: nil)
+            }
+        }
+
         // Handle "View" / default tap — post notification for UI to respond
         if actionId == Self.actionView || actionId == UNNotificationDefaultActionIdentifier {
             let taskId = userInfo["taskId"] as? String
@@ -147,7 +208,8 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate, @un
         willPresent notification: UNNotification,
         withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
     ) {
-        completionHandler([.banner, .sound])
+        MajoorLogger.log("📬 willPresent called for: \(notification.request.content.title)")
+        completionHandler([.banner, .sound, .list])
     }
 }
 
@@ -155,4 +217,6 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate, @un
 
 extension Notification.Name {
     static let majoorOpenTaskDetail = Notification.Name("majoorOpenTaskDetail")
+    static let majoorOpenSettings = Notification.Name("majoorOpenSettings")
+    static let majoorOpenPanel = Notification.Name("majoorOpenPanel")
 }

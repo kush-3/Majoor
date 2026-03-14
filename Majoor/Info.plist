@@ -15,5 +15,11 @@
 	</array>
 	<key>NSCalendarsFullAccessUsageDescription</key>
 	<string>Majoor needs access to your calendar to read, create, and manage events on your behalf.</string>
+	<key>CFBundleShortVersionString</key>
+	<string>$(MARKETING_VERSION)</string>
+	<key>CFBundleVersion</key>
+	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<key>SUFeedURL</key>
+	<string>https://kush-3.github.io/majoor-releases/appcast.xml</string>
 </dict>
 </plist>

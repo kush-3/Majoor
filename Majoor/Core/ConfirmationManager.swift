@@ -14,19 +14,25 @@ actor ConfirmationManager {
 
     /// Called by the agent loop when a tool needs confirmation.
     /// Sends an actionable notification and suspends until the user responds.
+    /// The optional `onPending` callback fires with the confirmation ID before suspending,
+    /// allowing callers to show in-app UI alongside the notification fallback.
     func requestConfirmation(
         title: String,
         body: String,
-        category: String
+        category: String,
+        onPending: (@Sendable (String) -> Void)? = nil
     ) async -> Bool {
         let id = UUID().uuidString
 
-        // Send the notification with action buttons
+        // Notify caller of the ID (for in-app UI display)
+        onPending?(id)
+
+        // Send the macOS notification as fallback
         NotificationManager.shared.sendActionable(id: id, title: title, body: body, category: category)
 
         MajoorLogger.log("⏸ Waiting for user confirmation: \(title)")
 
-        // Suspend until user taps an action
+        // Suspend until user taps an action (in-app or notification)
         let approved = await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
             pendingConfirmations[id] = continuation
         }

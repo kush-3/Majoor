@@ -182,7 +182,7 @@ struct MCPSettingsView: View {
         // Ensure the server is in mcp.json
         var configs = MCPConfig.load()
         if configs[serverName] == nil {
-            let serverConfig = defaultConfig(for: serverName)
+            let serverConfig = Self.defaultServerConfig(for: serverName)
             configs[serverName] = serverConfig
             MCPConfig.save(configs)
         }
@@ -202,7 +202,7 @@ struct MCPSettingsView: View {
         // Ensure config exists and restart
         var configs = MCPConfig.load()
         if configs[serverName] == nil {
-            configs[serverName] = defaultConfig(for: serverName)
+            configs[serverName] = Self.defaultServerConfig(for: serverName)
             MCPConfig.save(configs)
         }
 
@@ -272,7 +272,7 @@ struct MCPSettingsView: View {
         }
     }
 
-    private func defaultConfig(for serverName: String) -> MCPServerConfig {
+    static func defaultServerConfig(for serverName: String) -> MCPServerConfig {
         switch serverName {
         case "github":
             return MCPServerConfig(command: "npx", args: ["-y", "@modelcontextprotocol/server-github"], env: ["GITHUB_PERSONAL_ACCESS_TOKEN": "keychain:github_pat"])

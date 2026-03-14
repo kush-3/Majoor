@@ -14,6 +14,13 @@ class TaskManager: ObservableObject {
     @Published var pendingPipelinePlan: String?
     @Published var pendingPipelineTaskId: UUID?
     @Published var pipelineExecuting: Bool = false
+    @Published var pipelineSteps: [PipelineStep] = []
+    @Published var pipelineStartTime: Date?
+
+    // In-app confirmation UI state
+    @Published var pendingConfirmationId: String?
+    @Published var pendingConfirmationTitle: String?
+    @Published var pendingConfirmationBody: String?
 
     var runningTasks: [AgentTask] {
         tasks.filter { $0.status == .running }
@@ -32,6 +39,42 @@ class TaskManager: ObservableObject {
         pendingPipelinePlan = nil
         pendingPipelineTaskId = nil
         pipelineExecuting = false
+        pipelineSteps = []
+        pipelineStartTime = nil
+    }
+
+    func setPipelineSteps(_ steps: [PipelineStep]) {
+        pipelineSteps = steps
+        pipelineStartTime = Date()
+    }
+
+    func updatePipelineStep(at index: Int, status: PipelineStepStatus, result: String? = nil, error: String? = nil) {
+        guard index < pipelineSteps.count else { return }
+        pipelineSteps[index].status = status
+        if let result { pipelineSteps[index].result = result }
+        if let error { pipelineSteps[index].error = error }
+    }
+
+    func addToolCallToPipelineStep(at index: Int, toolName: String) {
+        guard index < pipelineSteps.count else { return }
+        pipelineSteps[index].toolCalls.append(toolName)
+    }
+
+    func togglePipelineStep(at index: Int) {
+        guard index < pipelineSteps.count else { return }
+        pipelineSteps[index].enabled.toggle()
+    }
+
+    func showConfirmation(id: String, title: String, body: String) {
+        pendingConfirmationId = id
+        pendingConfirmationTitle = title
+        pendingConfirmationBody = body
+    }
+
+    func clearConfirmation() {
+        pendingConfirmationId = nil
+        pendingConfirmationTitle = nil
+        pendingConfirmationBody = nil
     }
 
     init() {

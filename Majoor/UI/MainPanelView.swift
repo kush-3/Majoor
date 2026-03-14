@@ -26,29 +26,48 @@ struct MainPanelView: View {
                 .padding(.horizontal, 16).padding(.vertical, 8)
                 Divider()
                 ResponseDetailView(task: task)
+            } else if let confirmId = taskManager.pendingConfirmationId,
+                      let confirmTitle = taskManager.pendingConfirmationTitle,
+                      let confirmBody = taskManager.pendingConfirmationBody {
+                // In-app confirmation view
+                ConfirmationView(
+                    confirmTitle: confirmTitle,
+                    confirmBody: confirmBody,
+                    onApprove: {
+                        Task { await ConfirmationManager.shared.resolve(id: confirmId, approved: true) }
+                    },
+                    onDeny: {
+                        Task { await ConfirmationManager.shared.resolve(id: confirmId, approved: false) }
+                    }
+                )
             } else if let planText = taskManager.pendingPipelinePlan,
                       let taskId = taskManager.pendingPipelineTaskId {
-                // Pipeline plan view
-                if taskManager.pipelineExecuting,
-                   let pipelineTask = taskManager.tasks.first(where: { $0.id == taskId }) {
+                // Pipeline plan or progress view
+                if taskManager.pipelineExecuting {
                     // Pipeline is executing — show progress
-                    PipelineProgressView(task: pipelineTask, planText: planText)
+                    let title = taskManager.tasks.first(where: { $0.id == taskId })?.userInput ?? "Pipeline"
+                    PipelineProgressView(title: String(title.prefix(50)))
+                        .environmentObject(taskManager)
                 } else {
-                    // Pipeline waiting for approval
-                    PipelinePlanView(planText: planText, onApprove: {
-                        // Resolve confirmation as approved
-                        // The notification action handler does this — but panel buttons
-                        // need to resolve it too. We find the pending confirmation.
-                        Task {
-                            // The confirmation is handled by the notification system.
-                            // Panel buttons are a visual complement — the actual
-                            // approval/denial happens via notification actions.
+                    // Pipeline waiting for approval — show plan with inline editing + approve/deny
+                    PipelinePlanView(
+                        planText: planText,
+                        steps: $taskManager.pipelineSteps,
+                        confirmationId: taskManager.pendingConfirmationId,
+                        onToggleStep: { index in
+                            taskManager.togglePipelineStep(at: index)
+                        },
+                        onApprove: {
+                            if let id = taskManager.pendingConfirmationId {
+                                Task { await ConfirmationManager.shared.resolve(id: id, approved: true) }
+                            }
+                        },
+                        onDeny: {
+                            if let id = taskManager.pendingConfirmationId {
+                                Task { await ConfirmationManager.shared.resolve(id: id, approved: false) }
+                            }
                         }
-                    }, onDeny: {
-                        Task {
-                            // Same as above — notification handles the actual confirmation
-                        }
-                    })
+                    )
                 }
             } else {
                 // Normal panel
@@ -93,10 +112,66 @@ struct MainPanelView: View {
     }
 }
 
-// MARK: - Pipeline Plan View
+// MARK: - Confirmation View
+
+struct ConfirmationView: View {
+    let confirmTitle: String
+    let confirmBody: String
+    var onApprove: () -> Void
+    var onDeny: () -> Void
+
+    var body: some View {
+        VStack(spacing: 0) {
+            // Header
+            HStack {
+                Image(systemName: "exclamationmark.shield")
+                    .foregroundColor(.orange)
+                Text("Confirmation Required")
+                    .font(.system(size: 14, weight: .semibold))
+                Spacer()
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+
+            Divider()
+
+            // Content
+            VStack(alignment: .leading, spacing: 12) {
+                Text(confirmTitle)
+                    .font(.system(size: 13, weight: .medium))
+                Text(confirmBody)
+                    .font(.system(size: 12))
+                    .foregroundColor(.secondary)
+                    .textSelection(.enabled)
+            }
+            .padding(16)
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            Spacer()
+
+            Divider()
+
+            // Buttons
+            HStack(spacing: 12) {
+                Spacer()
+                Button("Deny") { onDeny() }
+                    .buttonStyle(.bordered)
+                Button("Approve") { onApprove() }
+                    .buttonStyle(.borderedProminent)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+        }
+    }
+}
+
+// MARK: - Pipeline Plan View (with inline step editing)
 
 struct PipelinePlanView: View {
     let planText: String
+    @Binding var steps: [PipelineStep]
+    let confirmationId: String?
+    var onToggleStep: (Int) -> Void
     var onApprove: () -> Void
     var onDeny: () -> Void
 
@@ -109,29 +184,76 @@ struct PipelinePlanView: View {
                 Text("Pipeline Plan")
                     .font(.system(size: 14, weight: .semibold))
                 Spacer()
+                let enabled = steps.filter(\.enabled).count
+                let total = steps.count
+                if total > 0 {
+                    Text("\(enabled)/\(total) steps")
+                        .font(.system(size: 11))
+                        .foregroundColor(.secondary)
+                }
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 12)
 
             Divider()
 
-            // Plan text
+            // Steps with toggle
             ScrollView {
-                Text(planText)
-                    .font(.system(size: 12))
-                    .textSelection(.enabled)
-                    .padding(16)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                VStack(alignment: .leading, spacing: 6) {
+                    if steps.isEmpty {
+                        // Fallback: show raw plan text if steps weren't parsed
+                        Text(planText)
+                            .font(.system(size: 12))
+                            .textSelection(.enabled)
+                            .padding(16)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    } else {
+                        ForEach(Array(steps.enumerated()), id: \.element.id) { index, step in
+                            HStack(alignment: .top, spacing: 8) {
+                                Button(action: { onToggleStep(index) }) {
+                                    Image(systemName: step.enabled ? "checkmark.circle.fill" : "circle")
+                                        .font(.system(size: 16))
+                                        .foregroundColor(step.enabled ? .accentColor : .secondary.opacity(0.4))
+                                }
+                                .buttonStyle(.plain)
+
+                                Text("\(index + 1). \(step.planDescription)")
+                                    .font(.system(size: 12))
+                                    .foregroundColor(step.enabled ? .primary : .secondary.opacity(0.5))
+                                    .strikethrough(!step.enabled)
+                            }
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 2)
+                        }
+                    }
+                }
+                .padding(.vertical, 8)
             }
 
             Divider()
 
-            // Action buttons
+            // Footer with approve/deny buttons
             HStack(spacing: 12) {
-                Text("Approve via notification")
-                    .font(.system(size: 10))
-                    .foregroundColor(.secondary)
-                Spacer()
+                if confirmationId != nil {
+                    Text("Toggle steps to skip.")
+                        .font(.system(size: 10))
+                        .foregroundColor(.secondary)
+                    Spacer()
+                    Button("Deny") { onDeny() }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                    Button("Approve") { onApprove() }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.small)
+                } else {
+                    Image(systemName: "hourglass")
+                        .font(.system(size: 11))
+                        .foregroundColor(.secondary)
+                    Text("Waiting for confirmation...")
+                        .font(.system(size: 10))
+                        .foregroundColor(.secondary)
+                    Spacer()
+                }
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 10)

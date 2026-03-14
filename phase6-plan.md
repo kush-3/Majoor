@@ -2,7 +2,147 @@
 
 **Goal:** Production-ready quality, onboarding experience, pipeline UX polish, and distribution-ready app. Phase 6 transforms Majoor from a working prototype into a shippable product.
 
-**Branch:** `kush/phase-6-polish`
+**Branch:** `kush/phase-6-implementation`
+
+---
+
+## Implementation Status
+
+### 6C — Error Handling & Recovery: COMPLETE
+**Implementation order was: 6C → 6A → 6B → 6D → 6E → 6F**
+
+**Files modified (7):**
+- `Core/LLMProvider.swift` — Added `noInternet`, `contextOverflow`, `serverOverloaded` error cases. Added `isTransient` and `shouldOpenSettings` computed properties for error classification.
+- `Core/AnthropicProvider.swift` — Network errors now classify via `URLError.code`: `.notConnectedToInternet` → `LLMError.noInternet` (fail fast), `.timedOut` → retry with backoff. 400 errors detect context overflow by parsing error message for "too many tokens"/"context length". 529 → `serverOverloaded`. Rate limit logging improved with retry-after header.
+- `Core/AgentLoop.swift` — Context overflow recovery: on `.contextOverflow`, calls `trimConversationForRecovery()` which first truncates tool_result blocks to 500 chars, then removes oldest user+assistant message pairs. Auth errors (`.invalidAPIKey`) fail immediately without retry. All errors produce clean `errorDescription` messages.
+- `Core/MCP/MCPServerManager.swift` — Crash recovery now uses exponential backoff (5s, 10s, 20s, 40s, 80s) with max 5 restarts. After max restarts, sends notification "X Integration Failed" and stops retrying. Health check interval changed from 10s to 30s. Recovery is silent (no "recovered" notification) — only permanent failure notifies user.
+- `Core/MCP/MCPToolBridge.swift` — Detects 401/403/auth errors in MCP tool results and returns user-friendly messages: "GitHub: authentication failed. Your token may have expired. Update it in Settings > Integrations."
+- `UI/StatusBarController.swift` — Error state persists until user clicks the icon (no more 3s auto-dismiss). All states have tooltip messages. Added `errorMessage` property and `currentState` tracking. Click on error icon → acknowledges and returns to idle.
+- `Core/NotificationManager.swift` — New `AUTH_ERROR` category with "Open Settings" action button. New `majoorOpenSettings` notification name. New `actionOpenSettings` action ID. Settings window opens when user taps the action.
+- `AppDelegate.swift` — `handleLLMError()` method provides specific notifications per error type. Auth errors use `AUTH_ERROR` category (with "Open Settings" button). Transient errors (rate limit, overloaded, network) say "retried multiple times" to indicate recovery was attempted. Listens for `majoorOpenSettings` notification.
+
+**Key design decisions:**
+- Only notify user when recovery fails or user action is needed (auth errors, no internet)
+- Silent retry for transient errors (429, 529, network timeout) — AnthropicProvider handles internally
+- Silent MCP crash recovery with backoff — only notify if max restarts exceeded
+- Context overflow: trim silently, only notify if trimming can't save it
+
+### 6A — Onboarding Flow: COMPLETE
+
+**New files (2):**
+- `UI/Onboarding/OnboardingView.swift` (~310 LOC) — 5-step wizard: Welcome → API Key → Integrations → Permissions → Ready. API key validation via real Haiku API call. Paste from clipboard button. Optional Tavily key in disclosure group. Calendar permission request via EventKit. Summary screen showing what's connected. Progress dots at bottom. 500x400 non-resizable window.
+- `UI/Onboarding/OnboardingStepViews.swift` (~160 LOC) — `IntegrationCard` reusable component. Token input with save/skip per service. Extra credential support (e.g. Slack Team ID). Connects to MCP server on save and shows tool count. Used by onboarding.
+
+**Files modified (4):**
+- `APIConfig.swift` — Full rewrite. All keys (Anthropic, Tavily, Google OAuth client ID/secret) now resolve via Keychain first, hardcoded fallback second. Added keychain key constants (`majoor_anthropic_api_key`, etc.), `save*()` methods, and `hasUser*` computed properties. Original hardcoded values moved to private `hardcoded*` constants.
+- `AppDelegate.swift` — Checks `UserDefaults.bool(forKey: "hasCompletedOnboarding")` on launch; shows onboarding window if false. Added `showOnboarding()` method (creates 500x400 NSWindow). Removed stale `KeychainManager.shared.deleteAPIKey(for: .anthropic)` call. Added `onboardingWindow` property.
+- `Settings/MCPSettingsView.swift` — `defaultConfig(for:)` renamed to `static func defaultServerConfig(for:)` so `IntegrationCard` in onboarding can also use it. Internal callers updated to `Self.defaultServerConfig(for:)`.
+- `Settings/SettingsView.swift` — Added "Run Setup Wizard" button in General tab that calls `AppDelegate.showOnboarding()`. Version string updated from "0.4.0 — Phase 4" to "0.6.0 — Phase 6".
+
+**Key design decisions:**
+- All API keys migrate to Keychain with hardcoded fallback (makes app distributable)
+- Onboarding re-runnable from Settings > General > "Run Setup Wizard"
+- API key validated with minimal Haiku API call (1 token, cost ~$0.0001)
+- MCP tokens: saved to Keychain → server started → tool count shown within 3s timeout
+
+### 6B — Pipeline Progress UI + Inline Plan Editing + Smart Router: COMPLETE
+
+**Pipeline Progress UI (rewrite):**
+- `Core/Models.swift` — Added `PipelineStep` struct (with `planDescription`, `status`, `toolCalls`, `result`, `error`, `enabled`) and `PipelineStepStatus` enum (pending/running/completed/failed/skipped). `enabled` field supports inline step toggling.
+- `Core/TaskManager.swift` — Added `@Published pipelineSteps: [PipelineStep]`, `@Published pipelineStartTime: Date?`. New methods: `setPipelineSteps()`, `updatePipelineStep(at:status:result:error:)`, `addToolCallToPipelineStep(at:toolName:)`, `togglePipelineStep(at:)`. `clearPipelinePlan()` now also resets steps and start time.
+- `UI/PipelineProgressView.swift` — Full rewrite (~180 LOC). Observes `taskManager.pipelineSteps` via `@EnvironmentObject`. Shows per-step icons (circle.dashed → ProgressView spinner → checkmark.circle.fill/xmark.circle.fill). Result text and errors shown inline. Footer shows "Step X of Y" with live elapsed timer using `TimelineView`. Overall status icon in header (green check, orange warning, or spinner).
+
+**Inline Plan Editing (remove-only):**
+- `UI/MainPanelView.swift` — `PipelinePlanView` rewritten. Shows numbered steps with toggle buttons (checkmark.circle.fill when enabled, circle when disabled). Disabled steps show strikethrough text. Footer says "Toggle steps to skip. Approve via notification." Shows "X/Y steps" count in header.
+- `Core/AgentLoop.swift` — When pipeline approved, checks `taskManager.pipelineSteps` for disabled entries. Tells LLM "User approved but wants to SKIP step(s): X, Y. Execute the remaining steps only." Marks skipped steps as `.skipped` in UI.
+
+**Pipeline Step Matching (AgentLoop):**
+- `parsePipelineSteps(from:)` — Extracts numbered lines (`1. Do X`, `1) Do X`) and bulleted lines (`- Do X`) from plan text into `PipelineStep` objects.
+- `matchToolToPipelineStep(_:arguments:)` — Multi-tier matching: (1) already-running step with same tool, (2) keyword-to-tool mapping table (`stepToolMapping` with 18 keyword→tool_prefix entries), (3) direct tool name match in description, (4) single pending step shortcut, (5) first pending step (sequential fallback).
+- `stepToolMapping` covers: commit, push, pr/pull request, issue/ticket, slack/post/message, notion/page, email, calendar, branch, merge, status, diff.
+- Tool calls update matched step to `.running`, tool results update to `.completed` or `.failed` (based on output starting with "Error").
+
+**Hybrid Smart Router:**
+- `Core/Router/TaskClassifier.swift` — Added `classifyWithConfidence()` returning `(category, score)`. `confidenceThreshold = 2`. Added `isConfident()` and `detectMentionedServices()` (scans for "github", "slack", "linear", "notion" keywords). Git heuristic now returns score >= 3 for confident routing.
+- `Core/Router/ModelRouter.swift` — New `routeHybrid()` method: keywords handle obvious cases (score >= 2) → returns provider + tool sets. Ambiguous inputs (score < 2) → calls `classifyWithLLM()` which asks Haiku to return `{"model": "opus|sonnet|haiku", "tools": ["local", ...]}`. `defaultToolSets()` maps categories to MCP server names (coding → github, general with "finished"/"done" language → all services). Uses Haiku (not Sonnet) for classification to minimize cost.
+- `Core/AgentLoop.swift` — `execute()` now calls `ModelRouter.routeHybrid()` instead of keyword-only `TaskClassifier.classify()` + `ModelRouter.provider()`. Filters MCP tools by the `toolSets` array from routing, reducing tokens sent per API call.
+
+### 6D — Performance & Battery Optimization: COMPLETE
+
+**Files modified (6):**
+- `Core/MCP/MCPServerManager.swift` — Removed `loadConfigs()`, idle timeout monitor, `recordToolCall()`, and `lastToolCallTime` tracking. Servers start eagerly via `startAll()` on launch and stay running. `ensureRunning(_:)` kept as safety net for mid-session crash recovery. `serverSummary()` reverted to only show running servers. `configuredServerNames()` still available.
+- `Core/MCP/MCPToolBridge.swift` — `executeWithRawJSON()` calls `ensureRunning()` as a safety net (restarts crashed servers before tool calls). Removed `recordToolCall()` call.
+- `Core/AgentLoop.swift` — Conversation history capped at 5 entries (was unlimited within 10-min window). Response text truncated to 1000 chars (was 2000). Tool summaries capped at 10 per entry. Both storage points (normal completion + max iterations) updated.
+- `AppDelegate.swift` — `startAll()` on launch (eager start). `willSleepNotification` stops all MCP servers. `didWakeNotification` restarts all MCP servers immediately.
+- `Core/Memory/MemoryRetriever.swift` — Added `MemoryRetrievalCache` (thread-safe, NSLock, 60s TTL, max 20 entries). `relevantContext()` checks cache first before querying SQLite. Cache key is normalized (lowercase + trimmed). Stale entries evicted when cache exceeds 20 entries.
+- `UI/StatusBarController.swift` — Added `observePowerState()`: stops pulse timer on system sleep (no wasted CPU), re-starts it on wake if still in `.working` state.
+
+**Key design decisions:**
+- Eager start: all configured servers start on app launch, stay running until sleep/quit
+- `ensureRunning()` kept as safety net — if a server crashes mid-session, it auto-restarts before the next tool call
+- Power-aware: sleep stops all servers, wake restarts all servers immediately
+- No idle timeout — servers stay on while the app is active
+- Conversation history: 5 entries × 1000 chars + 10 tool summaries ≈ bounded memory footprint
+- Memory retrieval cache: 60s TTL avoids redundant SQLite queries for rapid sequential tasks
+- Status bar animation: stops on sleep, avoids timer ticks when system is suspended
+### 6E — App Notarization & Distribution: COMPLETE
+
+**New files (1):**
+- `Scripts/build-dmg.sh` — Single script for build + sign + notarize + staple. Auto-detects version and team ID from pbxproj. `--notarize` flag triggers notarization (requires `APPLE_ID` and `APP_PASSWORD` env vars). Without the flag, produces an unsigned DMG. Outputs to `dist/Majoor-X.Y.Z.dmg`.
+
+**Modified files (4):**
+- `Majoor/Majoor.entitlements` — Added `cs.allow-unsigned-executable-memory` (for shell/Process execution), `cs.disable-library-validation` (for MCP server subprocesses), `network.client` (for API calls). Calendar entitlement was already present.
+- `Majoor.xcodeproj/project.pbxproj` — `MARKETING_VERSION` updated to 0.6.0 (both Debug and Release). `RUNTIME_EXCEPTION_ALLOW_UNSIGNED_EXECUTABLE_MEMORY` and `RUNTIME_EXCEPTION_DISABLE_LIBRARY_VALIDATION` set to YES (matches entitlements). Hardened runtime was already enabled.
+- `Majoor/Info.plist` — Added `CFBundleShortVersionString` (= `$(MARKETING_VERSION)`) and `CFBundleVersion` (= `$(CURRENT_PROJECT_VERSION)`) so version is readable at runtime.
+- `Majoor/Settings/SettingsView.swift` — About tab now reads version from `Bundle.main.infoDictionary` instead of hardcoded string. Shows "Version X.Y.Z (build)" format.
+
+**Key design decisions:**
+- Single script (`build-dmg.sh`) handles the full pipeline — no separate notarize.sh needed
+- Notarization is opt-in via `--notarize` flag so local dev builds are fast
+- Version and team ID auto-extracted from pbxproj — no manual config needed
+- Entitlements match what the app actually needs: shell execution, MCP subprocesses, network, calendar
+### Post-Implementation Bug Fixes
+
+**Follow-up routing fix:**
+- `Core/AgentLoop.swift` — Follow-up messages (e.g. "the team name is Majoor-tests" after "create a Linear issue") now inherit MCP tool sets from recent conversations. Recent conversation context passed to `ModelRouter.routeHybrid()` so the router understands the ongoing task. Tool sets merged from last 3 conversation entries within the timeout window.
+- `Core/Router/ModelRouter.swift` — `routeHybrid()` accepts conversation context string to improve routing accuracy for follow-up messages.
+
+**Notification delivery improvements:**
+- `Core/NotificationManager.swift` — All notifications set `interruptionLevel = .timeSensitive` to break through Focus/DND modes. Added error logging on delivery failure. Added diagnostic logging for notification settings on launch.
+
+**Pipeline auto-open panel:**
+- `Core/AgentLoop.swift` — Both pipeline confirmation paths (text response and mixed response) now post `.majoorOpenPanel` notification to auto-open the panel when a pipeline plan is proposed, so the user can see and toggle steps before approving via notification.
+- `AppDelegate.swift` — Listens for `.majoorOpenPanel` and opens the panel if not already visible.
+
+### 6F — Auto-Update Mechanism: COMPLETE
+
+**New dependency:**
+- Sparkle 2.9.0 via SPM (`https://github.com/sparkle-project/Sparkle`, upToNextMajorVersion from 2.0.0)
+
+**New files (1):**
+- `Core/UpdateManager.swift` — `ObservableObject` wrapper around `SPUStandardUpdaterController`. Publishes `canCheckForUpdates` via Combine. Exposes `checkForUpdates()`, `automaticallyChecksForUpdates` get/set, and `lastUpdateCheckDate`. Sparkle starts automatically on init.
+
+**Modified files (4):**
+- `Majoor.xcodeproj/project.pbxproj` — Added Sparkle SPM package reference, build file, framework link, and product dependency. Now 2 dependencies: GRDB + Sparkle.
+- `Majoor/Info.plist` — Added `SUFeedURL` pointing to `https://kush-3.github.io/majoor-releases/appcast.xml` (GitHub Pages appcast).
+- `Majoor/AppDelegate.swift` — Added `updateManager = UpdateManager()` property. Sparkle initializes on app launch.
+- `Majoor/Settings/SettingsView.swift` — General tab: added "Updates" section with "Automatically check for updates" toggle (syncs with Sparkle's setting) and "Check for Updates" button with last-checked timestamp. Reads `UpdateManager` from AppDelegate.
+
+**Key design decisions:**
+- Sparkle 2.x (standard macOS update framework) — handles download, verification, and installation
+- Appcast hosted on GitHub Pages (`kush-3/majoor-releases`) — free, simple, version-controlled
+- Auto-check enabled by default, togglable in Settings
+- SUFeedURL in Info.plist (Sparkle's standard config location)
+
+---
+
+## Resolved Open Questions
+
+1. **Apple Developer Program** — User likely has it; 6E/6F will be implemented but deferred if cert not available.
+2. **Tool subset filtering** — Implemented as part of 6B hybrid router. Keyword detection + LLM fallback for ambiguous cases. No new TaskClassifier categories needed.
+3. **Onboarding re-entry** — Yes, "Run Setup Wizard" button added in Settings > General.
+4. **MCP idle timeout** — Removed. Servers stay on while the app is active (eager start). Idle timeout added unnecessary complexity for minimal savings.
+5. **Pipeline step editing** — Implemented as remove-only toggle in 6B. Users can disable steps before approving. No add/reorder.
 
 ---
 

@@ -193,6 +193,31 @@ nonisolated struct TaskResult: Sendable {
     let tokensUsed: Int
 }
 
+// MARK: - Pipeline Step Model
+
+struct PipelineStep: Identifiable, Sendable {
+    let id = UUID()
+    let planDescription: String        // "Create PR 'Add auth' on kush/majoor"
+    var status: PipelineStepStatus     // pending → running → completed → failed → skipped
+    var toolCalls: [String]            // Tool names used for this step
+    var result: String?                // Brief result text
+    var error: String?                 // Error if failed
+    var enabled: Bool                  // Whether user toggled this step on (for inline editing)
+
+    init(planDescription: String, enabled: Bool = true) {
+        self.planDescription = planDescription
+        self.status = .pending
+        self.toolCalls = []
+        self.result = nil
+        self.error = nil
+        self.enabled = enabled
+    }
+}
+
+enum PipelineStepStatus: String, Sendable {
+    case pending, running, completed, failed, skipped
+}
+
 // MARK: - AnyCodable Helper
 
 struct AnyCodable: Codable, Sendable {

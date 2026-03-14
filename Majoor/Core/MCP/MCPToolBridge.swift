@@ -45,8 +45,15 @@ nonisolated struct MCPToolBridge: AgentTool, Sendable {
 
     /// Execute with raw JSON arguments (preserves complex types for MCP).
     func executeWithRawJSON(_ rawJSON: Data?, stringArgs: [String: String]) async throws -> ToolResult {
+        // Safety net: ensure the server is running (handles mid-session crashes)
+        do {
+            try await MCPServerManager.shared.ensureRunning(serverName)
+        } catch {
+            return ToolResult(success: false, output: "\(serverName.capitalized) integration failed to start: \(error.localizedDescription). Check your token in Settings > Integrations.")
+        }
+
         guard let client = await MCPServerManager.shared.client(for: serverName) else {
-            return ToolResult(success: false, output: "MCP server '\(serverName)' is not running.")
+            return ToolResult(success: false, output: "\(serverName.capitalized) integration is not running. Check your token in Settings > Integrations.")
         }
 
         let anyArgs: [String: Any]
@@ -56,7 +63,20 @@ nonisolated struct MCPToolBridge: AgentTool, Sendable {
             anyArgs = stringArgs.mapValues { $0 as Any }
         }
 
-        let result = try await client.callTool(name: originalName, arguments: anyArgs)
-        return ToolResult(success: !result.isError, output: result.content)
+        do {
+            let result = try await client.callTool(name: originalName, arguments: anyArgs)
+            // Detect auth errors in tool results
+            if result.isError {
+                let content = result.content.lowercased()
+                if content.contains("401") || content.contains("403")
+                    || content.contains("unauthorized") || content.contains("forbidden")
+                    || content.contains("authentication") || content.contains("invalid token") {
+                    return ToolResult(success: false, output: "\(serverName.capitalized): authentication failed. Your token may have expired. Update it in Settings > Integrations.")
+                }
+            }
+            return ToolResult(success: !result.isError, output: result.content)
+        } catch {
+            return ToolResult(success: false, output: "\(serverName.capitalized) tool '\(originalName)' failed: \(error.localizedDescription)")
+        }
     }
 }
