@@ -38,13 +38,24 @@ echo ""
 
 # 1. Clean build (Release)
 echo "--- Step 1: Clean Release build ---"
-xcodebuild clean build \
-    -project "$PROJECT" \
-    -scheme "$SCHEME" \
-    -configuration Release \
-    CODE_SIGN_IDENTITY="$SIGNING_ID" \
-    OTHER_CODE_SIGN_FLAGS="--timestamp --options=runtime" \
-    2>&1 | tail -5
+if security find-identity -v -p codesigning | grep -q "Developer ID Application"; then
+    echo "Using Developer ID for signing"
+    xcodebuild clean build \
+        -project "$PROJECT" \
+        -scheme "$SCHEME" \
+        -configuration Release \
+        CODE_SIGN_IDENTITY="$SIGNING_ID" \
+        OTHER_CODE_SIGN_FLAGS="--timestamp --options=runtime" \
+        2>&1 | tail -5
+else
+    echo "No Developer ID certificate found — building without code signing"
+    xcodebuild clean build \
+        -project "$PROJECT" \
+        -scheme "$SCHEME" \
+        -configuration Release \
+        CODE_SIGN_IDENTITY="-" \
+        2>&1 | tail -5
+fi
 
 # Find the built app
 BUILD_DIR=$(xcodebuild -project "$PROJECT" -scheme "$SCHEME" -configuration Release -showBuildSettings 2>/dev/null | grep '^\s*BUILD_DIR' | awk '{print $3}')
