@@ -242,67 +242,51 @@ final nonisolated class AnthropicProvider: LLMProvider, @unchecked Sendable {
             throw LLMError.apiError("HTTP \(http.statusCode)")
         }
 
-        // Parse SSE stream
+        // Parse SSE stream using .lines (handles UTF-8 multi-byte chars like emojis correctly)
         var accumulatedText = ""
         var finalUsage: AnthropicUsage?
-        var stopReason: String?
-        var lineBuffer = ""
 
-        for try await byte in bytes {
-            let char = Character(UnicodeScalar(byte))
-            if char == "\n" {
-                let line = lineBuffer
-                lineBuffer = ""
+        for try await line in bytes.lines {
+            guard line.hasPrefix("data: ") else { continue }
 
-                if line.hasPrefix("data: ") {
-                    let jsonStr = String(line.dropFirst(6))
-                    if let data = jsonStr.data(using: .utf8),
-                       let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-                        let eventType = json["type"] as? String ?? ""
+            let jsonStr = String(line.dropFirst(6))
+            guard let data = jsonStr.data(using: .utf8),
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { continue }
 
-                        switch eventType {
-                        case "content_block_delta":
-                            if let delta = json["delta"] as? [String: Any],
-                               let deltaType = delta["type"] as? String {
-                                if deltaType == "text_delta", let text = delta["text"] as? String {
-                                    accumulatedText += text
-                                    onDelta(.textDelta(text))
-                                }
-                            }
-                        case "message_delta":
-                            if let delta = json["delta"] as? [String: Any] {
-                                stopReason = delta["stop_reason"] as? String
-                                onDelta(.messageDelta(stopReason: stopReason))
-                            }
-                            if let usage = json["usage"] as? [String: Any],
-                               let outputTokens = usage["output_tokens"] as? Int {
-                                finalUsage = AnthropicUsage(inputTokens: 0, outputTokens: outputTokens)
-                            }
-                        case "message_start":
-                            if let message = json["message"] as? [String: Any],
-                               let usage = message["usage"] as? [String: Any],
-                               let inputTokens = usage["input_tokens"] as? Int {
-                                finalUsage = AnthropicUsage(inputTokens: inputTokens, outputTokens: finalUsage?.outputTokens ?? 0)
-                            }
-                        case "content_block_stop":
-                            onDelta(.contentBlockStop)
-                        default:
-                            break
-                        }
-                    }
+            let eventType = json["type"] as? String ?? ""
+
+            switch eventType {
+            case "content_block_delta":
+                if let delta = json["delta"] as? [String: Any],
+                   let deltaType = delta["type"] as? String,
+                   deltaType == "text_delta",
+                   let text = delta["text"] as? String {
+                    accumulatedText += text
+                    onDelta(.textDelta(text))
                 }
-            } else {
-                lineBuffer.append(char)
+            case "message_delta":
+                if let delta = json["delta"] as? [String: Any] {
+                    let stopReason = delta["stop_reason"] as? String
+                    onDelta(.messageDelta(stopReason: stopReason))
+                }
+                if let usage = json["usage"] as? [String: Any],
+                   let outputTokens = usage["output_tokens"] as? Int {
+                    finalUsage = AnthropicUsage(inputTokens: finalUsage?.inputTokens ?? 0, outputTokens: outputTokens)
+                }
+            case "message_start":
+                if let message = json["message"] as? [String: Any],
+                   let usage = message["usage"] as? [String: Any],
+                   let inputTokens = usage["input_tokens"] as? Int {
+                    finalUsage = AnthropicUsage(inputTokens: inputTokens, outputTokens: finalUsage?.outputTokens ?? 0)
+                }
+            case "content_block_stop":
+                onDelta(.contentBlockStop)
+            default:
+                break
             }
         }
 
-        // Combine input + output token counts
-        let totalUsage: AnthropicUsage?
-        if let u = finalUsage {
-            totalUsage = u
-        } else {
-            totalUsage = nil
-        }
+        let totalUsage: AnthropicUsage? = finalUsage
 
         return (.text(accumulatedText), totalUsage)
     }

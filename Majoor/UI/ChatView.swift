@@ -142,25 +142,14 @@ private struct ChatBubble: View {
                         .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
                         .textSelection(.enabled)
                 } else {
-                    // Assistant: try markdown rendering
-                    if let attributed = try? AttributedString(markdown: message.content,
-                        options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)) {
-                        Text(attributed)
-                            .font(.system(size: 12))
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 8)
-                            .background(Color.primary.opacity(0.05))
-                            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-                            .textSelection(.enabled)
-                    } else {
-                        Text(message.content)
-                            .font(.system(size: 12))
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 8)
-                            .background(Color.primary.opacity(0.05))
-                            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-                            .textSelection(.enabled)
-                    }
+                    // Assistant message
+                    Text(message.content)
+                        .font(.system(size: 12))
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .background(Color.primary.opacity(0.05))
+                        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                        .textSelection(.enabled)
                 }
             }
 

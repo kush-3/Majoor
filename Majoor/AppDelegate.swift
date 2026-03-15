@@ -141,15 +141,16 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             do {
                 let result = try await loop.execute(userInput: input)
                 statusBarController?.setState(.success)
-                // Show in-app toast (primary) + macOS notification (fallback)
-                taskManager.showToast(type: .info, title: "Task Complete", body: result.summary)
-                notifyIfPanelClosed(title: "Majoor — Task Complete", body: result.summary)
+                // Show in-app notification and auto-open panel
+                let completedTask = taskManager.tasks.first
+                taskManager.showNotification(type: .success, title: "Task Complete", body: result.summary, task: completedTask)
+                showPanel()
             } catch let error as LLMError {
                 handleLLMError(error)
             } catch {
                 statusBarController?.setState(.error, message: error.localizedDescription)
-                taskManager.showToast(type: .error, title: "Task Failed", body: error.localizedDescription, autoDismiss: nil)
-                notifyIfPanelClosed(title: "Majoor — Task Failed", body: error.localizedDescription)
+                taskManager.showNotification(type: .error, title: "Task Failed", body: error.localizedDescription)
+                showPanel()
             }
         }
     }
@@ -157,40 +158,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     private func handleLLMError(_ error: LLMError) {
         let errorDesc = error.errorDescription ?? "Unknown error"
         statusBarController?.setState(.error, message: errorDesc)
-
-        switch error {
-        case .invalidAPIKey:
-            taskManager.showToast(type: .error, title: "Invalid API Key",
-                                  body: "Your API key is invalid or expired.",
-                                  autoDismiss: nil, actionLabel: "Settings") { [weak self] in
-                self?.openSettings()
-            }
-        case .noInternet:
-            taskManager.showToast(type: .warning, title: "No Internet",
-                                  body: "Check your network connection and try again.", autoDismiss: 6.0)
-        case .contextOverflow:
-            taskManager.showToast(type: .error, title: "Task Too Complex",
-                                  body: "The conversation exceeded the context limit. Try smaller steps.", autoDismiss: nil)
-        case .rateLimited(let retryAfter):
-            let waitMsg = retryAfter.map { "Try again in \($0)s." } ?? "Try again in a few minutes."
-            taskManager.showToast(type: .warning, title: "Rate Limited", body: waitMsg, autoDismiss: 8.0)
-        case .serverOverloaded:
-            taskManager.showToast(type: .warning, title: "API Overloaded",
-                                  body: "Claude API is overloaded. Try again in a few minutes.", autoDismiss: 6.0)
-        case .networkError(let msg):
-            taskManager.showToast(type: .error, title: "Network Error", body: msg, autoDismiss: nil)
-        case .apiError(let msg):
-            taskManager.showToast(type: .error, title: "API Error", body: msg, autoDismiss: nil)
-        case .decodingError:
-            taskManager.showToast(type: .warning, title: "Response Error",
-                                  body: "Failed to parse API response. This may be temporary.", autoDismiss: 6.0)
-        }
-
-        // Also show panel so user can see the toast
+        taskManager.showNotification(type: .error, title: "Task Failed", body: errorDesc)
         showPanel()
-
-        // macOS notification fallback for background
-        notifyIfPanelClosed(title: "Majoor — Error", body: errorDesc)
     }
 
     /// Send macOS notification only when the panel is not visible (fallback)
