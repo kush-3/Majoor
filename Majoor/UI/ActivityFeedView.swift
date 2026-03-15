@@ -175,10 +175,9 @@ struct TaskCardView: View {
     private var statusIcon: some View {
         switch task.status {
         case .running:
-            ProgressView()
-                .controlSize(.mini)
-                .scaleEffect(0.7)
-                .frame(width: 14, height: 14)
+            Image(systemName: "circle.dotted")
+                .font(.system(size: 12))
+                .foregroundColor(.orange)
         case .completed:
             Image(systemName: "checkmark.circle.fill")
                 .font(.system(size: 12))

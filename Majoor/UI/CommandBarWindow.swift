@@ -2,7 +2,7 @@
 // Majoor — Floating Command Bar Window
 //
 // NSPanel wrapper for the Spotlight-style command bar.
-// Supports Task and Chat modes.
+// Shows running task state with stop button when a task is active.
 
 import SwiftUI
 import AppKit
@@ -10,25 +10,32 @@ import AppKit
 class CommandBarWindow {
     private var window: NSWindow?
     private var onSubmit: (String, CommandMode) -> Void
+    private var onStop: () -> Void
+    private weak var taskManager: TaskManager?
 
     var isVisible: Bool { window?.isVisible ?? false }
 
-    init(onSubmit: @escaping (String, CommandMode) -> Void) {
+    init(taskManager: TaskManager, onSubmit: @escaping (String, CommandMode) -> Void, onStop: @escaping () -> Void) {
+        self.taskManager = taskManager
         self.onSubmit = onSubmit
+        self.onStop = onStop
     }
 
     func show() {
-        if let w = window, w.isVisible {
-            w.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
-            return
-        }
+        // Always recreate to pick up current running state
+        hide()
+
+        guard let taskManager else { return }
+
         let view = CommandBarView(
+            isTaskRunning: taskManager.isTaskRunning,
+            runningTaskInput: taskManager.runningTaskInput,
             onSubmit: { [weak self] input, mode in
                 self?.onSubmit(input, mode)
                 self?.hide()
             },
-            onCancel: { [weak self] in self?.hide() }
+            onCancel: { [weak self] in self?.hide() },
+            onStop: { [weak self] in self?.onStop() }
         )
         let hosting = NSHostingView(rootView: view)
         let panel = NSPanel(

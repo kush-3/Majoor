@@ -54,6 +54,10 @@ class TaskManager: ObservableObject {
     @Published var pipelineStartTime: Date?
     @Published var selectedTab: Int = 0
 
+    // Running task state (for command bar UI)
+    @Published var isTaskRunning: Bool = false
+    @Published var runningTaskInput: String = ""
+
     // In-app toast system
     @Published var toasts: [Toast] = []
 

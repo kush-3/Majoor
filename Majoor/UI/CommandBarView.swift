@@ -1,7 +1,8 @@
 // CommandBarView.swift
 // Majoor — Command Bar Input
 //
-// Spotlight-style command bar with Task/Chat mode toggle and input history.
+// Spotlight-style command bar with Task/Chat mode toggle, input history,
+// and running task state with stop button.
 
 import SwiftUI
 
@@ -18,8 +19,12 @@ struct CommandBarView: View {
     }()
     @State private var historyIndex: Int = -1
     @FocusState private var isFocused: Bool
+
+    let isTaskRunning: Bool
+    let runningTaskInput: String
     let onSubmit: (String, CommandMode) -> Void
     let onCancel: () -> Void
+    let onStop: () -> Void
 
     private var history: [String] {
         UserDefaults.standard.stringArray(forKey: "commandHistory") ?? []
@@ -27,56 +32,97 @@ struct CommandBarView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 12) {
-                // Mode toggle
-                Button(action: toggleMode) {
-                    Text(mode.rawValue)
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundColor(mode == .task ? .white : .accentColor)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
-                        .background(
-                            Capsule()
-                                .fill(mode == .task ? Color.accentColor : Color.accentColor.opacity(0.12))
-                        )
-                }
-                .buttonStyle(.plain)
-                .help("Tab to switch mode")
+            if isTaskRunning {
+                // Running task state
+                HStack(spacing: 12) {
+                    ProgressView()
+                        .controlSize(.small)
+                        .scaleEffect(0.8)
 
-                // Input field
-                TextField(placeholder, text: $inputText)
-                    .textFieldStyle(.plain)
-                    .font(.system(size: 17))
-                    .focused($isFocused)
-                    .onSubmit { submitCommand() }
-                    .onExitCommand { onCancel() }
-                    .onKeyPress(.upArrow) { navigateHistory(direction: -1); return .handled }
-                    .onKeyPress(.downArrow) { navigateHistory(direction: 1); return .handled }
-                    .onKeyPress(.tab) { toggleMode(); return .handled }
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Task Running")
+                            .font(.system(size: 13, weight: .semibold))
+                        Text(runningTaskInput)
+                            .font(.system(size: 12))
+                            .foregroundColor(.secondary)
+                            .lineLimit(1)
+                    }
 
-                // Submit button
-                if !inputText.isEmpty {
-                    Button(action: submitCommand) {
-                        Image(systemName: "arrow.up.circle.fill")
-                            .font(.system(size: 22))
-                            .foregroundColor(.accentColor)
+                    Spacer()
+
+                    Button(action: {
+                        onStop()
+                        onCancel()
+                    }) {
+                        HStack(spacing: 4) {
+                            Image(systemName: "stop.fill")
+                                .font(.system(size: 10))
+                            Text("Stop")
+                                .font(.system(size: 12, weight: .medium))
+                        }
+                        .foregroundColor(.red)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
+                        .background(Color.red.opacity(0.1))
+                        .clipShape(Capsule())
                     }
                     .buttonStyle(.plain)
                 }
-            }
-            .padding(.horizontal, 20)
-            .padding(.vertical, 14)
+                .padding(.horizontal, 20)
+                .padding(.vertical, 14)
+            } else {
+                // Normal input state
+                HStack(spacing: 12) {
+                    // Mode toggle
+                    Button(action: toggleMode) {
+                        Text(mode.rawValue)
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundColor(mode == .task ? .white : .accentColor)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(
+                                Capsule()
+                                    .fill(mode == .task ? Color.accentColor : Color.accentColor.opacity(0.12))
+                            )
+                    }
+                    .buttonStyle(.plain)
+                    .help("Tab to switch mode")
 
-            // Keyboard hints
-            HStack(spacing: 16) {
-                HintLabel(key: "Return", action: "submit")
-                HintLabel(key: "Tab", action: "switch mode")
-                HintLabel(key: "Up/Down", action: "history")
-                HintLabel(key: "Esc", action: "close")
-                Spacer()
+                    // Input field
+                    TextField(placeholder, text: $inputText)
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 17))
+                        .focused($isFocused)
+                        .onSubmit { submitCommand() }
+                        .onExitCommand { onCancel() }
+                        .onKeyPress(.upArrow) { navigateHistory(direction: -1); return .handled }
+                        .onKeyPress(.downArrow) { navigateHistory(direction: 1); return .handled }
+                        .onKeyPress(.tab) { toggleMode(); return .handled }
+
+                    // Submit button
+                    if !inputText.isEmpty {
+                        Button(action: submitCommand) {
+                            Image(systemName: "arrow.up.circle.fill")
+                                .font(.system(size: 22))
+                                .foregroundColor(.accentColor)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.horizontal, 20)
+                .padding(.vertical, 14)
+
+                // Keyboard hints
+                HStack(spacing: 16) {
+                    HintLabel(key: "Return", action: "submit")
+                    HintLabel(key: "Tab", action: "switch mode")
+                    HintLabel(key: "Up/Down", action: "history")
+                    HintLabel(key: "Esc", action: "close")
+                    Spacer()
+                }
+                .padding(.horizontal, 20)
+                .padding(.bottom, 10)
             }
-            .padding(.horizontal, 20)
-            .padding(.bottom, 10)
         }
         .background(
             RoundedRectangle(cornerRadius: 16, style: .continuous)
@@ -89,7 +135,9 @@ struct CommandBarView: View {
         )
         .frame(width: 600)
         .onAppear {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { isFocused = true }
+            if !isTaskRunning {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { isFocused = true }
+            }
         }
     }
 
@@ -110,7 +158,7 @@ struct CommandBarView: View {
 
         // Save to history
         var hist = history
-        hist.removeAll { $0 == t } // Remove duplicates
+        hist.removeAll { $0 == t }
         hist.insert(t, at: 0)
         if hist.count > 20 { hist = Array(hist.prefix(20)) }
         UserDefaults.standard.set(hist, forKey: "commandHistory")

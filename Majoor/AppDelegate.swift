@@ -20,6 +20,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     let chatManager = ChatManager()
     let updateManager = UpdateManager()
     private var agentLoop: AgentLoop?
+    private var runningTaskHandle: Task<Void, Never>?
 
     // MARK: - Lifecycle
 
@@ -73,17 +74,22 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             }
         }
 
-        commandBarWindow = CommandBarWindow(onSubmit: { [weak self] input, mode in
-            switch mode {
-            case .task:
-                self?.handleCommand(input)
-            case .chat:
-                // Chat mode: open panel on Chat tab, send via ChatManager
-                self?.taskManager.selectedTab = 1
-                self?.showPanel()
-                self?.chatManager.send(input)
+        commandBarWindow = CommandBarWindow(
+            taskManager: taskManager,
+            onSubmit: { [weak self] input, mode in
+                switch mode {
+                case .task:
+                    self?.handleCommand(input)
+                case .chat:
+                    self?.taskManager.selectedTab = 1
+                    self?.showPanel()
+                    self?.chatManager.send(input)
+                }
+            },
+            onStop: { [weak self] in
+                self?.stopRunningTask()
             }
-        })
+        )
 
         // Show onboarding on first launch
         if !UserDefaults.standard.bool(forKey: "hasCompletedOnboarding") {
@@ -122,11 +128,17 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     private func handleCommand(_ input: String) {
         guard !input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
 
+        // Prevent double-submission
+        guard !taskManager.isTaskRunning else { return }
+
         commandBarWindow?.hide()
         statusBarController?.setState(.working)
+        taskManager.isTaskRunning = true
+        taskManager.runningTaskInput = input
 
         guard !APIConfig.claudeAPIKey.isEmpty else {
             statusBarController?.setState(.error, message: "API key not configured")
+            taskManager.isTaskRunning = false
             taskManager.showToast(type: .error, title: "Setup Required",
                                   body: "API key not configured. Open Settings to add your Anthropic API key.",
                                   autoDismiss: nil, actionLabel: "Settings") { [weak self] in
@@ -136,22 +148,59 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             return
         }
 
-        Task {
-            guard let loop = agentLoop else { return }
+        runningTaskHandle = Task { [weak self] in
+            guard let self, let loop = agentLoop else { return }
             do {
                 let result = try await loop.execute(userInput: input)
-                statusBarController?.setState(.success)
-                // Show in-app notification and auto-open panel
-                let completedTask = taskManager.tasks.first
-                taskManager.showNotification(type: .success, title: "Task Complete", body: result.summary, task: completedTask)
-                showPanel()
+
+                guard !Task.isCancelled else {
+                    await MainActor.run {
+                        self.taskManager.isTaskRunning = false
+                        self.statusBarController?.setState(.idle)
+                    }
+                    return
+                }
+
+                await MainActor.run {
+                    self.taskManager.isTaskRunning = false
+                    self.statusBarController?.setState(.success)
+                    let completedTask = self.taskManager.tasks.first
+                    self.taskManager.showNotification(type: .success, title: "Task Complete", body: result.summary, task: completedTask)
+                    self.showPanel()
+                }
+            } catch is CancellationError {
+                await MainActor.run {
+                    self.taskManager.isTaskRunning = false
+                    self.statusBarController?.setState(.idle)
+                    self.taskManager.showToast(type: .warning, title: "Task Stopped", body: "Task was cancelled by user.", autoDismiss: 4.0)
+                    self.showPanel()
+                }
             } catch let error as LLMError {
-                handleLLMError(error)
+                await MainActor.run {
+                    self.taskManager.isTaskRunning = false
+                    self.handleLLMError(error)
+                }
             } catch {
-                statusBarController?.setState(.error, message: error.localizedDescription)
-                taskManager.showNotification(type: .error, title: "Task Failed", body: error.localizedDescription)
-                showPanel()
+                await MainActor.run {
+                    self.taskManager.isTaskRunning = false
+                    self.statusBarController?.setState(.error, message: error.localizedDescription)
+                    self.taskManager.showNotification(type: .error, title: "Task Failed", body: error.localizedDescription)
+                    self.showPanel()
+                }
             }
+        }
+    }
+
+    func stopRunningTask() {
+        runningTaskHandle?.cancel()
+        runningTaskHandle = nil
+        taskManager.isTaskRunning = false
+        statusBarController?.setState(.idle)
+        // Mark the running task as failed
+        if let runningTask = taskManager.tasks.first(where: { $0.status == .running }) {
+            runningTask.status = .failed
+            runningTask.summary = "Cancelled by user"
+            runningTask.completedAt = Date()
         }
     }
 
