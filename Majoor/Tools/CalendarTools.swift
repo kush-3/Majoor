@@ -301,14 +301,15 @@ nonisolated struct DeleteCalendarEventTool: AgentTool, Sendable {
         df.timeStyle = .short
 
         // Request user confirmation
-        let approved = await ConfirmationManager.shared.requestConfirmation(
+        let confirmResult = await ConfirmationManager.shared.requestConfirmation(
             title: "Delete Calendar Event?",
             body: "\(title)\n\(df.string(from: event.startDate)) – \(df.string(from: event.endDate))",
             category: NotificationManager.confirmDeleteCategory
         )
 
-        guard approved else {
-            return ToolResult(success: false, output: "User declined to delete event '\(title)'.")
+        guard confirmResult.approved else {
+            let feedbackNote = confirmResult.feedback.map { " Feedback: \($0)" } ?? ""
+            return ToolResult(success: false, output: "User declined to delete event '\(title)'.\(feedbackNote)")
         }
 
         do {

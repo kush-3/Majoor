@@ -17,15 +17,50 @@ nonisolated struct ToolCall: Identifiable, Sendable {
     let rawInputJSON: Data?         // Raw JSON input for MCP tools (preserves arrays, objects, etc.)
 }
 
+// MARK: - Streaming Delta
+
+nonisolated enum StreamDelta: Sendable {
+    case textDelta(String)                              // Incremental text chunk
+    case toolUseStart(id: String, name: String)         // Tool call starting
+    case toolUseInputDelta(String)                      // Tool input JSON chunk
+    case contentBlockStop                               // A content block finished
+    case messageDelta(stopReason: String?)              // Message ending with usage
+}
+
 protocol LLMProvider: Sendable {
     var name: String { get }
     var model: String { get }
-    
+
     func complete(
         systemPrompt: String,
         messages: [AnthropicMessage],
         tools: [AnthropicTool]
     ) async throws -> (response: LLMResponse, usage: AnthropicUsage?)
+
+    /// Streaming variant — calls onDelta for each incremental chunk.
+    /// Returns the fully accumulated response when the stream completes.
+    func stream(
+        systemPrompt: String,
+        messages: [AnthropicMessage],
+        tools: [AnthropicTool],
+        onDelta: @Sendable @escaping (StreamDelta) -> Void
+    ) async throws -> (response: LLMResponse, usage: AnthropicUsage?)
+}
+
+// Default implementation: falls back to complete() for providers that don't support streaming
+extension LLMProvider {
+    func stream(
+        systemPrompt: String,
+        messages: [AnthropicMessage],
+        tools: [AnthropicTool],
+        onDelta: @Sendable @escaping (StreamDelta) -> Void
+    ) async throws -> (response: LLMResponse, usage: AnthropicUsage?) {
+        let result = try await complete(systemPrompt: systemPrompt, messages: messages, tools: tools)
+        if case .text(let text) = result.response {
+            onDelta(.textDelta(text))
+        }
+        return result
+    }
 }
 
 enum LLMError: LocalizedError, Sendable {

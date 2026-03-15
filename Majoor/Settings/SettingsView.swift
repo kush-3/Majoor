@@ -74,6 +74,19 @@ struct GeneralSettingsTab: View {
                 }
                 .font(.system(size: 12))
             }
+            Section {
+                HStack(alignment: .top, spacing: 8) {
+                    Image(systemName: "exclamationmark.triangle")
+                        .font(.system(size: 11))
+                        .foregroundColor(.orange)
+                    Text("Majoor is an AI assistant and can make mistakes. Always review actions before approving, especially for emails, file changes, and code commits.")
+                        .font(.system(size: 11))
+                        .foregroundColor(.secondary)
+                        .lineSpacing(2)
+                }
+            } header: {
+                Text("Safety")
+            }
         }
         .formStyle(.grouped)
         .padding()
@@ -135,7 +148,7 @@ struct AboutTab: View {
     var body: some View {
         VStack(spacing: 16) {
             Spacer()
-            Image(systemName: "bolt.fill").font(.system(size: 48)).foregroundColor(.accentColor)
+            Image(systemName: "hammer.fill").font(.system(size: 48)).foregroundColor(.accentColor)
             Text("Majoor").font(.system(size: 24, weight: .bold))
             Text("Your AI that does the work").font(.system(size: 14)).foregroundColor(.secondary)
             Text(appVersion).font(.system(size: 12)).foregroundColor(.secondary.opacity(0.7))

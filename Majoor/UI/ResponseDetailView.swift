@@ -2,7 +2,7 @@
 // Majoor — Full Response Viewer
 //
 // Scrollable view for reading long agent responses.
-// Accessible from activity feed task cards and notification taps.
+// Renders markdown content and collapsible tool call log.
 
 import SwiftUI
 
@@ -11,82 +11,99 @@ struct ResponseDetailView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // Header
-            HStack {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(task.userInput)
-                        .font(.system(size: 13, weight: .semibold))
-                        .lineLimit(2)
-                    HStack(spacing: 12) {
-                        if !task.modelUsed.isEmpty {
-                            Label(friendlyModel(task.modelUsed), systemImage: "cpu")
-                        }
-                        if task.tokensUsed > 0 {
-                            Label(formatTokens(task.tokensUsed), systemImage: "number")
-                        }
-                        if let completed = task.completedAt {
-                            Label(completed.formatted(date: .abbreviated, time: .shortened), systemImage: "clock")
-                        }
+            // Header with metadata
+            VStack(alignment: .leading, spacing: 6) {
+                Text(task.userInput)
+                    .font(.system(size: 13, weight: .semibold))
+                    .lineLimit(2)
+
+                HStack(spacing: 12) {
+                    if !task.modelUsed.isEmpty {
+                        Label(friendlyModel(task.modelUsed), systemImage: "cpu")
                     }
-                    .font(.system(size: 10))
+                    if task.tokensUsed > 0 {
+                        Label(formatTokens(task.tokensUsed), systemImage: "number")
+                    }
+                    if let completed = task.completedAt {
+                        Label(completed.formatted(date: .abbreviated, time: .shortened), systemImage: "clock")
+                    }
+                    Spacer()
+                    Button(action: copyResponse) {
+                        Image(systemName: "doc.on.doc")
+                            .font(.system(size: 11))
+                    }
+                    .buttonStyle(.plain)
                     .foregroundColor(.secondary)
+                    .help("Copy response")
                 }
-                Spacer()
-                Button(action: copyResponse) {
-                    Image(systemName: "doc.on.doc")
-                        .font(.system(size: 12))
-                }
-                .buttonStyle(.plain)
-                .help("Copy response to clipboard")
+                .font(.system(size: 10))
+                .foregroundColor(.secondary)
             }
-            .padding()
-            .background(Color.primary.opacity(0.03))
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+            .background(Color.primary.opacity(0.02))
 
             Divider()
 
-            // Response body
+            // Response body + tool log
             ScrollView {
-                VStack(alignment: .leading, spacing: 12) {
+                VStack(alignment: .leading, spacing: 16) {
                     if let responseText = fullResponseText {
-                        Text(responseText)
-                            .font(.system(size: 12))
-                            .textSelection(.enabled)
-                            .frame(maxWidth: .infinity, alignment: .leading)
+                        // Try markdown rendering, fall back to plain text
+                        if let attributed = try? AttributedString(markdown: responseText,
+                            options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)) {
+                            Text(attributed)
+                                .font(.system(size: 12))
+                                .textSelection(.enabled)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        } else {
+                            Text(responseText)
+                                .font(.system(size: 12))
+                                .textSelection(.enabled)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
                     } else {
                         Text("No response content available.")
                             .font(.system(size: 12))
                             .foregroundColor(.secondary)
                     }
 
-                    // Tool call log
+                    // Collapsible tool call log
                     if hasToolCalls {
-                        Divider()
-                        Text("Tool Calls")
-                            .font(.system(size: 11, weight: .semibold))
-                            .foregroundColor(.secondary)
-
-                        ForEach(Array(toolSteps.enumerated()), id: \.offset) { _, step in
-                            HStack(alignment: .top, spacing: 6) {
-                                Image(systemName: step.type == .toolCall ? "wrench.fill" : "arrow.right")
-                                    .font(.system(size: 9))
-                                    .foregroundColor(step.type == .toolCall ? .blue : .green)
-                                    .frame(width: 12)
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(step.description)
-                                        .font(.system(size: 11, weight: .medium))
-                                    if let detail = step.detail {
-                                        Text(detail)
-                                            .font(.system(size: 10, design: .monospaced))
-                                            .foregroundColor(.secondary)
-                                            .lineLimit(5)
+                        DisclosureGroup {
+                            VStack(alignment: .leading, spacing: 6) {
+                                ForEach(Array(toolSteps.enumerated()), id: \.offset) { _, step in
+                                    HStack(alignment: .top, spacing: 8) {
+                                        Image(systemName: step.type == .toolCall ? "wrench.fill" : "arrow.right")
+                                            .font(.system(size: 9))
+                                            .foregroundColor(step.type == .toolCall ? .orange : .green)
+                                            .frame(width: 12)
+                                        VStack(alignment: .leading, spacing: 2) {
+                                            Text(step.description)
+                                                .font(.system(size: 11, weight: .medium))
+                                            if let detail = step.detail {
+                                                Text(detail)
+                                                    .font(.system(size: 10, design: .monospaced))
+                                                    .foregroundColor(.secondary)
+                                                    .lineLimit(5)
+                                            }
+                                        }
                                     }
+                                    .padding(.vertical, 2)
                                 }
                             }
-                            .padding(.vertical, 2)
+                        } label: {
+                            HStack(spacing: 4) {
+                                Image(systemName: "wrench.and.screwdriver")
+                                    .font(.system(size: 10))
+                                Text("Tool Calls (\(toolSteps.filter { $0.type == .toolCall }.count))")
+                                    .font(.system(size: 11, weight: .medium))
+                            }
+                            .foregroundColor(.secondary)
                         }
                     }
                 }
-                .padding()
+                .padding(16)
             }
         }
     }
@@ -94,7 +111,6 @@ struct ResponseDetailView: View {
     // MARK: - Computed
 
     private var fullResponseText: String? {
-        // Find the last response step
         task.steps.last(where: { $0.type == .response })?.description
     }
 
