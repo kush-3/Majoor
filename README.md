@@ -120,4 +120,4 @@ Majoor/
 
 ## License
 
-All rights reserved. This software is proprietary.
+MIT License — see [LICENSE](LICENSE) for details.
