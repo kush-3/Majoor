@@ -1,107 +1,104 @@
 // MainPanelView.swift
 // Majoor — Dropdown Panel
+//
+// The main panel that appears when clicking the menu bar icon.
+// Shows activity feed, confirmations, pipeline progress, and (soon) chat.
+// Toast overlay provides in-app feedback for task completions and errors.
 
 import SwiftUI
 
 struct MainPanelView: View {
     @EnvironmentObject var taskManager: TaskManager
-    @State private var selectedTab = 0
+    @EnvironmentObject var chatManager: ChatManager
     @State private var selectedTask: AgentTask?
 
     var body: some View {
-        VStack(spacing: 0) {
-            if let task = selectedTask {
-                // Response detail view
-                HStack {
-                    Button(action: { selectedTask = nil }) {
-                        HStack(spacing: 4) {
-                            Image(systemName: "chevron.left").font(.system(size: 11))
-                            Text("Back").font(.system(size: 12))
+        ZStack(alignment: .top) {
+            // Main content
+            VStack(spacing: 0) {
+                if let task = selectedTask {
+                    // Response detail view with back button
+                    HStack {
+                        Button(action: { selectedTask = nil }) {
+                            HStack(spacing: 4) {
+                                Image(systemName: "chevron.left").font(.system(size: 11))
+                                Text("Back").font(.system(size: 12))
+                            }
                         }
+                        .buttonStyle(.plain)
+                        .foregroundColor(.accentColor)
+                        Spacer()
                     }
-                    .buttonStyle(.plain)
-                    .foregroundColor(.accentColor)
-                    Spacer()
-                }
-                .padding(.horizontal, 16).padding(.vertical, 8)
-                Divider()
-                ResponseDetailView(task: task)
-            } else if let confirmId = taskManager.pendingConfirmationId,
-                      let confirmTitle = taskManager.pendingConfirmationTitle,
-                      let confirmBody = taskManager.pendingConfirmationBody {
-                // In-app confirmation view
-                ConfirmationView(
-                    confirmTitle: confirmTitle,
-                    confirmBody: confirmBody,
-                    onApprove: {
-                        Task { await ConfirmationManager.shared.resolve(id: confirmId, approved: true) }
-                    },
-                    onDeny: {
-                        Task { await ConfirmationManager.shared.resolve(id: confirmId, approved: false) }
+                    .padding(.horizontal, 16).padding(.vertical, 8)
+                    Divider()
+                    ResponseDetailView(task: task)
+
+                } else if let confirmation = taskManager.activeConfirmation {
+                    // Interactive confirmation sheet (email, calendar, pipeline, generic)
+                    if taskManager.pendingPipelinePlan != nil && taskManager.pipelineExecuting {
+                        // Pipeline is executing — show progress
+                        let taskId = taskManager.pendingPipelineTaskId
+                        let title = taskId.flatMap { id in taskManager.tasks.first(where: { $0.id == id })?.userInput } ?? "Pipeline"
+                        PipelineProgressView(title: String(title.prefix(50)))
+                            .environmentObject(taskManager)
+                    } else {
+                        ConfirmationSheet(confirmation: confirmation)
+                            .environmentObject(taskManager)
                     }
-                )
-            } else if let planText = taskManager.pendingPipelinePlan,
-                      let taskId = taskManager.pendingPipelineTaskId {
-                // Pipeline plan or progress view
-                if taskManager.pipelineExecuting {
-                    // Pipeline is executing — show progress
+
+                } else if let notification = taskManager.activeNotification {
+                    // Task completion/error notification
+                    TaskNotificationView(notification: notification, onDismiss: {
+                        taskManager.dismissNotification()
+                    }, onViewDetails: { task in
+                        taskManager.dismissNotification()
+                        selectedTask = task
+                    })
+
+                } else if taskManager.pipelineExecuting, let taskId = taskManager.pendingPipelineTaskId {
+                    // Pipeline executing without pending confirmation
                     let title = taskManager.tasks.first(where: { $0.id == taskId })?.userInput ?? "Pipeline"
                     PipelineProgressView(title: String(title.prefix(50)))
                         .environmentObject(taskManager)
+
                 } else {
-                    // Pipeline waiting for approval — show plan with inline editing + approve/deny
-                    PipelinePlanView(
-                        planText: planText,
-                        steps: $taskManager.pipelineSteps,
-                        confirmationId: taskManager.pendingConfirmationId,
-                        onToggleStep: { index in
-                            taskManager.togglePipelineStep(at: index)
-                        },
-                        onApprove: {
-                            if let id = taskManager.pendingConfirmationId {
-                                Task { await ConfirmationManager.shared.resolve(id: id, approved: true) }
-                            }
-                        },
-                        onDeny: {
-                            if let id = taskManager.pendingConfirmationId {
-                                Task { await ConfirmationManager.shared.resolve(id: id, approved: false) }
-                            }
+                    // Normal panel: header + tabs
+                    HStack {
+                        HStack(spacing: 6) {
+                            Image(systemName: "hammer.fill")
+                                .font(.system(size: 14, weight: .semibold))
+                                .foregroundColor(.accentColor)
+                            Text("Majoor")
+                                .font(.system(size: 14, weight: .semibold))
                         }
-                    )
-                }
-            } else {
-                // Normal panel
-                HStack {
-                    HStack(spacing: 6) {
-                        Image(systemName: "bolt.fill").font(.system(size: 14, weight: .semibold)).foregroundColor(.accentColor)
-                        Text("Majoor").font(.system(size: 14, weight: .semibold))
-                    }
-                    Spacer()
-                    Picker("", selection: $selectedTab) {
-                        Text("Activity").tag(0)
-                        Text("Chat").tag(1)
-                    }
-                    .pickerStyle(.segmented)
-                    .frame(width: 160)
-                }
-                .padding(.horizontal, 16).padding(.vertical, 12)
-
-                Divider()
-
-                if selectedTab == 0 {
-                    ActivityFeedView(onViewResponse: { task in
-                        selectedTask = task
-                    }).environmentObject(taskManager)
-                } else {
-                    VStack { Spacer()
-                        Image(systemName: "bubble.left.and.bubble.right").font(.system(size: 36)).foregroundColor(.secondary.opacity(0.5))
-                        Text("Chat mode coming soon").font(.system(size: 13)).foregroundColor(.secondary)
                         Spacer()
-                    }.frame(maxWidth: .infinity)
+                        Picker("", selection: $taskManager.selectedTab) {
+                            Text("Tasks").tag(0)
+                            Text("Chat").tag(1)
+                        }
+                        .pickerStyle(.segmented)
+                        .frame(width: 140)
+                    }
+                    .padding(.horizontal, 16).padding(.vertical, 12)
+
+                    Divider()
+
+                    if taskManager.selectedTab == 0 {
+                        ActivityFeedView(onViewResponse: { task in
+                            selectedTask = task
+                        }).environmentObject(taskManager)
+                    } else {
+                        ChatView()
+                            .environmentObject(chatManager)
+                    }
                 }
             }
+
+            // Toast overlay — floats above content
+            ToastOverlayView()
+                .environmentObject(taskManager)
         }
-        .frame(width: 380, height: 500)
+        .frame(width: 400, height: 520)
         .background(.regularMaterial)
         .onReceive(NotificationCenter.default.publisher(for: .majoorOpenTaskDetail)) { notification in
             if let taskId = notification.userInfo?["taskId"] as? String,
@@ -112,151 +109,56 @@ struct MainPanelView: View {
     }
 }
 
-// MARK: - Confirmation View
+// MARK: - Task Notification View
 
-struct ConfirmationView: View {
-    let confirmTitle: String
-    let confirmBody: String
-    var onApprove: () -> Void
-    var onDeny: () -> Void
+struct TaskNotificationView: View {
+    let notification: TaskNotification
+    var onDismiss: () -> Void
+    var onViewDetails: ((AgentTask) -> Void)?
+
+    private var isSuccess: Bool { notification.type == .success }
 
     var body: some View {
         VStack(spacing: 0) {
-            // Header
-            HStack {
-                Image(systemName: "exclamationmark.shield")
-                    .foregroundColor(.orange)
-                Text("Confirmation Required")
-                    .font(.system(size: 14, weight: .semibold))
-                Spacer()
-            }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 12)
+            Spacer()
 
-            Divider()
+            VStack(spacing: 16) {
+                // Icon
+                Image(systemName: isSuccess ? "checkmark.circle.fill" : "xmark.circle.fill")
+                    .font(.system(size: 40))
+                    .foregroundColor(isSuccess ? .green : .red)
 
-            // Content
-            VStack(alignment: .leading, spacing: 12) {
-                Text(confirmTitle)
-                    .font(.system(size: 13, weight: .medium))
-                Text(confirmBody)
-                    .font(.system(size: 12))
+                // Title
+                Text(notification.title)
+                    .font(.system(size: 16, weight: .semibold))
+
+                // Body
+                Text(notification.body)
+                    .font(.system(size: 13))
                     .foregroundColor(.secondary)
-                    .textSelection(.enabled)
+                    .multilineTextAlignment(.center)
+                    .lineLimit(5)
+                    .padding(.horizontal, 24)
             }
-            .padding(16)
-            .frame(maxWidth: .infinity, alignment: .leading)
 
             Spacer()
 
             Divider()
 
-            // Buttons
+            // Action buttons
             HStack(spacing: 12) {
-                Spacer()
-                Button("Deny") { onDeny() }
-                    .buttonStyle(.bordered)
-                Button("Approve") { onApprove() }
-                    .buttonStyle(.borderedProminent)
-            }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 12)
-        }
-    }
-}
-
-// MARK: - Pipeline Plan View (with inline step editing)
-
-struct PipelinePlanView: View {
-    let planText: String
-    @Binding var steps: [PipelineStep]
-    let confirmationId: String?
-    var onToggleStep: (Int) -> Void
-    var onApprove: () -> Void
-    var onDeny: () -> Void
-
-    var body: some View {
-        VStack(spacing: 0) {
-            // Header
-            HStack {
-                Image(systemName: "arrow.triangle.branch")
-                    .foregroundColor(.accentColor)
-                Text("Pipeline Plan")
-                    .font(.system(size: 14, weight: .semibold))
-                Spacer()
-                let enabled = steps.filter(\.enabled).count
-                let total = steps.count
-                if total > 0 {
-                    Text("\(enabled)/\(total) steps")
-                        .font(.system(size: 11))
-                        .foregroundColor(.secondary)
-                }
-            }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 12)
-
-            Divider()
-
-            // Steps with toggle
-            ScrollView {
-                VStack(alignment: .leading, spacing: 6) {
-                    if steps.isEmpty {
-                        // Fallback: show raw plan text if steps weren't parsed
-                        Text(planText)
-                            .font(.system(size: 12))
-                            .textSelection(.enabled)
-                            .padding(16)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    } else {
-                        ForEach(Array(steps.enumerated()), id: \.element.id) { index, step in
-                            HStack(alignment: .top, spacing: 8) {
-                                Button(action: { onToggleStep(index) }) {
-                                    Image(systemName: step.enabled ? "checkmark.circle.fill" : "circle")
-                                        .font(.system(size: 16))
-                                        .foregroundColor(step.enabled ? .accentColor : .secondary.opacity(0.4))
-                                }
-                                .buttonStyle(.plain)
-
-                                Text("\(index + 1). \(step.planDescription)")
-                                    .font(.system(size: 12))
-                                    .foregroundColor(step.enabled ? .primary : .secondary.opacity(0.5))
-                                    .strikethrough(!step.enabled)
-                            }
-                            .padding(.horizontal, 16)
-                            .padding(.vertical, 2)
-                        }
-                    }
-                }
-                .padding(.vertical, 8)
-            }
-
-            Divider()
-
-            // Footer with approve/deny buttons
-            HStack(spacing: 12) {
-                if confirmationId != nil {
-                    Text("Toggle steps to skip.")
-                        .font(.system(size: 10))
-                        .foregroundColor(.secondary)
-                    Spacer()
-                    Button("Deny") { onDeny() }
+                if let task = notification.task, let onViewDetails {
+                    Button("View Details") { onViewDetails(task) }
                         .buttonStyle(.bordered)
                         .controlSize(.small)
-                    Button("Approve") { onApprove() }
-                        .buttonStyle(.borderedProminent)
-                        .controlSize(.small)
-                } else {
-                    Image(systemName: "hourglass")
-                        .font(.system(size: 11))
-                        .foregroundColor(.secondary)
-                    Text("Waiting for confirmation...")
-                        .font(.system(size: 10))
-                        .foregroundColor(.secondary)
-                    Spacer()
                 }
+                Spacer()
+                Button("OK") { onDismiss() }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
             }
             .padding(.horizontal, 16)
-            .padding(.vertical, 10)
+            .padding(.vertical, 12)
         }
     }
 }

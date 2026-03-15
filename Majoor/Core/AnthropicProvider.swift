@@ -189,6 +189,108 @@ final nonisolated class AnthropicProvider: LLMProvider, @unchecked Sendable {
         throw lastError ?? LLMError.apiError("Request failed after \(maxRetries + 1) attempts")
     }
     
+    // MARK: - Streaming
+
+    func stream(
+        systemPrompt: String,
+        messages: [AnthropicMessage],
+        tools: [AnthropicTool],
+        onDelta: @Sendable @escaping (StreamDelta) -> Void
+    ) async throws -> (response: LLMResponse, usage: AnthropicUsage?) {
+        guard !apiKey.isEmpty else { throw LLMError.invalidAPIKey }
+
+        // Build request body with stream: true
+        let request = AnthropicRequest(
+            model: model,
+            maxTokens: maxTokens,
+            system: systemPrompt,
+            messages: messages,
+            tools: tools.isEmpty ? nil : tools
+        )
+
+        var requestDict: [String: Any]
+        let encoder = JSONEncoder()
+        let requestData = try encoder.encode(request)
+        requestDict = (try? JSONSerialization.jsonObject(with: requestData) as? [String: Any]) ?? [:]
+        requestDict["stream"] = true
+
+        let body = try JSONSerialization.data(withJSONObject: requestDict)
+
+        var urlRequest = URLRequest(url: URL(string: baseURL)!)
+        urlRequest.httpMethod = "POST"
+        urlRequest.httpBody = body
+        urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        urlRequest.setValue(apiKey, forHTTPHeaderField: "x-api-key")
+        urlRequest.setValue(apiVersion, forHTTPHeaderField: "anthropic-version")
+        urlRequest.timeoutInterval = model.contains("opus") ? 300 : 180
+
+        let (bytes, httpResponse) = try await URLSession.shared.bytes(for: urlRequest)
+
+        guard let http = httpResponse as? HTTPURLResponse else {
+            throw LLMError.apiError("Invalid HTTP response")
+        }
+        guard http.statusCode == 200 else {
+            // Collect error body
+            var errorData = Data()
+            for try await byte in bytes { errorData.append(byte) }
+            if http.statusCode == 401 { throw LLMError.invalidAPIKey }
+            if http.statusCode == 429 { throw LLMError.rateLimited(retryAfter: nil) }
+            if http.statusCode == 529 { throw LLMError.serverOverloaded }
+            if let err = try? JSONDecoder().decode(AnthropicError.self, from: errorData) {
+                throw LLMError.apiError(err.error.message)
+            }
+            throw LLMError.apiError("HTTP \(http.statusCode)")
+        }
+
+        // Parse SSE stream using .lines (handles UTF-8 multi-byte chars like emojis correctly)
+        var accumulatedText = ""
+        var finalUsage: AnthropicUsage?
+
+        for try await line in bytes.lines {
+            guard line.hasPrefix("data: ") else { continue }
+
+            let jsonStr = String(line.dropFirst(6))
+            guard let data = jsonStr.data(using: .utf8),
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { continue }
+
+            let eventType = json["type"] as? String ?? ""
+
+            switch eventType {
+            case "content_block_delta":
+                if let delta = json["delta"] as? [String: Any],
+                   let deltaType = delta["type"] as? String,
+                   deltaType == "text_delta",
+                   let text = delta["text"] as? String {
+                    accumulatedText += text
+                    onDelta(.textDelta(text))
+                }
+            case "message_delta":
+                if let delta = json["delta"] as? [String: Any] {
+                    let stopReason = delta["stop_reason"] as? String
+                    onDelta(.messageDelta(stopReason: stopReason))
+                }
+                if let usage = json["usage"] as? [String: Any],
+                   let outputTokens = usage["output_tokens"] as? Int {
+                    finalUsage = AnthropicUsage(inputTokens: finalUsage?.inputTokens ?? 0, outputTokens: outputTokens)
+                }
+            case "message_start":
+                if let message = json["message"] as? [String: Any],
+                   let usage = message["usage"] as? [String: Any],
+                   let inputTokens = usage["input_tokens"] as? Int {
+                    finalUsage = AnthropicUsage(inputTokens: inputTokens, outputTokens: finalUsage?.outputTokens ?? 0)
+                }
+            case "content_block_stop":
+                onDelta(.contentBlockStop)
+            default:
+                break
+            }
+        }
+
+        let totalUsage: AnthropicUsage? = finalUsage
+
+        return (.text(accumulatedText), totalUsage)
+    }
+
     /// Recursively convert AnyCodable to native types for JSON serialization.
     private static func anyCodableToAny(_ value: AnyCodable) -> Any {
         switch value.value {

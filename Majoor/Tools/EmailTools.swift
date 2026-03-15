@@ -311,14 +311,15 @@ nonisolated struct SendEmailTool: AgentTool, Sendable {
 
         // Request user confirmation before sending
         let preview = "To: \(to)\nSubject: \(subject)\n\n\(String(body.prefix(200)))"
-        let approved = await ConfirmationManager.shared.requestConfirmation(
+        let confirmResult = await ConfirmationManager.shared.requestConfirmation(
             title: "Send Email?",
             body: preview,
             category: NotificationManager.confirmEmailCategory
         )
 
-        guard approved else {
-            return ToolResult(success: false, output: "User declined to send the email.")
+        guard confirmResult.approved else {
+            let feedbackNote = confirmResult.feedback.map { " Feedback: \($0)" } ?? ""
+            return ToolResult(success: false, output: "User declined to send the email.\(feedbackNote)")
         }
 
         // Actually send
@@ -374,14 +375,15 @@ nonisolated struct ReplyToEmailTool: AgentTool, Sendable {
 
         // Request user confirmation
         let preview = "Reply to: \(replyTo)\nSubject: \(subject)\n\n\(String(body.prefix(200)))"
-        let approved = await ConfirmationManager.shared.requestConfirmation(
+        let confirmResult = await ConfirmationManager.shared.requestConfirmation(
             title: "Send Reply?",
             body: preview,
             category: NotificationManager.confirmEmailCategory
         )
 
-        guard approved else {
-            return ToolResult(success: false, output: "User declined to send the reply.")
+        guard confirmResult.approved else {
+            let feedbackNote = confirmResult.feedback.map { " Feedback: \($0)" } ?? ""
+            return ToolResult(success: false, output: "User declined to send the reply.\(feedbackNote)")
         }
 
         // Send the reply

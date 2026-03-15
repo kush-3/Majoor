@@ -1,12 +1,48 @@
 // TaskManager.swift
 // Majoor — Task Manager
 //
-// Manages the list of all tasks (running, completed, failed).
+// Manages the list of all tasks (running, completed, failed),
+// in-app toasts, and confirmation state.
 // Stays on @MainActor (default) since it drives SwiftUI views.
 // Loads persisted tasks on init, saves on changes.
 
 import Foundation
 import Combine
+
+// MARK: - Toast Model
+
+enum ToastType: Sendable {
+    case info       // Task complete, general status
+    case error      // Task failed, API errors
+    case warning    // Non-critical warnings
+}
+
+struct Toast: Identifiable {
+    let id = UUID()
+    let type: ToastType
+    let title: String
+    let body: String
+    let autoDismissDelay: TimeInterval?  // nil = persist until dismissed
+    var action: (() -> Void)?            // Optional action button callback
+    var actionLabel: String?             // Optional action button text
+}
+
+// MARK: - Task Notification Model
+
+enum TaskNotificationType {
+    case success
+    case error
+}
+
+struct TaskNotification: Identifiable {
+    let id = UUID()
+    let type: TaskNotificationType
+    let title: String
+    let body: String
+    let task: AgentTask?  // Associated task for "View Details"
+}
+
+// MARK: - Task Manager
 
 class TaskManager: ObservableObject {
 
@@ -16,11 +52,20 @@ class TaskManager: ObservableObject {
     @Published var pipelineExecuting: Bool = false
     @Published var pipelineSteps: [PipelineStep] = []
     @Published var pipelineStartTime: Date?
+    @Published var selectedTab: Int = 0
+
+    // Running task state (for command bar UI)
+    @Published var isTaskRunning: Bool = false
+    @Published var runningTaskInput: String = ""
+
+    // In-app toast system
+    @Published var toasts: [Toast] = []
 
     // In-app confirmation UI state
-    @Published var pendingConfirmationId: String?
-    @Published var pendingConfirmationTitle: String?
-    @Published var pendingConfirmationBody: String?
+    @Published var activeConfirmation: ConfirmationContext?
+
+    // In-app task completion/error notification
+    @Published var activeNotification: TaskNotification?
 
     var runningTasks: [AgentTask] {
         tasks.filter { $0.status == .running }
@@ -29,6 +74,54 @@ class TaskManager: ObservableObject {
     var completedTasks: [AgentTask] {
         tasks.filter { $0.status == .completed }
     }
+
+    // MARK: - Task Notification Methods
+
+    func showNotification(type: TaskNotificationType, title: String, body: String, task: AgentTask? = nil) {
+        activeNotification = TaskNotification(type: type, title: title, body: body, task: task)
+    }
+
+    func dismissNotification() {
+        activeNotification = nil
+    }
+
+    // MARK: - Toast Methods
+
+    func showToast(type: ToastType = .info, title: String, body: String,
+                   autoDismiss: TimeInterval? = 4.0, actionLabel: String? = nil, action: (() -> Void)? = nil) {
+        let toast = Toast(type: type, title: title, body: body,
+                         autoDismissDelay: autoDismiss, action: action, actionLabel: actionLabel)
+        toasts.append(toast)
+
+        // Cap at 3 visible toasts
+        if toasts.count > 3 {
+            toasts.removeFirst(toasts.count - 3)
+        }
+
+        // Schedule auto-dismiss
+        if let delay = toast.autoDismissDelay {
+            let toastId = toast.id
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                self?.dismissToast(id: toastId)
+            }
+        }
+    }
+
+    func dismissToast(id: UUID) {
+        toasts.removeAll { $0.id == id }
+    }
+
+    // MARK: - Confirmation Methods
+
+    func showConfirmation(id: String, title: String, body: String, category: String = "") {
+        activeConfirmation = ConfirmationContext(id: id, title: title, body: body, category: category)
+    }
+
+    func clearConfirmation() {
+        activeConfirmation = nil
+    }
+
+    // MARK: - Pipeline Methods
 
     func showPipelinePlan(_ plan: String, taskId: UUID) {
         pendingPipelinePlan = plan
@@ -65,17 +158,7 @@ class TaskManager: ObservableObject {
         pipelineSteps[index].enabled.toggle()
     }
 
-    func showConfirmation(id: String, title: String, body: String) {
-        pendingConfirmationId = id
-        pendingConfirmationTitle = title
-        pendingConfirmationBody = body
-    }
-
-    func clearConfirmation() {
-        pendingConfirmationId = nil
-        pendingConfirmationTitle = nil
-        pendingConfirmationBody = nil
-    }
+    // MARK: - Task Methods
 
     init() {
         // Load persisted tasks from SQLite

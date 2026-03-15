@@ -87,7 +87,7 @@ struct OnboardingView: View {
     private var welcomeStep: some View {
         VStack(spacing: 16) {
             Spacer()
-            Image(systemName: "bolt.fill")
+            Image(systemName: "hammer.fill")
                 .font(.system(size: 48))
                 .foregroundColor(.accentColor)
             Text("Welcome to Majoor")
@@ -97,7 +97,23 @@ struct OnboardingView: View {
                 .foregroundColor(.secondary)
                 .multilineTextAlignment(.center)
                 .lineSpacing(4)
+
             Spacer()
+
+            // Safety disclaimer
+            HStack(spacing: 8) {
+                Image(systemName: "exclamationmark.triangle")
+                    .font(.system(size: 12))
+                    .foregroundColor(.orange)
+                Text("Majoor is an AI assistant and can make mistakes. Always review actions before approving, especially for emails, file changes, and code commits.")
+                    .font(.system(size: 10))
+                    .foregroundColor(.secondary)
+                    .lineSpacing(2)
+            }
+            .padding(10)
+            .background(Color.orange.opacity(0.08))
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .padding(.horizontal, 8)
         }
         .padding()
     }

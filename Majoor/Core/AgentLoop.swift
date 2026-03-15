@@ -263,24 +263,24 @@ final nonisolated class AgentLoop: @unchecked Sendable {
                     }
 
                     // Show in-app confirmation + notification fallback
-                    let approved = await ConfirmationManager.shared.requestConfirmation(
+                    let confirmResult = await ConfirmationManager.shared.requestConfirmation(
                         title: "Majoor Pipeline",
                         body: String(planText.prefix(200)),
                         category: NotificationManager.pipelineConfirmCategory,
                         onPending: { [taskManager] confirmId in
                             Task { @MainActor in
-                                taskManager.showConfirmation(id: confirmId, title: "Majoor Pipeline", body: "Approve the pipeline plan?")
+                                taskManager.showConfirmation(id: confirmId, title: "Majoor Pipeline", body: planText, category: NotificationManager.pipelineConfirmCategory)
                             }
                         }
                     )
                     await MainActor.run {
                         taskManager.clearConfirmation()
-                        taskManager.pipelineExecuting = approved
+                        taskManager.pipelineExecuting = confirmResult.approved
                     }
 
-                    if approved {
+                    if confirmResult.approved {
                         pipelineApproved = true
-                        // Build approval message including which steps are disabled
+                        // Build approval message including which steps are disabled and user feedback
                         let skippedSteps = await MainActor.run { taskManager.pipelineSteps.enumerated().filter { !$0.element.enabled }.map { $0.offset + 1 } }
                         var approvalMsg = "User approved. Execute all steps now."
                         if !skippedSteps.isEmpty {
@@ -293,14 +293,24 @@ final nonisolated class AgentLoop: @unchecked Sendable {
                                 }
                             }
                         }
+                        // Inject user feedback if provided
+                        if let feedback = confirmResult.feedback {
+                            approvalMsg += " User note: \(feedback)"
+                        }
                         messages.append(AnthropicMessage(role: "assistant", content: .string(planText)))
                         messages.append(AnthropicMessage(role: "user", content: .string(approvalMsg)))
                         MajoorLogger.log("✅ Pipeline approved — executing")
                         continue
                     } else {
                         pipelineApproved = false
+                        var denialMsg = "User declined."
+                        if let feedback = confirmResult.feedback {
+                            denialMsg += " User feedback: \(feedback)"
+                        } else {
+                            denialMsg += " Ask what they'd like to do differently."
+                        }
                         messages.append(AnthropicMessage(role: "assistant", content: .string(planText)))
-                        messages.append(AnthropicMessage(role: "user", content: .string("User declined. Ask what they'd like to do differently.")))
+                        messages.append(AnthropicMessage(role: "user", content: .string(denialMsg)))
                         MajoorLogger.log("❌ Pipeline declined — asking follow-up")
                         await MainActor.run { taskManager.clearPipelinePlan() }
                         continue
@@ -364,22 +374,22 @@ final nonisolated class AgentLoop: @unchecked Sendable {
                         NotificationCenter.default.post(name: .majoorOpenPanel, object: nil)
                     }
 
-                    let approved = await ConfirmationManager.shared.requestConfirmation(
+                    let confirmResult = await ConfirmationManager.shared.requestConfirmation(
                         title: "Majoor Pipeline",
                         body: String(planText.prefix(200)),
                         category: NotificationManager.pipelineConfirmCategory,
                         onPending: { [taskManager] confirmId in
                             Task { @MainActor in
-                                taskManager.showConfirmation(id: confirmId, title: "Majoor Pipeline", body: "Approve the pipeline plan?")
+                                taskManager.showConfirmation(id: confirmId, title: "Majoor Pipeline", body: planText, category: NotificationManager.pipelineConfirmCategory)
                             }
                         }
                     )
                     await MainActor.run {
                         taskManager.clearConfirmation()
-                        taskManager.pipelineExecuting = approved
+                        taskManager.pipelineExecuting = confirmResult.approved
                     }
 
-                    if approved {
+                    if confirmResult.approved {
                         pipelineApproved = true
                         let skippedSteps = await MainActor.run { taskManager.pipelineSteps.enumerated().filter { !$0.element.enabled }.map { $0.offset + 1 } }
                         var approvalMsg = "User approved. Execute all steps now."
@@ -392,13 +402,22 @@ final nonisolated class AgentLoop: @unchecked Sendable {
                                 }
                             }
                         }
+                        if let feedback = confirmResult.feedback {
+                            approvalMsg += " User note: \(feedback)"
+                        }
                         messages.append(AnthropicMessage(role: "assistant", content: .string(planText)))
                         messages.append(AnthropicMessage(role: "user", content: .string(approvalMsg)))
                         continue
                     } else {
                         pipelineApproved = false
+                        var denialMsg = "User declined."
+                        if let feedback = confirmResult.feedback {
+                            denialMsg += " User feedback: \(feedback)"
+                        } else {
+                            denialMsg += " Ask what they'd like to do differently."
+                        }
                         messages.append(AnthropicMessage(role: "assistant", content: .string(planText)))
-                        messages.append(AnthropicMessage(role: "user", content: .string("User declined. Ask what they'd like to do differently.")))
+                        messages.append(AnthropicMessage(role: "user", content: .string(denialMsg)))
                         await MainActor.run { taskManager.clearPipelinePlan() }
                         continue
                     }
@@ -476,31 +495,36 @@ final nonisolated class AgentLoop: @unchecked Sendable {
             }
 
             let output: String
+            var confirmFeedback: String? = nil  // User feedback from confirmation (if any)
             if let tool = activeTools.first(where: { $0.name == call.toolName }) {
                 // Skip per-tool confirmation if pipeline is approved
                 if tool.requiresConfirmation && !pipelineApproved {
                     let confirmTitle = "Majoor — Confirm Action"
                     let confirmBody = "\(call.toolName): \(call.arguments.map { "\($0.key)=\($0.value)" }.joined(separator: ", "))"
-                    let approved = await ConfirmationManager.shared.requestConfirmation(
+                    let confirmResult = await ConfirmationManager.shared.requestConfirmation(
                         title: confirmTitle,
                         body: confirmBody,
                         category: NotificationManager.confirmGenericCategory,
                         onPending: { [taskManager] confirmId in
                             Task { @MainActor in
-                                taskManager.showConfirmation(id: confirmId, title: confirmTitle, body: confirmBody)
+                                taskManager.showConfirmation(id: confirmId, title: confirmTitle, body: confirmBody, category: NotificationManager.confirmGenericCategory)
                                 NotificationCenter.default.post(name: .majoorOpenPanel, object: nil)
                             }
                         }
                     )
                     await MainActor.run { taskManager.clearConfirmation() }
-                    if !approved {
-                        output = "User declined to execute \(call.toolName)."
-                        let resultStep = TaskStep(timestamp: Date(), type: .toolResult, description: "Declined: \(call.toolName)", detail: nil)
+                    if !confirmResult.approved {
+                        let feedbackNote = confirmResult.feedback.map { " User feedback: \($0)" } ?? ""
+                        output = "User declined to execute \(call.toolName).\(feedbackNote)"
+                        let resultStep = TaskStep(timestamp: Date(), type: .toolResult, description: "Declined: \(call.toolName)", detail: confirmResult.feedback)
                         await MainActor.run { task.steps.append(resultStep) }
                         resultBlocks.append(AnthropicContentBlock(type: "tool_result", text: nil, id: nil, name: nil, input: nil, toolUseId: call.id, content: output))
-                        summaries.append("• \(call.toolName) → declined by user")
+                        summaries.append("• \(call.toolName) → declined by user\(feedbackNote)")
                         continue
                     }
+
+                    // If user approved with feedback, store it to append to the tool result
+                    confirmFeedback = confirmResult.feedback
                 }
 
                 do {
@@ -542,7 +566,12 @@ final nonisolated class AgentLoop: @unchecked Sendable {
                 }
             }
 
-            resultBlocks.append(AnthropicContentBlock(type: "tool_result", text: nil, id: nil, name: nil, input: nil, toolUseId: call.id, content: output))
+            // Append user's confirmation feedback to the tool result so the LLM can adapt
+            var finalOutput = output
+            if let feedback = confirmFeedback {
+                finalOutput += "\n[User note: \(feedback)]"
+            }
+            resultBlocks.append(AnthropicContentBlock(type: "tool_result", text: nil, id: nil, name: nil, input: nil, toolUseId: call.id, content: finalOutput))
         }
 
         return (assistantMsg, AnthropicMessage(role: "user", content: .blocks(resultBlocks)), summaries)
