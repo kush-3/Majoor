@@ -256,7 +256,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
                 .environmentObject(taskManager)
                 .environmentObject(chatManager)
             let hosting = NSHostingView(rootView: view)
-            hosting.frame = NSRect(x: 0, y: 0, width: 400, height: 520)
+            hosting.frame = NSRect(x: 0, y: 0, width: DT.Layout.panelWidth, height: DT.Layout.panelHeight)
 
             let panel = NSPanel(
                 contentRect: hosting.frame,
@@ -304,7 +304,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             let window = NSWindow(contentViewController: hostingController)
             window.title = "Welcome to Majoor"
             window.styleMask = [.titled, .closable]
-            window.setContentSize(NSSize(width: 500, height: 400))
+            window.setContentSize(NSSize(width: DT.Layout.onboardingWidth, height: DT.Layout.onboardingHeight))
             window.center()
             window.isReleasedWhenClosed = false
             onboardingWindow = window
@@ -320,7 +320,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             let window = NSWindow(contentViewController: hostingController)
             window.title = "Settings"
             window.styleMask = [.titled, .closable, .miniaturizable]
-            window.setContentSize(NSSize(width: 500, height: 350))
+            window.setContentSize(NSSize(width: DT.Layout.settingsWidth, height: DT.Layout.settingsHeight))
             window.center()
             window.isReleasedWhenClosed = false
             settingsWindow = window

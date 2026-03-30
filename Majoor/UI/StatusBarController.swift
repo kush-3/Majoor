@@ -1,8 +1,9 @@
 // StatusBarController.swift
 // Majoor — Menu Bar Icon Controller
 //
-// Manages the status bar icon with state-based icons and animations.
-// States: idle, working, success (auto-reverts), attention, error.
+// Manages the status bar icon with state-based SF Symbols.
+// States: idle, working (pulse), success (checkmark flash), attention, error.
+// Uses template images throughout for proper dark/light mode adaptation.
 
 import AppKit
 
@@ -16,7 +17,6 @@ class StatusBarController {
     private var successRevertTimer: Timer?
     private var pulseOn = true
     private var currentState: AgentState = .idle
-    private var errorMessage: String?
 
     enum AgentState { case idle, working, success, attention, error }
 
@@ -30,7 +30,6 @@ class StatusBarController {
         observePowerState()
     }
 
-    /// Stop animation when system sleeps, restore when it wakes.
     private func observePowerState() {
         NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.willSleepNotification, object: nil, queue: .main
@@ -49,7 +48,9 @@ class StatusBarController {
     private func setupStatusItem() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         guard let button = statusItem?.button else { return }
-        button.image = NSImage(systemSymbolName: "hammer.fill", accessibilityDescription: "Majoor")
+
+        // Use a clean, recognizable symbol
+        button.image = NSImage(systemSymbolName: "sparkle", accessibilityDescription: "Majoor")
         button.image?.size = NSSize(width: 16, height: 16)
         button.image?.isTemplate = true
         button.action = #selector(handleClick)
@@ -61,23 +62,26 @@ class StatusBarController {
         guard let event = NSApp.currentEvent else { return }
         if event.type == .rightMouseUp { showContextMenu() }
         else {
-            if currentState == .error {
-                setState(.idle)
-            }
+            if currentState == .error { setState(.idle) }
             onLeftClick()
         }
     }
 
     private func showContextMenu() {
         let menu = NSMenu()
-        let cmdItem = NSMenuItem(title: "Open Command Bar (Cmd+Shift+Space)", action: #selector(doOpenCmd), keyEquivalent: "")
+
+        let cmdItem = NSMenuItem(title: "Command Bar", action: #selector(doOpenCmd), keyEquivalent: "")
         cmdItem.target = self
         menu.addItem(cmdItem)
+
         menu.addItem(NSMenuItem.separator())
+
         let settingsItem = NSMenuItem(title: "Settings...", action: #selector(doSettings), keyEquivalent: ",")
         settingsItem.target = self
         menu.addItem(settingsItem)
+
         menu.addItem(NSMenuItem.separator())
+
         let quitItem = NSMenuItem(title: "Quit Majoor", action: #selector(doQuit), keyEquivalent: "q")
         quitItem.target = self
         menu.addItem(quitItem)
@@ -104,53 +108,51 @@ class StatusBarController {
 
         switch state {
         case .idle:
-            button.image = NSImage(systemSymbolName: "hammer.fill", accessibilityDescription: "Ready")
+            button.image = NSImage(systemSymbolName: "sparkle", accessibilityDescription: "Ready")
             button.image?.isTemplate = true
             button.contentTintColor = nil
-            button.toolTip = "Majoor — Ready"
-            errorMessage = nil
+            button.toolTip = "Majoor"
 
         case .working:
             let tooltip = message ?? "Working..."
-            button.toolTip = "Majoor — \(tooltip)"
+            button.toolTip = "Majoor -- \(tooltip)"
             button.contentTintColor = nil
-            button.image = NSImage(systemSymbolName: "hammer.fill", accessibilityDescription: "Working")
+            button.image = NSImage(systemSymbolName: "sparkle", accessibilityDescription: "Working")
             button.image?.isTemplate = true
+
+            // Gentle pulse — not jarring, just enough to signal activity
             pulseOn = true
-            pulseTimer = Timer.scheduledTimer(withTimeInterval: 0.8, repeats: true) { [weak self] _ in
+            pulseTimer = Timer.scheduledTimer(withTimeInterval: 0.9, repeats: true) { [weak self] _ in
                 guard let self, let btn = self.statusItem?.button else { return }
                 self.pulseOn.toggle()
-                let target: CGFloat = self.pulseOn ? 1.0 : 0.55
+                let target: CGFloat = self.pulseOn ? 1.0 : 0.5
                 NSAnimationContext.runAnimationGroup { ctx in
-                    ctx.duration = 0.6
+                    ctx.duration = 0.7
                     ctx.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
                     btn.animator().alphaValue = target
                 }
             }
 
         case .success:
-            // Brief green checkmark flash, then revert to idle
             button.image = NSImage(systemSymbolName: "checkmark.circle.fill", accessibilityDescription: "Done")
             button.image?.isTemplate = false
             button.contentTintColor = .systemGreen
-            button.toolTip = "Majoor — Task complete"
-            errorMessage = nil
-            successRevertTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: false) { [weak self] _ in
+            button.toolTip = "Majoor -- Task complete"
+            successRevertTimer = Timer.scheduledTimer(withTimeInterval: 2.5, repeats: false) { [weak self] _ in
                 self?.setState(.idle)
             }
 
         case .attention:
-            button.image = NSImage(systemSymbolName: "hammer.circle", accessibilityDescription: "Needs Input")
+            button.image = NSImage(systemSymbolName: "sparkle.magnifyingglass", accessibilityDescription: "Needs Input")
             button.image?.isTemplate = true
             button.contentTintColor = nil
-            button.toolTip = "Majoor — Waiting for input"
+            button.toolTip = "Majoor -- Waiting for input"
 
         case .error:
             button.image = NSImage(systemSymbolName: "exclamationmark.triangle.fill", accessibilityDescription: "Error")
             button.image?.isTemplate = true
             button.contentTintColor = .systemRed
-            errorMessage = message
-            button.toolTip = message != nil ? "Majoor — \(message!)" : "Majoor — Error (click to dismiss)"
+            button.toolTip = message != nil ? "Majoor -- \(message!)" : "Majoor -- Error (click to dismiss)"
         }
     }
 }

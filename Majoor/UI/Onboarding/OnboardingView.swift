@@ -1,8 +1,8 @@
 // OnboardingView.swift
 // Majoor — First-Run Setup Wizard
 //
-// 5-step onboarding: Welcome → API Key → Integrations → Permissions → Ready
-// Shown once on first launch. Can be re-run from Settings > General.
+// macOS Setup Assistant-inspired onboarding flow.
+// 5 steps: Welcome -> API Key -> Integrations -> Permissions -> Ready
 
 import SwiftUI
 import EventKit
@@ -37,8 +37,12 @@ struct OnboardingView: View {
             .id(currentStep)
             .transition(
                 direction > 0
-                ? .asymmetric(insertion: .move(edge: .trailing).combined(with: .opacity), removal: .move(edge: .leading).combined(with: .opacity))
-                : .asymmetric(insertion: .move(edge: .leading).combined(with: .opacity), removal: .move(edge: .trailing).combined(with: .opacity))
+                ? .asymmetric(
+                    insertion: .move(edge: .trailing).combined(with: .opacity),
+                    removal: .move(edge: .leading).combined(with: .opacity))
+                : .asymmetric(
+                    insertion: .move(edge: .leading).combined(with: .opacity),
+                    removal: .move(edge: .trailing).combined(with: .opacity))
             )
             .animation(DT.Anim.page, value: currentStep)
 
@@ -46,64 +50,67 @@ struct OnboardingView: View {
 
             // Navigation bar
             HStack {
-                // Fixed-width back container to prevent dot shift
+                // Back button (fixed width to prevent layout shift)
                 Group {
                     if currentStep > 0 && currentStep < totalSteps - 1 {
-                        Button("Back") { direction = -1; currentStep -= 1 }
-                            .buttonStyle(.plain)
-                            .foregroundColor(.secondary)
-                            .keyboardShortcut(.escape, modifiers: [])
+                        Button("Back") {
+                            direction = -1
+                            currentStep -= 1
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(.secondary)
+                        .keyboardShortcut(.escape, modifiers: [])
                     }
                 }
                 .frame(width: 80, alignment: .leading)
 
                 Spacer()
 
-                // Progress dots
-                HStack(spacing: 6) {
+                // Progress indicators
+                HStack(spacing: 8) {
                     ForEach(0..<totalSteps, id: \.self) { i in
                         Circle()
-                            .fill(i == currentStep ? Color.accentColor : i < currentStep ? Color.accentColor.opacity(0.4) : Color.secondary.opacity(0.3))
-                            .frame(width: i == currentStep ? 8 : 6, height: i == currentStep ? 8 : 6)
-                            .onTapGesture {
-                                guard i < currentStep else { return }
-                                direction = -1
-                                currentStep = i
-                            }
+                            .fill(dotColor(for: i))
+                            .frame(width: i == currentStep ? 8 : 6,
+                                   height: i == currentStep ? 8 : 6)
+                            .animation(.spring(response: 0.3, dampingFraction: 0.7), value: currentStep)
                     }
                 }
 
                 Spacer()
 
-                // Fixed-width next container to prevent dot shift
+                // Next / Action button (fixed width)
                 Group {
                     if currentStep == 0 {
-                        Button("Get Started") { direction = 1; currentStep = 1 }
-                            .buttonStyle(.borderedProminent)
-                            .keyboardShortcut(.return, modifiers: [])
-                    } else if currentStep < totalSteps - 1 {
-                        if currentStep == 1 {
-                            Button("Next") { direction = 1; currentStep += 1 }
-                                .buttonStyle(.borderedProminent)
-                                .disabled(claudeKeyValid != .valid)
-                                .keyboardShortcut(.return, modifiers: [])
-                        } else {
-                            Button("Next") { direction = 1; currentStep += 1 }
-                                .buttonStyle(.borderedProminent)
-                                .keyboardShortcut(.return, modifiers: [])
+                        Button("Get Started") {
+                            direction = 1
+                            currentStep = 1
                         }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.large)
+                        .keyboardShortcut(.return, modifiers: [])
+                    } else if currentStep < totalSteps - 1 {
+                        Button("Continue") {
+                            direction = 1
+                            currentStep += 1
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(currentStep == 1 && claudeKeyValid != .valid)
+                        .keyboardShortcut(.return, modifiers: [])
                     } else {
                         Button("Open Majoor") {
                             UserDefaults.standard.set(true, forKey: "hasCompletedOnboarding")
                             onComplete()
                         }
                         .buttonStyle(.borderedProminent)
+                        .controlSize(.large)
                         .keyboardShortcut(.return, modifiers: [])
                     }
                 }
-                .frame(width: 120, alignment: .trailing)
+                .frame(width: 140, alignment: .trailing)
             }
-            .padding()
+            .padding(.horizontal, 20)
+            .padding(.vertical, 14)
         }
         .frame(width: DT.Layout.onboardingWidth, height: DT.Layout.onboardingHeight)
     }
@@ -111,118 +118,149 @@ struct OnboardingView: View {
     // MARK: - Step 1: Welcome
 
     private var welcomeStep: some View {
-        VStack(spacing: 16) {
+        VStack(spacing: 0) {
             Spacer()
+
             Image(nsImage: NSApp.applicationIconImage)
                 .resizable()
-                .frame(width: 80, height: 80)
+                .frame(width: 96, height: 96)
+
             Text("Welcome to Majoor")
-                .font(DT.TitleFont.hero)
-            Text("Your AI agent that lives in the menu bar.\nIt runs tasks, writes code, manages email, and more.")
-                .font(.system(size: 14))
-                .foregroundColor(.secondary)
-                .multilineTextAlignment(.center)
-                .lineSpacing(4)
+                .font(.system(size: 28, weight: .bold))
+                .padding(.top, 16)
+
+            Text("Your AI agent for macOS")
+                .font(.system(size: 15))
+                .foregroundStyle(.secondary)
+                .padding(.top, 4)
+
             Spacer()
+
+            Text("Runs tasks, writes code, manages email, and more \u{2014}\nright from your menu bar.")
+                .font(.system(size: 13))
+                .foregroundStyle(.tertiary)
+                .multilineTextAlignment(.center)
+                .lineSpacing(3)
+                .padding(.bottom, 24)
         }
-        .padding()
+        .padding(.horizontal, 40)
     }
 
     // MARK: - Step 2: API Key
 
     private var apiKeyStep: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        VStack(alignment: .leading, spacing: 0) {
             Text("Anthropic API Key")
-                .font(DT.TitleFont.section)
-                .padding(.top, 24)
+                .font(.system(size: 20, weight: .semibold))
+                .padding(.top, 28)
 
-            Text("Majoor uses Claude to understand your tasks. You'll need an API key from Anthropic.")
+            Text("Majoor uses Claude to understand and execute your tasks.")
                 .font(.system(size: 13))
-                .foregroundColor(.secondary)
+                .foregroundStyle(.secondary)
+                .padding(.top, 6)
 
-            HStack {
-                SecureField("sk-ant-...", text: $claudeKey)
-                    .textFieldStyle(.roundedBorder)
-                    .font(.system(size: 13))
-                    .onSubmit { validateClaudeKey() }
+            // API Key input
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 8) {
+                    SecureField("sk-ant-...", text: $claudeKey)
+                        .textFieldStyle(.roundedBorder)
+                        .onSubmit { validateClaudeKey() }
 
-                Button(action: { pasteFromClipboard() }) {
-                    Image(systemName: "doc.on.clipboard")
+                    Button {
+                        pasteFromClipboard()
+                    } label: {
+                        Image(systemName: "doc.on.clipboard")
+                    }
+                    .help("Paste from clipboard")
+
+                    Button("Validate") { validateClaudeKey() }
+                        .buttonStyle(.bordered)
+                        .disabled(claudeKey.isEmpty || claudeKeyValid == .validating)
                 }
-                .help("Paste from clipboard")
 
-                Button("Validate") { validateClaudeKey() }
-                    .buttonStyle(.bordered)
-                    .disabled(claudeKey.isEmpty || claudeKeyValid == .validating)
-            }
-
-            HStack(spacing: 6) {
-                switch claudeKeyValid {
-                case .idle:
-                    EmptyView()
-                case .validating:
-                    ProgressView().scaleEffect(0.6)
-                    Text("Validating...").font(.system(size: 12)).foregroundColor(.secondary)
-                case .valid:
-                    Image(systemName: "checkmark.circle.fill").foregroundColor(.green)
-                    Text("API key is valid").font(.system(size: 12)).foregroundColor(.green)
-                case .invalid(let msg):
-                    Image(systemName: "xmark.circle.fill").foregroundColor(.red)
-                    Text(msg).font(.system(size: 12)).foregroundColor(.red)
+                // Validation feedback
+                HStack(spacing: 6) {
+                    switch claudeKeyValid {
+                    case .idle:
+                        EmptyView()
+                    case .validating:
+                        ProgressView()
+                            .controlSize(.small)
+                        Text("Validating...")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    case .valid:
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundStyle(.green)
+                        Text("API key is valid")
+                            .font(.caption)
+                            .foregroundStyle(.green)
+                    case .invalid(let msg):
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(.red)
+                        Text(msg)
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                    }
                 }
+                .frame(height: 16)
             }
+            .padding(.top, 20)
 
             Spacer()
 
-            HStack {
-                Text("Don't have a key?")
-                    .font(.system(size: 12))
-                    .foregroundColor(.secondary)
-                Link("Get one from Anthropic Console", destination: URL(string: "https://console.anthropic.com/settings/keys")!)
-                    .font(.system(size: 12))
-            }
-
-            // Optional: Tavily key
-            DisclosureGroup("Web Search (optional)") {
+            // Optional web search key
+            DisclosureGroup {
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("Add a Tavily API key to enable web search. You can skip this.")
-                        .font(.system(size: 11))
-                        .foregroundColor(.secondary)
-                    HStack {
+                    Text("Enable web search with a Tavily API key. You can skip this.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    HStack(spacing: 8) {
                         SecureField("tvly-...", text: $tavilyKey)
                             .textFieldStyle(.roundedBorder)
-                            .font(.system(size: 12))
                         if !tavilyKey.isEmpty {
                             Button("Save") {
                                 APIConfig.saveTavilyKey(tavilyKey)
                             }
-                            .font(.caption)
                             .buttonStyle(.bordered)
+                            .controlSize(.small)
                         }
                     }
                 }
-                .padding(.top, 4)
+                .padding(.top, 6)
+            } label: {
+                Text("Web Search (optional)")
+                    .font(.caption)
             }
-            .font(.system(size: 12))
+
+            // Help link
+            HStack(spacing: 4) {
+                Text("Need a key?")
+                    .foregroundStyle(.secondary)
+                Link("console.anthropic.com", destination: URL(string: "https://console.anthropic.com/settings/keys")!)
+            }
+            .font(.caption)
+            .padding(.top, 12)
+            .padding(.bottom, 12)
         }
-        .padding(.horizontal, 32)
-        .padding(.bottom, 8)
+        .padding(.horizontal, 36)
     }
 
     // MARK: - Step 3: Integrations
 
     private var integrationsStep: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        VStack(alignment: .leading, spacing: 0) {
             Text("Integrations")
-                .font(DT.TitleFont.section)
-                .padding(.top, 24)
+                .font(.system(size: 20, weight: .semibold))
+                .padding(.top, 28)
 
-            Text("Connect external services. Only GitHub is recommended to start — you can set up others later in Settings.")
+            Text("Connect services you use. You can set these up later in Settings.")
                 .font(.system(size: 13))
-                .foregroundColor(.secondary)
+                .foregroundStyle(.secondary)
+                .padding(.top, 6)
 
             ScrollView {
-                VStack(spacing: 10) {
+                VStack(spacing: 8) {
                     IntegrationCard(
                         name: "GitHub",
                         icon: "chevron.left.forwardslash.chevron.right",
@@ -257,108 +295,142 @@ struct OnboardingView: View {
                         connectedIntegrations: $connectedIntegrations
                     )
                 }
+                .padding(.top, 16)
             }
         }
-        .padding(.horizontal, 32)
-        .padding(.bottom, 8)
+        .padding(.horizontal, 36)
     }
 
     // MARK: - Step 4: Permissions
 
     private var permissionsStep: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        VStack(alignment: .leading, spacing: 0) {
             Text("Permissions")
-                .font(DT.TitleFont.section)
-                .padding(.top, 24)
+                .font(.system(size: 20, weight: .semibold))
+                .padding(.top, 28)
 
             Text("Majoor can manage your calendar events through Apple Calendar.")
                 .font(.system(size: 13))
-                .foregroundColor(.secondary)
+                .foregroundStyle(.secondary)
+                .padding(.top, 6)
 
-            VStack(alignment: .leading, spacing: 12) {
-                HStack {
-                    Image(systemName: "calendar")
-                        .font(.system(size: 20))
-                        .foregroundColor(.accentColor)
-                        .frame(width: 32)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Calendar Access")
-                            .font(.system(size: 13, weight: .medium))
-                        Text("Read and create calendar events")
-                            .font(.system(size: 11))
-                            .foregroundColor(.secondary)
-                    }
-                    Spacer()
-                    if calendarGranted {
-                        Image(systemName: "checkmark.circle.fill")
-                            .foregroundColor(.green)
-                        Text("Granted").font(.system(size: 12)).foregroundColor(.green)
-                    } else {
-                        Button("Grant Access") {
-                            requestCalendarAccess()
-                        }
-                        .buttonStyle(.bordered)
-                    }
+            // Calendar permission card
+            HStack(spacing: 12) {
+                Image(systemName: "calendar")
+                    .font(.system(size: 22))
+                    .foregroundStyle(Color.accentColor)
+                    .frame(width: 32, height: 32)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Calendar Access")
+                        .font(.system(size: 13, weight: .medium))
+                    Text("Read and create calendar events")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
-                .padding()
-                .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.04)))
-            }
 
-            Text("You can skip this and grant access later when Majoor first tries to use your calendar.")
-                .font(.system(size: 11))
-                .foregroundColor(.secondary)
+                Spacer()
+
+                if calendarGranted {
+                    Label("Granted", systemImage: "checkmark.circle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.green)
+                } else {
+                    Button("Grant Access") {
+                        requestCalendarAccess()
+                    }
+                    .buttonStyle(.bordered)
+                }
+            }
+            .padding(16)
+            .background(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(.primary.opacity(0.03))
+            )
+            .padding(.top, 20)
+
+            Text("You can skip this. Majoor will ask again when it first needs calendar access.")
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+                .padding(.top, 12)
 
             Spacer()
         }
-        .padding(.horizontal, 32)
+        .padding(.horizontal, 36)
         .onAppear { checkCalendarAccess() }
     }
 
     // MARK: - Step 5: Ready
 
     private var readyStep: some View {
-        VStack(spacing: 16) {
+        VStack(spacing: 0) {
             Spacer()
-            Image(systemName: "checkmark.circle.fill")
-                .font(.system(size: 48))
-                .foregroundColor(.green)
-            Text("You're all set!")
-                .font(DT.TitleFont.medium)
 
-            VStack(alignment: .leading, spacing: 8) {
-                SummaryRow(icon: "checkmark.circle.fill", color: .green, text: "Anthropic API key configured")
+            Image(systemName: "checkmark.circle")
+                .font(.system(size: 48, weight: .thin))
+                .foregroundStyle(.green)
 
-                if !tavilyKey.isEmpty || APIConfig.hasUserTavilyKey {
-                    SummaryRow(icon: "checkmark.circle.fill", color: .green, text: "Web search enabled")
-                } else {
-                    SummaryRow(icon: "minus.circle", color: .secondary, text: "Web search — using default")
-                }
+            Text("You're all set")
+                .font(.system(size: 22, weight: .semibold))
+                .padding(.top, 12)
 
-                if !connectedIntegrations.isEmpty {
-                    SummaryRow(icon: "checkmark.circle.fill", color: .green, text: "\(connectedIntegrations.joined(separator: ", ")) connected")
-                } else {
-                    SummaryRow(icon: "minus.circle", color: .secondary, text: "No integrations — set up in Settings")
-                }
-
-                if calendarGranted {
-                    SummaryRow(icon: "checkmark.circle.fill", color: .green, text: "Calendar access granted")
-                } else {
-                    SummaryRow(icon: "minus.circle", color: .secondary, text: "Calendar — grant later when needed")
-                }
+            // Summary
+            VStack(alignment: .leading, spacing: 10) {
+                SummaryRow(
+                    icon: "checkmark.circle.fill",
+                    color: .green,
+                    text: "Anthropic API key configured"
+                )
+                summaryRowForWebSearch
+                summaryRowForIntegrations
+                summaryRowForCalendar
             }
-            .padding(.horizontal, 40)
-
-            Text("Press ⌘⇧Space to open the command bar.")
-                .font(.system(size: 13))
-                .foregroundColor(.secondary)
-                .padding(.top, 8)
+            .padding(.horizontal, 48)
+            .padding(.top, 20)
 
             Spacer()
+
+            Text("Press \u{2318}\u{21E7}Space anytime to open the command bar.")
+                .font(.system(size: 13))
+                .foregroundStyle(.tertiary)
+                .padding(.bottom, 20)
         }
-        .padding()
     }
 
-    // MARK: - Actions
+    @ViewBuilder
+    private var summaryRowForWebSearch: some View {
+        if !tavilyKey.isEmpty || APIConfig.hasUserTavilyKey {
+            SummaryRow(icon: "checkmark.circle.fill", color: .green, text: "Web search enabled")
+        } else {
+            SummaryRow(icon: "minus.circle", color: .secondary, text: "Web search \u{2014} using default")
+        }
+    }
+
+    @ViewBuilder
+    private var summaryRowForIntegrations: some View {
+        if !connectedIntegrations.isEmpty {
+            SummaryRow(icon: "checkmark.circle.fill", color: .green, text: "\(connectedIntegrations.joined(separator: ", ")) connected")
+        } else {
+            SummaryRow(icon: "minus.circle", color: .secondary, text: "No integrations \u{2014} set up in Settings")
+        }
+    }
+
+    @ViewBuilder
+    private var summaryRowForCalendar: some View {
+        if calendarGranted {
+            SummaryRow(icon: "checkmark.circle.fill", color: .green, text: "Calendar access granted")
+        } else {
+            SummaryRow(icon: "minus.circle", color: .secondary, text: "Calendar \u{2014} grant later when needed")
+        }
+    }
+
+    // MARK: - Helpers
+
+    private func dotColor(for index: Int) -> Color {
+        if index == currentStep { return .accentColor }
+        if index < currentStep { return .accentColor.opacity(0.4) }
+        return .secondary.opacity(0.25)
+    }
 
     private func pasteFromClipboard() {
         if let str = NSPasteboard.general.string(forType: .string) {
@@ -447,10 +519,10 @@ struct SummaryRow: View {
     let text: String
 
     var body: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 10) {
             Image(systemName: icon)
-                .foregroundColor(color)
-                .font(.system(size: 12))
+                .foregroundStyle(color)
+                .font(.system(size: 14))
             Text(text)
                 .font(.system(size: 13))
         }

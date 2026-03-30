@@ -1,9 +1,9 @@
 // PipelineProgressView.swift
 // Majoor — Real-time Pipeline Progress
 //
-// Shows step-by-step progress during pipeline execution.
-// Observes TaskManager.pipelineSteps for real-time updates.
-// Each step shows pending/running/completed/failed/skipped status.
+// Design reference: Xcode build progress.
+// Clean step list with status icons, thin progress bar,
+// elapsed time in monospaced font. No visual clutter.
 
 import SwiftUI
 
@@ -12,75 +12,60 @@ struct PipelineProgressView: View {
     let title: String
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 0) {
             // Header
-            HStack {
+            HStack(spacing: DT.Spacing.sm) {
                 Image(systemName: "arrow.triangle.branch")
-                    .foregroundColor(.accentColor)
-                Text("Pipeline: \"\(title)\"")
-                    .font(.system(size: 13, weight: .semibold))
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundStyle(Color.accentColor)
+
+                Text(title)
+                    .font(DT.Font.body(.medium))
                     .lineLimit(1)
+
                 Spacer()
+
                 overallStatusIcon
             }
+            .padding(.horizontal, DT.Spacing.lg)
+            .padding(.top, DT.Spacing.lg)
+            .padding(.bottom, DT.Spacing.md)
 
             // Progress bar
             progressBar
-
-            Divider()
+                .padding(.horizontal, DT.Spacing.lg)
 
             // Steps
             ScrollView {
-                VStack(alignment: .leading, spacing: 10) {
+                VStack(alignment: .leading, spacing: DT.Spacing.xxs) {
                     ForEach(Array(taskManager.pipelineSteps.enumerated()), id: \.element.id) { index, step in
                         PipelineStepRow(step: step, index: index + 1)
                     }
                 }
+                .padding(.horizontal, DT.Spacing.md)
+                .padding(.vertical, DT.Spacing.md)
             }
 
-            Divider()
-
-            // Footer: progress summary
+            // Footer
             HStack {
-                let completed = taskManager.pipelineSteps.filter { $0.status == .completed }.count
-                let total = taskManager.pipelineSteps.filter { $0.enabled }.count
-                let failed = taskManager.pipelineSteps.filter { $0.status == .failed }.count
-                let currentStep = taskManager.pipelineSteps.firstIndex { $0.status == .running }.map { $0 + 1 }
-
-                if let current = currentStep {
-                    Text("Step \(current) of \(total)")
-                        .font(.system(size: 11))
-                        .foregroundColor(.secondary)
-                } else if completed == total && total > 0 {
-                    Text("All \(total) steps completed")
-                        .font(.system(size: 11))
-                        .foregroundColor(.green)
-                } else {
-                    Text("\(completed)/\(total) steps completed")
-                        .font(.system(size: 11))
-                        .foregroundColor(.secondary)
-                }
-
-                if failed > 0 {
-                    Text("(\(failed) failed)")
-                        .font(.system(size: 11))
-                        .foregroundColor(.red)
-                }
-
+                footerStatus
                 Spacer()
-
                 if let start = taskManager.pipelineStartTime {
                     TimelineView(.periodic(from: start, by: 1)) { _ in
                         let elapsed = Int(Date().timeIntervalSince(start))
-                        Text("\(elapsed)s elapsed")
-                            .font(.system(size: 11, design: .monospaced))
-                            .foregroundColor(.secondary)
+                        Text("\(elapsed)s")
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundStyle(.tertiary)
                     }
                 }
             }
+            .padding(.horizontal, DT.Spacing.lg)
+            .padding(.vertical, DT.Spacing.md)
+            .background(.ultraThinMaterial)
         }
-        .padding(12)
     }
+
+    // MARK: - Progress Bar
 
     private var progressBar: some View {
         let total = taskManager.pipelineSteps.filter(\.enabled).count
@@ -90,15 +75,17 @@ struct PipelineProgressView: View {
         return GeometryReader { geo in
             ZStack(alignment: .leading) {
                 Capsule()
-                    .fill(DT.Color.surfaceCard)
-                RoundedRectangle(cornerRadius: 1.5, style: .continuous)
-                    .fill(DT.Color.accent)
+                    .fill(Color.primary.opacity(0.06))
+                Capsule()
+                    .fill(Color.accentColor)
                     .frame(width: geo.size.width * fraction)
             }
         }
         .frame(height: 3)
         .animation(DT.Anim.slow, value: completed)
     }
+
+    // MARK: - Overall Status Icon
 
     @ViewBuilder
     private var overallStatusIcon: some View {
@@ -110,14 +97,47 @@ struct PipelineProgressView: View {
         if allDone && !taskManager.pipelineSteps.isEmpty {
             if hasFailure {
                 Image(systemName: "exclamationmark.circle.fill")
-                    .foregroundColor(.orange)
+                    .foregroundStyle(.orange)
             } else {
                 Image(systemName: "checkmark.circle.fill")
-                    .foregroundColor(.green)
+                    .foregroundStyle(.green)
             }
         } else {
             ProgressView()
                 .controlSize(.small)
+                .scaleEffect(0.8)
+        }
+    }
+
+    // MARK: - Footer Status
+
+    @ViewBuilder
+    private var footerStatus: some View {
+        let completed = taskManager.pipelineSteps.filter { $0.status == .completed }.count
+        let total = taskManager.pipelineSteps.filter { $0.enabled }.count
+        let failed = taskManager.pipelineSteps.filter { $0.status == .failed }.count
+        let currentStep = taskManager.pipelineSteps.firstIndex { $0.status == .running }.map { $0 + 1 }
+
+        HStack(spacing: DT.Spacing.sm) {
+            if let current = currentStep {
+                Text("Step \(current) of \(total)")
+                    .font(DT.Font.caption)
+                    .foregroundStyle(.secondary)
+            } else if completed == total && total > 0 {
+                Text("All \(total) steps completed")
+                    .font(DT.Font.caption)
+                    .foregroundStyle(.green)
+            } else {
+                Text("\(completed)/\(total) completed")
+                    .font(DT.Font.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            if failed > 0 {
+                Text("(\(failed) failed)")
+                    .font(DT.Font.caption)
+                    .foregroundStyle(.red)
+            }
         }
     }
 }
@@ -129,29 +149,27 @@ struct PipelineStepRow: View {
     let index: Int
 
     var body: some View {
-        HStack(alignment: .top, spacing: 8) {
+        HStack(alignment: .top, spacing: DT.Spacing.sm) {
             stepIcon
-                .frame(width: 20)
+                .frame(width: 18, height: 18)
 
-            VStack(alignment: .leading, spacing: 2) {
-                HStack {
-                    Text("\(index). \(step.planDescription)")
-                        .font(.system(size: 12, weight: step.status == .running ? .medium : .regular))
-                        .foregroundColor(textColor)
-                        .strikethrough(!step.enabled && step.status == .pending)
-                }
+            VStack(alignment: .leading, spacing: DT.Spacing.xxs) {
+                Text("\(index). \(step.planDescription)")
+                    .font(DT.Font.caption(step.status == .running ? .medium : .regular))
+                    .foregroundStyle(textColor)
+                    .strikethrough(!step.enabled && step.status == .pending)
 
                 if let result = step.result {
                     Text(result)
                         .font(DT.Font.micro)
-                        .foregroundColor(.secondary)
+                        .foregroundStyle(.secondary)
                         .lineLimit(2)
                 }
 
                 if let error = step.error {
                     Text(error)
                         .font(DT.Font.micro)
-                        .foregroundColor(DT.Color.error)
+                        .foregroundStyle(.red)
                         .lineLimit(2)
                 }
             }
@@ -160,19 +178,19 @@ struct PipelineStepRow: View {
         .padding(.vertical, DT.Spacing.xs)
         .background(
             step.status == .running
-                ? DT.Color.surfaceCard
-                : .clear,
-            in: RoundedRectangle(cornerRadius: DT.Radius.small, style: .continuous)
+                ? RoundedRectangle(cornerRadius: DT.Radius.small, style: .continuous)
+                    .fill(Color.primary.opacity(DT.Opacity.cardFill))
+                : nil
         )
     }
 
     private var textColor: Color {
         switch step.status {
-        case .pending: return step.enabled ? .secondary : .secondary.opacity(0.4)
+        case .pending: return step.enabled ? .secondary : DT.Color.textQuaternary
         case .running: return .primary
         case .completed: return DT.Color.textTertiary
         case .failed: return DT.Color.error
-        case .skipped: return .secondary.opacity(0.5)
+        case .skipped: return DT.Color.textQuaternary
         }
     }
 
@@ -180,30 +198,25 @@ struct PipelineStepRow: View {
     private var stepIcon: some View {
         switch step.status {
         case .pending:
-            if step.enabled {
-                Image(systemName: "circle.dashed")
-                    .font(.system(size: 14))
-                    .foregroundColor(.secondary.opacity(0.4))
-            } else {
-                Image(systemName: "forward.circle")
-                    .font(.system(size: 14))
-                    .foregroundColor(.orange.opacity(0.5))
-            }
+            Image(systemName: step.enabled ? "circle" : "forward.circle")
+                .font(.system(size: 13))
+                .foregroundColor(step.enabled ? .secondary.opacity(0.35) : .orange.opacity(0.5))
         case .running:
             ProgressView()
                 .controlSize(.mini)
+                .scaleEffect(0.7)
         case .completed:
             Image(systemName: "checkmark.circle.fill")
-                .font(.system(size: 14))
-                .foregroundColor(.green)
+                .font(.system(size: 13))
+                .foregroundStyle(.green)
         case .failed:
             Image(systemName: "xmark.circle.fill")
-                .font(.system(size: 14))
-                .foregroundColor(.red)
+                .font(.system(size: 13))
+                .foregroundStyle(.red)
         case .skipped:
             Image(systemName: "forward.circle")
-                .font(.system(size: 14))
-                .foregroundColor(.orange)
+                .font(.system(size: 13))
+                .foregroundStyle(.orange)
         }
     }
 }

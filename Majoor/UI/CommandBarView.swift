@@ -1,8 +1,10 @@
 // CommandBarView.swift
-// Majoor — Command Bar Input
+// Majoor — Spotlight-style Command Bar
 //
-// Spotlight-style command bar with Task/Chat mode toggle, input history,
-// and running task state with stop button.
+// Design reference: macOS Spotlight Search.
+// Large centered input, material background, minimal chrome.
+// Mode toggle is a subtle pill, not a loud colored button.
+// Keyboard hints are whisper-quiet at the bottom.
 
 import SwiftUI
 
@@ -18,7 +20,6 @@ struct CommandBarView: View {
         return CommandMode(rawValue: saved.capitalized) ?? .task
     }()
     @State private var historyIndex: Int = -1
-    @State private var modeToggleHovered = false
     @FocusState private var isFocused: Bool
 
     let isTaskRunning: Bool
@@ -34,110 +35,21 @@ struct CommandBarView: View {
     var body: some View {
         VStack(spacing: 0) {
             if isTaskRunning {
-                // Running task state
-                HStack(spacing: 12) {
-                    ProgressView()
-                        .controlSize(.small)
-                        .scaleEffect(0.8)
-
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Task Running")
-                            .font(.system(size: 13, weight: .semibold))
-                        Text(runningTaskInput)
-                            .font(.system(size: 12))
-                            .foregroundColor(.secondary)
-                            .lineLimit(1)
-                    }
-
-                    Spacer()
-
-                    Button(action: {
-                        onStop()
-                        onCancel()
-                    }) {
-                        HStack(spacing: 4) {
-                            Image(systemName: "stop.fill")
-                                .font(.system(size: 10))
-                            Text("Stop")
-                                .font(.system(size: 12, weight: .medium))
-                        }
-                        .foregroundColor(.red)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 6)
-                        .background(Color.red.opacity(0.1))
-                        .clipShape(Capsule())
-                    }
-                    .buttonStyle(.plain)
-                }
-                .padding(.horizontal, 20)
-                .padding(.vertical, 14)
+                runningState
             } else {
-                // Normal input state
-                HStack(spacing: 12) {
-                    // Mode toggle
-                    Button(action: toggleMode) {
-                        Text(mode.rawValue)
-                            .font(DT.Font.caption(.semibold))
-                            .foregroundColor(mode == .task ? .white : .accentColor)
-                            .padding(.horizontal, DT.Spacing.md)
-                            .padding(.vertical, DT.Spacing.xs + 1)
-                            .background(
-                                Capsule()
-                                    .fill(mode == .task
-                                          ? Color.accentColor.opacity(modeToggleHovered ? 0.85 : 1.0)
-                                          : Color.accentColor.opacity(modeToggleHovered ? 0.2 : 0.12))
-                            )
-                    }
-                    .buttonStyle(.plain)
-                    .onHover { modeToggleHovered = $0 }
-                    .help("Tab to switch mode")
-
-                    // Input field
-                    TextField(placeholder, text: $inputText)
-                        .textFieldStyle(.plain)
-                        .font(.system(size: 17))
-                        .focused($isFocused)
-                        .onSubmit { submitCommand() }
-                        .onExitCommand { onCancel() }
-                        .onKeyPress(.upArrow) { navigateHistory(direction: -1); return .handled }
-                        .onKeyPress(.downArrow) { navigateHistory(direction: 1); return .handled }
-                        .onKeyPress(.tab) { toggleMode(); return .handled }
-
-                    // Submit button
-                    if !inputText.isEmpty {
-                        Button(action: submitCommand) {
-                            Image(systemName: "arrow.up.circle.fill")
-                                .font(.system(size: 22))
-                                .foregroundColor(.accentColor)
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-                .padding(.horizontal, 20)
-                .padding(.vertical, 14)
-
-                // Keyboard hints
-                HStack(spacing: 16) {
-                    HintLabel(key: "Return", action: "submit")
-                    HintLabel(key: "Tab", action: "switch mode")
-                    HintLabel(key: "Up/Down", action: "history")
-                    HintLabel(key: "Esc", action: "close")
-                    Spacer()
-                }
-                .padding(.horizontal, 20)
-                .padding(.bottom, 10)
+                inputState
             }
         }
         .background(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(.regularMaterial)
-                .shadow(color: .black.opacity(0.18), radius: 24, y: 12)
+            RoundedRectangle(cornerRadius: DT.Radius.large, style: .continuous)
+                .fill(.ultraThickMaterial)
+                .shadow(color: .black.opacity(0.20), radius: 40, y: 14)
         )
         .overlay(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.5)
+            RoundedRectangle(cornerRadius: DT.Radius.large, style: .continuous)
+                .strokeBorder(Color.primary.opacity(0.06), lineWidth: 0.5)
         )
-        .frame(width: 600)
+        .frame(width: DT.Layout.commandBarWidth)
         .onAppear {
             if !isTaskRunning {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { isFocused = true }
@@ -145,12 +57,142 @@ struct CommandBarView: View {
         }
     }
 
+    // MARK: - Running Task State
+
+    private var runningState: some View {
+        HStack(spacing: DT.Spacing.md) {
+            ProgressView()
+                .controlSize(.small)
+
+            VStack(alignment: .leading, spacing: DT.Spacing.xxs) {
+                Text("Running...")
+                    .font(DT.Font.body(.medium))
+                Text(runningTaskInput)
+                    .font(DT.Font.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+
+            Spacer()
+
+            Button {
+                onStop()
+                onCancel()
+            } label: {
+                HStack(spacing: DT.Spacing.xs) {
+                    Image(systemName: "stop.fill")
+                        .font(.system(size: 9))
+                    Text("Stop")
+                        .font(DT.Font.caption(.medium))
+                }
+                .foregroundStyle(.red)
+                .padding(.horizontal, DT.Spacing.md)
+                .padding(.vertical, 6)
+                .background(
+                    Capsule(style: .continuous)
+                        .fill(Color.red.opacity(0.1))
+                )
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, DT.Spacing.xl)
+        .padding(.vertical, DT.Spacing.lg)
+    }
+
+    // MARK: - Input State
+
+    private var inputState: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: DT.Spacing.md) {
+                // Search icon (like Spotlight)
+                Image(systemName: "magnifyingglass")
+                    .font(.system(size: 18, weight: .medium))
+                    .foregroundStyle(.tertiary)
+
+                // Input field
+                TextField(placeholder, text: $inputText)
+                    .textFieldStyle(.plain)
+                    .font(DT.Font.largeInput)
+                    .focused($isFocused)
+                    .onSubmit { submitCommand() }
+                    .onExitCommand { onCancel() }
+                    .onKeyPress(.upArrow) { navigateHistory(direction: -1); return .handled }
+                    .onKeyPress(.downArrow) { navigateHistory(direction: 1); return .handled }
+                    .onKeyPress(.tab) { toggleMode(); return .handled }
+
+                // Mode toggle — subtle pill, not a loud button
+                Button(action: toggleMode) {
+                    Text(mode.rawValue)
+                        .font(DT.Font.caption(.medium))
+                        .foregroundStyle(mode == .task ? .primary : .secondary)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 4)
+                        .background(
+                            Capsule(style: .continuous)
+                                .fill(Color.primary.opacity(mode == .task ? 0.08 : 0.04))
+                        )
+                }
+                .buttonStyle(.plain)
+                .help("Tab to switch mode")
+
+                // Submit button — only visible when there's text
+                if !inputText.isEmpty {
+                    Button(action: submitCommand) {
+                        Image(systemName: "arrow.up.circle.fill")
+                            .font(.system(size: 22))
+                            .foregroundStyle(Color.accentColor)
+                    }
+                    .buttonStyle(.plain)
+                    .transition(.scale.combined(with: .opacity))
+                }
+            }
+            .padding(.horizontal, DT.Spacing.xl)
+            .padding(.vertical, DT.Spacing.lg)
+            .animation(DT.Anim.fast, value: inputText.isEmpty)
+
+            // Keyboard hints — barely visible, just enough to guide
+            Rectangle()
+                .fill(Color.primary.opacity(0.04))
+                .frame(height: 0.5)
+
+            HStack(spacing: DT.Spacing.lg) {
+                hintLabel("Return", "submit")
+                hintLabel("Tab", "switch mode")
+                hintLabel("\u{2191}\u{2193}", "history")
+                hintLabel("Esc", "close")
+                Spacer()
+            }
+            .padding(.horizontal, DT.Spacing.xl)
+            .padding(.vertical, DT.Spacing.sm)
+        }
+    }
+
+    // MARK: - Hint Label
+
+    private func hintLabel(_ key: String, _ action: String) -> some View {
+        HStack(spacing: 3) {
+            Text(key)
+                .font(.system(size: 9, weight: .medium, design: .rounded))
+                .padding(.horizontal, 4)
+                .padding(.vertical, 1)
+                .background(
+                    RoundedRectangle(cornerRadius: 3, style: .continuous)
+                        .fill(Color.primary.opacity(0.05))
+                )
+            Text(action)
+                .font(.system(size: 9))
+        }
+        .foregroundStyle(.quaternary)
+    }
+
+    // MARK: - Helpers
+
     private var placeholder: String {
-        mode == .task ? "What can I help with?" : "Ask Majoor anything..."
+        mode == .task ? "What can I help with?" : "Ask anything..."
     }
 
     private func toggleMode() {
-        withAnimation(.easeInOut(duration: 0.15)) {
+        withAnimation(DT.Anim.fast) {
             mode = (mode == .task) ? .chat : .task
             UserDefaults.standard.set(mode.rawValue.lowercased(), forKey: "commandBarMode")
         }
@@ -160,7 +202,6 @@ struct CommandBarView: View {
         let t = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !t.isEmpty else { return }
 
-        // Save to history
         var hist = history
         hist.removeAll { $0 == t }
         hist.insert(t, at: 0)
@@ -184,26 +225,5 @@ struct CommandBarView: View {
             historyIndex = newIndex
             inputText = hist[newIndex]
         }
-    }
-}
-
-// MARK: - Keyboard Hint Label
-
-private struct HintLabel: View {
-    let key: String
-    let action: String
-
-    var body: some View {
-        HStack(spacing: 3) {
-            Text(key)
-                .font(.system(size: 9, weight: .medium, design: .rounded))
-                .padding(.horizontal, 4)
-                .padding(.vertical, 1)
-                .background(Color.primary.opacity(0.06))
-                .clipShape(RoundedRectangle(cornerRadius: 3))
-            Text(action)
-                .font(.system(size: 9))
-        }
-        .foregroundColor(.secondary.opacity(0.5))
     }
 }

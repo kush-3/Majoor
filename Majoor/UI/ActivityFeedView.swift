@@ -1,8 +1,9 @@
 // ActivityFeedView.swift
 // Majoor — Activity Feed
 //
-// Displays recent tasks with polished Apple HIG-style cards.
-// Groups running tasks separately from completed/failed.
+// Design reference: macOS Notification Center.
+// Cards float on material, no hard borders, grouped by status.
+// Subtle hover states, compact metadata, generous whitespace.
 
 import SwiftUI
 
@@ -12,162 +13,201 @@ struct ActivityFeedView: View {
 
     var body: some View {
         if taskManager.tasks.isEmpty {
-            VStack(spacing: 12) {
-                Spacer()
-                Image(systemName: "tray")
-                    .font(.system(size: 32))
-                    .foregroundColor(.secondary.opacity(0.4))
-                Text("No tasks yet")
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundColor(.secondary)
-                Text("Press Cmd+Shift+Space to get started")
-                    .font(.system(size: 11))
-                    .foregroundColor(.secondary)
-                Spacer()
-            }
-            .frame(maxWidth: .infinity)
+            emptyState
         } else {
             ScrollView {
                 LazyVStack(spacing: 0) {
-                    // Running tasks section
+                    // Running tasks
                     let running = taskManager.tasks.filter { $0.status == .running || $0.status == .waiting }
                     if !running.isEmpty {
-                        SectionHeader(title: "Running")
+                        sectionHeader("Active")
                         ForEach(running) { task in
                             TaskCardView(task: task, onViewResponse: onViewResponse)
                         }
                     }
 
-                    // Completed tasks section
+                    // Completed tasks
                     let completed = taskManager.tasks.filter { $0.status == .completed || $0.status == .failed }
                     if !completed.isEmpty {
-                        SectionHeader(title: "Recent")
+                        sectionHeader("Recent")
                         ForEach(completed) { task in
                             TaskCardView(task: task, onViewResponse: onViewResponse)
                         }
                     }
                 }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
+                .padding(.horizontal, DT.Spacing.md)
+                .padding(.vertical, DT.Spacing.sm)
             }
         }
     }
-}
 
-// MARK: - Section Header
+    // MARK: - Empty State
 
-private struct SectionHeader: View {
-    let title: String
+    private var emptyState: some View {
+        VStack(spacing: DT.Spacing.lg) {
+            Spacer()
 
-    var body: some View {
-        HStack {
-            Text(title)
-                .font(.system(size: 11, weight: .medium))
-                .foregroundColor(.secondary)
-                .textCase(.uppercase)
+            Image(systemName: "tray")
+                .font(.system(size: 36, weight: .thin))
+                .foregroundStyle(.quaternary)
+
+            VStack(spacing: DT.Spacing.xs) {
+                Text("No tasks yet")
+                    .font(DT.Font.body(.medium))
+                    .foregroundStyle(.secondary)
+                Text("Press \u{2318}\u{21E7}Space to get started")
+                    .font(DT.Font.caption)
+                    .foregroundStyle(.tertiary)
+            }
+
             Spacer()
         }
-        .padding(.horizontal, 4)
-        .padding(.top, 8)
-        .padding(.bottom, 4)
+        .frame(maxWidth: .infinity)
+    }
+
+    // MARK: - Section Header
+
+    private func sectionHeader(_ title: String) -> some View {
+        HStack {
+            Text(title)
+                .font(DT.Font.caption(.medium))
+                .foregroundStyle(.tertiary)
+                .textCase(.uppercase)
+                .tracking(0.5)
+            Spacer()
+        }
+        .padding(.horizontal, DT.Spacing.xs)
+        .padding(.top, DT.Spacing.md)
+        .padding(.bottom, DT.Spacing.xs)
     }
 }
 
 // MARK: - Task Card
+//
+// Each task card is a subtle vibrancy surface that reveals detail on hover/tap.
+// No hard borders. Status communicated through icon + color, not background fills.
 
 struct TaskCardView: View {
     @ObservedObject var task: AgentTask
     @State private var isExpanded = false
-    @State private var isRunningAnimating = false
+    @State private var isHovered = false
     var onViewResponse: ((AgentTask) -> Void)? = nil
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            // Top row: status + timestamp
-            HStack(spacing: 6) {
+        VStack(alignment: .leading, spacing: DT.Spacing.sm) {
+            // Top row: status icon + input text + timestamp
+            HStack(alignment: .top, spacing: DT.Spacing.sm) {
                 statusIcon
-                Text(task.status.rawValue.capitalized)
-                    .font(DT.Font.caption(.medium))
-                    .foregroundColor(statusColor)
-                Spacer()
+                    .frame(width: 16, height: 16)
+
+                VStack(alignment: .leading, spacing: DT.Spacing.xxs) {
+                    Text(task.userInput)
+                        .font(DT.Font.body(.medium))
+                        .lineLimit(isExpanded ? nil : 2)
+
+                    // Summary (completed/failed only)
+                    if !task.summary.isEmpty && task.status != .running {
+                        Text(task.summary)
+                            .font(DT.Font.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(isExpanded ? nil : 2)
+                    }
+                }
+
+                Spacer(minLength: DT.Spacing.sm)
+
                 Text(task.createdAt.timeAgo())
-                    .font(.system(size: 10))
-                    .foregroundColor(.secondary)
+                    .font(DT.Font.micro)
+                    .foregroundStyle(.tertiary)
             }
 
-            // User input
-            Text(task.userInput)
-                .font(DT.Font.body(.semibold))
-                .lineLimit(isExpanded ? nil : 2)
-
-            // Summary (completed tasks)
-            if !task.summary.isEmpty && task.status != .running {
-                Text(task.summary)
-                    .font(.system(size: 11))
-                    .foregroundColor(.secondary)
-                    .lineLimit(isExpanded ? nil : 2)
-            }
-
-            // Expanded step details
+            // Expanded detail
             if isExpanded {
-                Divider().padding(.vertical, 2)
-                VStack(alignment: .leading, spacing: 6) {
-                    ForEach(task.steps) { step in
-                        HStack(alignment: .top, spacing: 8) {
-                            stepIcon(step.type).frame(width: 14)
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(step.description)
-                                    .font(DT.Font.caption)
-                                    .lineLimit(3)
-                                if let d = step.detail {
-                                    Text(d)
-                                        .font(.system(size: 10, design: .monospaced))
-                                        .foregroundColor(.secondary)
-                                        .lineLimit(4)
-                                }
-                            }
-                        }
-                    }
-                }
-                .padding(DT.Spacing.sm)
-                .background(DT.Color.surfaceCard)
-                .clipShape(RoundedRectangle(cornerRadius: DT.Radius.small, style: .continuous))
+                expandedSteps
             }
 
-            // Action buttons
-            HStack(spacing: 12) {
+            // Footer: actions + metadata
+            HStack(spacing: DT.Spacing.sm) {
                 if !task.steps.isEmpty {
-                    Button(isExpanded ? "Collapse" : "Details") {
-                        withAnimation(.easeInOut(duration: 0.2)) { isExpanded.toggle() }
+                    Button {
+                        withAnimation(DT.Anim.normal) { isExpanded.toggle() }
+                    } label: {
+                        HStack(spacing: 3) {
+                            Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+                                .font(.system(size: 8, weight: .bold))
+                            Text(isExpanded ? "Less" : "Details")
+                                .font(DT.Font.micro(.medium))
+                        }
+                        .foregroundStyle(.secondary)
                     }
-                    .font(.system(size: 10, weight: .medium))
                     .buttonStyle(.plain)
-                    .foregroundColor(.accentColor)
                 }
+
                 if hasLongResponse {
-                    Button("View Response") { onViewResponse?(task) }
-                        .font(.system(size: 10, weight: .medium))
-                        .buttonStyle(.plain)
-                        .foregroundColor(.accentColor)
+                    Button {
+                        onViewResponse?(task)
+                    } label: {
+                        Text("View Response")
+                            .font(DT.Font.micro(.medium))
+                            .foregroundStyle(Color.accentColor)
+                    }
+                    .buttonStyle(.plain)
                 }
+
                 Spacer()
+
                 if task.tokensUsed > 0 {
-                    HStack(spacing: 4) {
+                    HStack(spacing: 3) {
                         Text(friendlyModel(task.modelUsed))
-                        Text("·")
+                        Text("\u{00B7}")
                         Text(formatTokens(task.tokensUsed))
                     }
-                    .font(.system(size: 9))
-                    .foregroundColor(.secondary)
+                    .font(DT.Font.micro)
+                    .foregroundStyle(.quaternary)
                 }
             }
         }
-        .padding(12)
-        .background(Color.primary.opacity(DT.Opacity.cardFill))
-        .clipShape(RoundedRectangle(cornerRadius: DT.Radius.medium, style: .continuous))
+        .padding(DT.Spacing.md)
+        .background(
+            RoundedRectangle(cornerRadius: DT.Radius.medium, style: .continuous)
+                .fill(Color.primary.opacity(isHovered ? DT.Opacity.hoverFill : DT.Opacity.cardFill))
+        )
         .cardShadow()
-        .hoverCard(cornerRadius: DT.Radius.medium)
-        .padding(.vertical, 3)
+        .padding(.vertical, DT.Spacing.xxs)
+        .onHover { hovering in
+            withAnimation(DT.Anim.fast) { isHovered = hovering }
+        }
+    }
+
+    // MARK: - Expanded Steps
+
+    private var expandedSteps: some View {
+        VStack(alignment: .leading, spacing: DT.Spacing.xs) {
+            ForEach(task.steps) { step in
+                HStack(alignment: .top, spacing: DT.Spacing.sm) {
+                    stepIcon(step.type)
+                        .frame(width: 14)
+                    VStack(alignment: .leading, spacing: DT.Spacing.xxs) {
+                        Text(step.description)
+                            .font(DT.Font.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(3)
+                        if let d = step.detail {
+                            Text(d)
+                                .font(.system(size: 10, design: .monospaced))
+                                .foregroundStyle(.tertiary)
+                                .lineLimit(4)
+                        }
+                    }
+                }
+            }
+        }
+        .padding(DT.Spacing.sm)
+        .background(
+            RoundedRectangle(cornerRadius: DT.Radius.small, style: .continuous)
+                .fill(.ultraThinMaterial)
+        )
+        .transition(.opacity.combined(with: .scale(scale: 0.98, anchor: .top)))
     }
 
     // MARK: - Helpers
@@ -182,51 +222,38 @@ struct TaskCardView: View {
     private var statusIcon: some View {
         switch task.status {
         case .running:
-            Circle()
-                .fill(DT.Color.running)
-                .frame(width: 8, height: 8)
-                .overlay(
-                    Circle()
-                        .stroke(DT.Color.running.opacity(0.4), lineWidth: 2)
-                        .scaleEffect(isRunningAnimating ? 2.0 : 1.0)
-                        .opacity(isRunningAnimating ? 0 : 0.8)
-                        .animation(.easeOut(duration: 1.2).repeatForever(autoreverses: false), value: isRunningAnimating)
-                )
-                .onAppear { isRunningAnimating = true }
+            ProgressView()
+                .controlSize(.mini)
+                .scaleEffect(0.7)
         case .completed:
             Image(systemName: "checkmark.circle.fill")
-                .font(.system(size: 12))
-                .foregroundColor(.green)
+                .font(.system(size: 13))
+                .foregroundStyle(.green)
         case .failed:
             Image(systemName: "xmark.circle.fill")
-                .font(.system(size: 12))
-                .foregroundColor(.red)
+                .font(.system(size: 13))
+                .foregroundStyle(.red)
         case .waiting:
             Image(systemName: "clock.fill")
-                .font(.system(size: 12))
-                .foregroundColor(.blue)
-        }
-    }
-
-    private var statusColor: Color {
-        switch task.status {
-        case .running: return .orange
-        case .completed: return .green
-        case .failed: return .red
-        case .waiting: return .blue
+                .font(.system(size: 13))
+                .foregroundStyle(.blue)
         }
     }
 
     private func stepIcon(_ type: TaskStep.StepType) -> some View {
+        let name: String
+        let color: Color
         switch type {
-        case .thinking: return Image(systemName: "brain").font(.system(size: 10)).foregroundColor(.purple)
-        case .toolCall: return Image(systemName: "wrench").font(.system(size: 10)).foregroundColor(.orange)
-        case .toolResult: return Image(systemName: "checkmark.circle").font(.system(size: 10)).foregroundColor(.green)
-        case .response: return Image(systemName: "text.bubble").font(.system(size: 10)).foregroundColor(.blue)
-        case .error: return Image(systemName: "exclamationmark.triangle").font(.system(size: 10)).foregroundColor(.red)
+        case .thinking:  name = "brain"; color = .purple
+        case .toolCall:  name = "wrench"; color = .orange
+        case .toolResult: name = "checkmark.circle"; color = .green
+        case .response:  name = "text.bubble"; color = .blue
+        case .error:     name = "exclamationmark.triangle"; color = .red
         }
+        return Image(systemName: name)
+            .font(.system(size: 10))
+            .foregroundStyle(color)
     }
-
 }
 
 extension Date {

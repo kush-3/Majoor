@@ -26,84 +26,102 @@ struct IntegrationCard: View {
     @State private var toolCount: Int? = nil
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
+        VStack(alignment: .leading, spacing: 10) {
+            // Header
+            HStack(spacing: 10) {
                 Image(systemName: icon)
                     .font(.system(size: 16))
-                    .foregroundColor(.accentColor)
-                    .frame(width: 24)
+                    .foregroundStyle(Color.accentColor)
+                    .frame(width: 24, height: 24)
+
                 Text(name)
                     .font(.system(size: 13, weight: .medium))
+
                 if recommended {
                     Text("Recommended")
-                        .font(.system(size: 9, weight: .medium))
+                        .font(.system(size: 9, weight: .semibold))
                         .padding(.horizontal, 6)
                         .padding(.vertical, 2)
-                        .background(Capsule().fill(Color.accentColor.opacity(0.15)))
-                        .foregroundColor(.accentColor)
+                        .background(
+                            Capsule()
+                                .fill(Color.accentColor.opacity(0.12))
+                        )
+                        .foregroundStyle(Color.accentColor)
                 }
+
                 Spacer()
 
                 if isSaved {
                     HStack(spacing: 4) {
-                        Image(systemName: "checkmark.circle.fill").foregroundColor(.green)
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundStyle(.green)
                         if let count = toolCount {
-                            Text("\(count) tools").font(.system(size: 11)).foregroundColor(.green)
+                            Text("\(count) tools")
+                                .font(.caption)
+                                .foregroundStyle(.green)
                         } else {
-                            Text("Connected").font(.system(size: 11)).foregroundColor(.green)
+                            Text("Connected")
+                                .font(.caption)
+                                .foregroundStyle(.green)
                         }
                     }
                 } else if !isExpanded {
-                    Button(hasExistingToken ? "Change" : "Set up") {
-                        isExpanded = true
+                    Button(hasExistingToken ? "Change" : "Set Up") {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            isExpanded = true
+                        }
                     }
-                    .font(.system(size: 11))
                     .buttonStyle(.bordered)
+                    .controlSize(.small)
                 }
             }
 
+            // Token input
             if isExpanded && !isSaved {
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(spacing: 8) {
                         SecureField(placeholder, text: $token)
                             .textFieldStyle(.roundedBorder)
                             .font(.system(size: 12))
+
                         Button("Save") { saveToken() }
-                            .font(.caption)
-                            .buttonStyle(.bordered)
+                            .buttonStyle(.borderedProminent)
+                            .controlSize(.small)
                             .disabled(token.isEmpty || isSaving)
-                        Button("Skip") {
-                            isExpanded = false
-                            token = ""
+
+                        Button("Cancel") {
+                            withAnimation(.easeInOut(duration: 0.2)) {
+                                isExpanded = false
+                                token = ""
+                            }
                         }
-                        .font(.caption)
+                        .controlSize(.small)
                     }
 
                     if let extra = extraCredential {
-                        HStack {
-                            TextField(extra.label, text: $extraValue)
-                                .textFieldStyle(.roundedBorder)
-                                .font(.system(size: 12))
-                        }
+                        TextField(extra.label, text: $extraValue)
+                            .textFieldStyle(.roundedBorder)
+                            .font(.system(size: 12))
                     }
 
                     if isSaving {
-                        HStack(spacing: 4) {
-                            ProgressView().scaleEffect(0.5)
-                            Text("Connecting...").font(.system(size: 11)).foregroundColor(.secondary)
+                        HStack(spacing: 6) {
+                            ProgressView()
+                                .controlSize(.mini)
+                            Text("Connecting...")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
                         }
                     }
                 }
-            }
-
-            if !recommended && !isExpanded && !isSaved {
-                Text("Set up later in Settings")
-                    .font(.system(size: 10))
-                    .foregroundColor(.secondary)
+                .transition(.opacity.combined(with: .move(edge: .top)))
             }
         }
-        .padding(12)
-        .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.04)))
+        .padding(14)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(.primary.opacity(0.03))
+        )
         .onAppear { checkExisting() }
     }
 
@@ -126,12 +144,10 @@ struct IntegrationCard: View {
 
         KeychainManager.shared.save(key: keychainKey, value: token)
 
-        // Save extra credential if provided
         if let extra = extraCredential, !extraValue.isEmpty {
             KeychainManager.shared.save(key: extra.keychainKey, value: extraValue)
         }
 
-        // Ensure mcp.json config exists for this server
         let serverName = name.lowercased()
         var configs = MCPConfig.load()
         if configs[serverName] == nil {
@@ -139,11 +155,9 @@ struct IntegrationCard: View {
             MCPConfig.save(configs)
         }
 
-        // Start the server and check tools
         Task {
             if let config = MCPConfig.load()[serverName] {
                 await MCPServerManager.shared.startServer(name: serverName, config: config)
-                // Wait briefly for tools to be discovered
                 try? await Task.sleep(nanoseconds: 3_000_000_000)
                 if let client = await MCPServerManager.shared.client(for: serverName) {
                     let tools = await client.discoveredTools

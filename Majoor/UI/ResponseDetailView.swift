@@ -1,8 +1,9 @@
 // ResponseDetailView.swift
 // Majoor — Full Response Viewer
 //
-// Scrollable view for reading long agent responses.
-// Renders markdown content and collapsible tool call log.
+// Design reference: Xcode's inspector panel / Preview.app.
+// Metadata bar at top with copy action, body below with markdown.
+// Tool call log is a collapsible section, not a separate view.
 
 import SwiftUI
 
@@ -12,48 +13,17 @@ struct ResponseDetailView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // Header with metadata
-            VStack(alignment: .leading, spacing: 6) {
-                Text(task.userInput)
-                    .font(DT.Font.body(.semibold))
-                    .lineLimit(2)
-
-                HStack(spacing: 12) {
-                    if !task.modelUsed.isEmpty {
-                        Label(friendlyModel(task.modelUsed), systemImage: "cpu")
-                    }
-                    if task.tokensUsed > 0 {
-                        Label(formatTokens(task.tokensUsed), systemImage: "number")
-                    }
-                    if let completed = task.completedAt {
-                        Label(completed.formatted(date: .abbreviated, time: .shortened), systemImage: "clock")
-                    }
-                    Spacer()
-                    Button(action: copyResponse) {
-                        Image(systemName: didCopy ? "checkmark" : "doc.on.doc")
-                            .font(.system(size: 11))
-                            .contentTransition(.symbolEffect(.replace))
-                    }
-                    .buttonStyle(.plain)
-                    .foregroundColor(didCopy ? .green : .secondary)
-                    .help("Copy response")
-                }
-                .font(DT.Font.micro)
-                .foregroundColor(.secondary)
-            }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 12)
-            .background(Color.primary.opacity(DT.Opacity.cardFill))
-
-            Divider()
+            // Metadata header — compact, material background
+            metadataHeader
 
             // Response body + tool log
             ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
+                VStack(alignment: .leading, spacing: DT.Spacing.xl) {
                     if let responseText = fullResponseText {
-                        // Try markdown rendering, fall back to plain text
-                        if let attributed = try? AttributedString(markdown: responseText,
-                            options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)) {
+                        if let attributed = try? AttributedString(
+                            markdown: responseText,
+                            options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)
+                        ) {
                             Text(attributed)
                                 .font(DT.Font.body)
                                 .lineSpacing(4)
@@ -67,48 +37,100 @@ struct ResponseDetailView: View {
                                 .frame(maxWidth: .infinity, alignment: .leading)
                         }
                     } else {
-                        Text("No response content available.")
-                            .font(DT.Font.body)
-                            .foregroundColor(.secondary)
+                        VStack(spacing: DT.Spacing.sm) {
+                            Image(systemName: "doc.text")
+                                .font(.system(size: 24, weight: .thin))
+                                .foregroundStyle(.quaternary)
+                            Text("No response content")
+                                .font(DT.Font.caption)
+                                .foregroundStyle(.tertiary)
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.top, DT.Spacing.xxxl)
                     }
 
-                    // Collapsible tool call log
+                    // Tool call log
                     if hasToolCalls {
-                        DisclosureGroup {
-                            VStack(alignment: .leading, spacing: 6) {
-                                ForEach(Array(toolSteps.enumerated()), id: \.offset) { _, step in
-                                    HStack(alignment: .top, spacing: 8) {
-                                        Image(systemName: step.type == .toolCall ? "wrench.fill" : "arrow.right")
-                                            .font(.system(size: 9))
-                                            .foregroundColor(step.type == .toolCall ? .orange : .green)
-                                            .frame(width: 12)
-                                        VStack(alignment: .leading, spacing: 2) {
-                                            Text(step.description)
-                                                .font(DT.Font.caption(.medium))
-                                            if let detail = step.detail {
-                                                Text(detail)
-                                                    .font(.system(size: 10, design: .monospaced))
-                                                    .foregroundColor(.secondary)
-                                                    .lineLimit(5)
-                                            }
-                                        }
-                                    }
-                                    .padding(.vertical, 2)
-                                }
-                            }
-                        } label: {
-                            HStack(spacing: 4) {
-                                Image(systemName: "wrench.and.screwdriver")
-                                    .font(DT.Font.micro)
-                                Text("Tool Calls (\(toolSteps.filter { $0.type == .toolCall }.count))")
-                                    .font(DT.Font.caption(.medium))
-                            }
-                            .foregroundColor(.secondary)
-                        }
+                        toolCallLog
                     }
                 }
-                .padding(16)
+                .padding(DT.Spacing.lg)
             }
+        }
+    }
+
+    // MARK: - Metadata Header
+
+    private var metadataHeader: some View {
+        VStack(alignment: .leading, spacing: DT.Spacing.sm) {
+            Text(task.userInput)
+                .font(DT.Font.body(.semibold))
+                .lineLimit(2)
+
+            HStack(spacing: DT.Spacing.md) {
+                if !task.modelUsed.isEmpty {
+                    Label(friendlyModel(task.modelUsed), systemImage: "cpu")
+                }
+                if task.tokensUsed > 0 {
+                    Label(formatTokens(task.tokensUsed), systemImage: "number")
+                }
+                if let completed = task.completedAt {
+                    Label(completed.formatted(date: .abbreviated, time: .shortened), systemImage: "clock")
+                }
+
+                Spacer()
+
+                Button(action: copyResponse) {
+                    Image(systemName: didCopy ? "checkmark" : "doc.on.doc")
+                        .font(.system(size: 11))
+                        .contentTransition(.symbolEffect(.replace))
+                        .foregroundStyle(didCopy ? .green : .secondary)
+                }
+                .buttonStyle(.plain)
+                .help("Copy response")
+            }
+            .font(DT.Font.micro)
+            .foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, DT.Spacing.lg)
+        .padding(.vertical, DT.Spacing.md)
+        .background(.ultraThinMaterial)
+    }
+
+    // MARK: - Tool Call Log
+
+    private var toolCallLog: some View {
+        DisclosureGroup {
+            VStack(alignment: .leading, spacing: DT.Spacing.xs) {
+                ForEach(Array(toolSteps.enumerated()), id: \.offset) { _, step in
+                    HStack(alignment: .top, spacing: DT.Spacing.sm) {
+                        Image(systemName: step.type == .toolCall ? "wrench.fill" : "arrow.right")
+                            .font(.system(size: 9))
+                            .foregroundStyle(step.type == .toolCall ? .orange : .green)
+                            .frame(width: 12)
+
+                        VStack(alignment: .leading, spacing: DT.Spacing.xxs) {
+                            Text(step.description)
+                                .font(DT.Font.caption(.medium))
+                            if let detail = step.detail {
+                                Text(detail)
+                                    .font(.system(size: 10, design: .monospaced))
+                                    .foregroundStyle(.tertiary)
+                                    .lineLimit(5)
+                            }
+                        }
+                    }
+                    .padding(.vertical, DT.Spacing.xxs)
+                }
+            }
+        } label: {
+            HStack(spacing: DT.Spacing.xs) {
+                Image(systemName: "wrench.and.screwdriver")
+                    .font(DT.Font.micro)
+                Text("Tool Calls (\(toolSteps.filter { $0.type == .toolCall }.count))")
+                    .font(DT.Font.caption(.medium))
+            }
+            .foregroundStyle(.secondary)
         }
     }
 
@@ -138,5 +160,4 @@ struct ResponseDetailView: View {
             didCopy = false
         }
     }
-
 }

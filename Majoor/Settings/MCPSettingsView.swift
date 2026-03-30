@@ -21,7 +21,7 @@ struct MCPSettingsView: View {
     }
 
     struct ServerEntry: Identifiable {
-        let id: String  // server name
+        let id: String
         let name: String
         var isRunning: Bool
         var toolCount: Int
@@ -31,8 +31,6 @@ struct MCPSettingsView: View {
         var extraCredentials: [ExtraCredential]
     }
 
-    // Known MCP servers with their token keychain keys and setup info
-    // extraCredentials: additional keychain keys needed beyond the primary token (e.g. Slack Team ID)
     private static let knownServers: [(name: String, keychainKey: String, tokenLabel: String, envKey: String, helpURL: String, extraCredentials: [(keychainKey: String, label: String, envKey: String)])] = [
         ("github", "github_pat", "Personal Access Token", "GITHUB_PERSONAL_ACCESS_TOKEN", "github.com/settings/tokens", []),
         ("slack", "slack_bot_token", "Bot Token (xoxb-)", "SLACK_BOT_TOKEN", "api.slack.com/apps",
@@ -43,16 +41,16 @@ struct MCPSettingsView: View {
 
     var body: some View {
         Form {
-            Section("Integrations") {
+            Section {
                 if isLoading {
-                    HStack {
-                        ProgressView().scaleEffect(0.7)
-                        Text("Loading...").font(.system(size: 12)).foregroundColor(.secondary)
+                    HStack(spacing: 8) {
+                        ProgressView()
+                            .controlSize(.small)
+                        Text("Loading servers...")
+                            .foregroundStyle(.secondary)
                     }
-                } else if servers.isEmpty {
-                    Text("No MCP servers configured.")
-                        .font(.system(size: 12))
-                        .foregroundColor(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .center)
+                    .padding(.vertical, 8)
                 } else {
                     ForEach(servers) { server in
                         MCPServerRow(server: server, onTokenChange: { newToken in
@@ -66,26 +64,31 @@ struct MCPSettingsView: View {
                         })
                     }
                 }
+            } header: {
+                Text("MCP Servers")
+            }
+
+            Section {
+                Button("Add Custom Server...") { showAddCustom = true }
+            } header: {
+                Text("Custom")
+            } footer: {
+                Text("MCP servers extend Majoor with tools from external services. Tokens are stored in the macOS Keychain.")
             }
 
             Section {
                 HStack {
-                    Button { Task { await refresh() } } label: {
-                        Label("Reload", systemImage: "arrow.clockwise")
+                    Button {
+                        Task { await refresh() }
+                    } label: {
+                        Label("Reload Servers", systemImage: "arrow.clockwise")
                     }
-                    .font(.caption)
                     Spacer()
-                    Button("Open mcp.json") { openConfigFile() }
-                        .font(.caption)
-                    Spacer()
-                    Button("Add Custom Server...") { showAddCustom = true }
-                        .font(.caption)
-                        .buttonStyle(.bordered)
+                    Button("Open mcp.json...") { openConfigFile() }
                 }
             }
         }
         .formStyle(.grouped)
-        .padding()
         .onAppear { Task { await refresh() } }
         .sheet(isPresented: $showAddCustom) {
             AddCustomServerSheet(onSave: { name, command, args, envKey, envValue in
@@ -108,13 +111,11 @@ struct MCPSettingsView: View {
 
         var entries: [ServerEntry] = []
 
-        // Add known servers (even if not configured, to show "Add Token" option)
         for known in Self.knownServers {
             let hasToken = KeychainManager.shared.retrieve(key: known.keychainKey) != nil
             let status = statusMap[known.name]
             let isConfigured = configs[known.name] != nil
 
-            // Build extra credentials list
             let extras: [ExtraCredential] = known.extraCredentials.map { extra in
                 let val = KeychainManager.shared.retrieve(key: extra.keychainKey)
                 return ExtraCredential(
@@ -130,41 +131,32 @@ struct MCPSettingsView: View {
                 let tokenValue = KeychainManager.shared.retrieve(key: known.keychainKey)
                 let preview = tokenValue.map { maskToken($0) }
                 entries.append(ServerEntry(
-                    id: known.name,
-                    name: known.name,
+                    id: known.name, name: known.name,
                     isRunning: status?.isRunning ?? false,
                     toolCount: status?.toolCount ?? 0,
                     error: status?.error,
-                    hasToken: hasToken,
-                    tokenPreview: preview,
+                    hasToken: hasToken, tokenPreview: preview,
                     extraCredentials: extras
                 ))
             } else {
                 entries.append(ServerEntry(
-                    id: known.name,
-                    name: known.name,
-                    isRunning: false,
-                    toolCount: 0,
-                    error: nil,
-                    hasToken: false,
-                    tokenPreview: nil,
+                    id: known.name, name: known.name,
+                    isRunning: false, toolCount: 0,
+                    error: nil, hasToken: false, tokenPreview: nil,
                     extraCredentials: extras
                 ))
             }
         }
 
-        // Add any custom servers not in the known list
         let knownNames = Set(Self.knownServers.map(\.name))
         for (name, _) in configs where !knownNames.contains(name) {
             let status = statusMap[name]
             entries.append(ServerEntry(
-                id: name,
-                name: name,
+                id: name, name: name,
                 isRunning: status?.isRunning ?? false,
                 toolCount: status?.toolCount ?? 0,
                 error: status?.error,
-                hasToken: true,  // Custom servers don't need separate token management
-                tokenPreview: nil,
+                hasToken: true, tokenPreview: nil,
                 extraCredentials: []
             ))
         }
@@ -177,15 +169,12 @@ struct MCPSettingsView: View {
         guard let known = Self.knownServers.first(where: { $0.name == serverName }) else { return }
         KeychainManager.shared.save(key: known.keychainKey, value: token)
 
-        // Ensure the server is in mcp.json
         var configs = MCPConfig.load()
         if configs[serverName] == nil {
-            let serverConfig = Self.defaultServerConfig(for: serverName)
-            configs[serverName] = serverConfig
+            configs[serverName] = Self.defaultServerConfig(for: serverName)
             MCPConfig.save(configs)
         }
 
-        // Restart the server
         Task {
             if let config = MCPConfig.load()[serverName] {
                 await MCPServerManager.shared.startServer(name: serverName, config: config)
@@ -197,7 +186,6 @@ struct MCPSettingsView: View {
     private func saveExtraCredential(for serverName: String, keychainKey: String, value: String) {
         KeychainManager.shared.save(key: keychainKey, value: value)
 
-        // Ensure config exists and restart
         var configs = MCPConfig.load()
         if configs[serverName] == nil {
             configs[serverName] = Self.defaultServerConfig(for: serverName)
@@ -215,20 +203,15 @@ struct MCPSettingsView: View {
     private func removeToken(for serverName: String) {
         guard let known = Self.knownServers.first(where: { $0.name == serverName }) else { return }
         KeychainManager.shared.delete(key: known.keychainKey)
-        // Also remove extra credentials
         for extra in known.extraCredentials {
             KeychainManager.shared.delete(key: extra.keychainKey)
         }
 
-        // Stop the server
         Task {
             await MCPServerManager.shared.stopServer(name: serverName)
-
-            // Remove from config
             var configs = MCPConfig.load()
             configs.removeValue(forKey: serverName)
             MCPConfig.save(configs)
-
             await refresh()
         }
     }
@@ -256,7 +239,6 @@ struct MCPSettingsView: View {
         let argsArray = args.split(separator: " ").map(String.init)
         var env: [String: String]? = nil
         if !envKey.isEmpty && !envValue.isEmpty {
-            // Save token to keychain
             let keychainKey = "\(name)_token"
             KeychainManager.shared.save(key: keychainKey, value: envValue)
             env = [envKey: "keychain:\(keychainKey)"]
@@ -286,9 +268,9 @@ struct MCPSettingsView: View {
     }
 
     private func maskToken(_ token: String) -> String {
-        guard token.count > 8 else { return String(repeating: "*", count: token.count) }
+        guard token.count > 8 else { return String(repeating: "\u{2022}", count: token.count) }
         let suffix = String(token.suffix(4))
-        return String(repeating: "*", count: 8) + suffix
+        return String(repeating: "\u{2022}", count: 8) + suffix
     }
 }
 
@@ -297,7 +279,7 @@ struct MCPSettingsView: View {
 struct MCPServerRow: View {
     let server: MCPSettingsView.ServerEntry
     var onTokenChange: (String) -> Void
-    var onExtraCredentialChange: (String, String) -> Void  // (keychainKey, value)
+    var onExtraCredentialChange: (String, String) -> Void
     var onRemoveToken: () -> Void
     var onTest: () -> Void
 
@@ -305,108 +287,125 @@ struct MCPServerRow: View {
 
     @State private var showTokenInput = false
     @State private var tokenText = ""
-    @State private var extraInputs: [String: String] = [:]  // keychainKey -> text
-    @State private var showExtraInput: String? = nil          // keychainKey being edited
+    @State private var extraInputs: [String: String] = [:]
+    @State private var showExtraInput: String? = nil
     @State private var testResult: TestResult = .idle
     @State private var showRemoveConfirmation = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack {
+        VStack(alignment: .leading, spacing: 8) {
+            // Header row: name + status
+            HStack(spacing: 8) {
+                Circle()
+                    .fill(statusColor)
+                    .frame(width: 8, height: 8)
+
                 Text(server.name.capitalized)
-                    .font(.system(size: 13, weight: .medium))
+                    .font(.body)
+
                 Spacer()
-                HStack(spacing: 4) {
-                    Circle()
-                        .fill(statusColor)
-                        .frame(width: 8, height: 8)
-                    Text(statusText)
-                        .font(.system(size: 11))
-                        .foregroundColor(.secondary)
-                }
+
+                Text(statusText)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
+            // Error
             if let error = server.error {
                 Text(error)
-                    .font(.system(size: 10))
-                    .foregroundColor(.red)
+                    .font(.caption)
+                    .foregroundStyle(.red)
                     .lineLimit(2)
             }
 
-            if server.hasToken {
-                HStack {
+            // Token management
+            if server.hasToken && !showTokenInput {
+                HStack(spacing: 12) {
                     if let preview = server.tokenPreview {
-                        Text("Token: \(preview)")
-                            .font(.system(size: 10, design: .monospaced))
-                            .foregroundColor(.secondary)
+                        Text(preview)
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundStyle(.tertiary)
                     }
                     Spacer()
-                    Button("Change") { withAnimation(DT.Anim.normal) { showTokenInput = true } }
+                    testResultView
+                    Button("Change") { showTokenInput = true }
                         .font(.caption)
-                    testButton
-                    Button("Remove") { showRemoveConfirmation = true }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(Color.accentColor)
+                    Button("Remove", role: .destructive) { showRemoveConfirmation = true }
                         .font(.caption)
-                        .foregroundColor(.red)
+                        .buttonStyle(.plain)
+                        .foregroundStyle(.red)
                         .alert("Remove \(server.name.capitalized)?", isPresented: $showRemoveConfirmation) {
                             Button("Cancel", role: .cancel) {}
                             Button("Remove", role: .destructive) { onRemoveToken() }
                         } message: {
-                            Text("This will delete the token and stop the server.")
+                            Text("This will delete the token from Keychain and stop the server.")
                         }
                 }
-            } else {
-                Button("Add Token") { withAnimation(DT.Anim.normal) { showTokenInput = true } }
+            } else if !server.hasToken && !showTokenInput {
+                Button("Add Token...") { showTokenInput = true }
                     .font(.caption)
             }
 
+            // Token input field
             if showTokenInput {
-                HStack {
+                HStack(spacing: 8) {
                     SecureField("Paste token...", text: $tokenText)
                         .textFieldStyle(.roundedBorder)
-                        .font(.system(size: 11))
+                        .font(.system(size: 12))
                     Button("Save") {
                         guard !tokenText.isEmpty else { return }
                         onTokenChange(tokenText)
                         tokenText = ""
                         showTokenInput = false
                     }
-                    .font(.caption)
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                    .disabled(tokenText.isEmpty)
                     Button("Cancel") {
                         tokenText = ""
                         showTokenInput = false
                     }
-                    .font(.caption)
+                    .controlSize(.small)
                 }
+                .transition(.opacity.combined(with: .move(edge: .top)))
             }
 
-            // Extra credentials (e.g. Slack Team ID)
+            // Extra credentials
             ForEach(server.extraCredentials) { extra in
                 HStack {
+                    Text(extra.label)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
                     if extra.hasValue {
-                        Text("\(extra.label): \(extra.preview ?? "set")")
-                            .font(.system(size: 10, design: .monospaced))
-                            .foregroundColor(.secondary)
-                        Spacer()
+                        Text(extra.preview ?? "Set")
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundStyle(.tertiary)
                         Button("Change") { showExtraInput = extra.keychainKey }
                             .font(.caption)
+                            .buttonStyle(.plain)
+                            .foregroundStyle(Color.accentColor)
                     } else {
-                        Text("\(extra.label): not set")
-                            .font(.system(size: 10))
-                            .foregroundColor(.orange)
-                        Spacer()
+                        Text("Not set")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
                         Button("Add") { showExtraInput = extra.keychainKey }
                             .font(.caption)
+                            .buttonStyle(.plain)
+                            .foregroundStyle(Color.accentColor)
                     }
                 }
 
                 if showExtraInput == extra.keychainKey {
-                    HStack {
+                    HStack(spacing: 8) {
                         TextField(extra.label, text: Binding(
                             get: { extraInputs[extra.keychainKey] ?? "" },
                             set: { extraInputs[extra.keychainKey] = $0 }
                         ))
                         .textFieldStyle(.roundedBorder)
-                        .font(.system(size: 11))
+                        .font(.system(size: 12))
                         Button("Save") {
                             let value = extraInputs[extra.keychainKey] ?? ""
                             guard !value.isEmpty else { return }
@@ -414,51 +413,41 @@ struct MCPServerRow: View {
                             extraInputs[extra.keychainKey] = nil
                             showExtraInput = nil
                         }
-                        .font(.caption)
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.small)
+                        .disabled((extraInputs[extra.keychainKey] ?? "").isEmpty)
                         Button("Cancel") {
                             extraInputs[extra.keychainKey] = nil
                             showExtraInput = nil
                         }
-                        .font(.caption)
+                        .controlSize(.small)
                     }
                 }
             }
         }
         .padding(.vertical, 4)
+        .animation(.easeInOut(duration: 0.2), value: showTokenInput)
     }
 
     @ViewBuilder
-    private var testButton: some View {
+    private var testResultView: some View {
         switch testResult {
         case .idle:
             Button("Test") { runTest() }
                 .font(.caption)
+                .buttonStyle(.plain)
+                .foregroundStyle(Color.accentColor)
         case .testing:
-            HStack(spacing: 4) {
-                ProgressView().controlSize(.mini)
-                Text("Testing...")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-            }
+            ProgressView()
+                .controlSize(.mini)
         case .success(let count):
-            HStack(spacing: 2) {
-                Image(systemName: "checkmark.circle.fill")
-                    .foregroundColor(.green)
-                    .font(.caption)
-                Text("\(count) tools")
-                    .font(.caption)
-                    .foregroundColor(.green)
-            }
+            Label("\(count) tools", systemImage: "checkmark.circle.fill")
+                .font(.caption)
+                .foregroundStyle(.green)
         case .failure(let message):
-            HStack(spacing: 2) {
-                Image(systemName: "xmark.circle.fill")
-                    .foregroundColor(.red)
-                    .font(.caption)
-                Text(message)
-                    .font(.caption)
-                    .foregroundColor(.red)
-                    .lineLimit(1)
-            }
+            Label(message, systemImage: "xmark.circle.fill")
+                .font(.caption)
+                .foregroundStyle(.red)
         }
     }
 
@@ -475,7 +464,7 @@ struct MCPServerRow: View {
             } else {
                 testResult = .failure("Not running")
             }
-            try? await Task.sleep(for: .seconds(8))
+            try? await Task.sleep(for: .seconds(5))
             testResult = .idle
         }
     }
@@ -483,11 +472,11 @@ struct MCPServerRow: View {
     private var statusColor: Color {
         if server.isRunning { return .green }
         if server.hasToken { return .orange }
-        return .secondary
+        return Color.secondary.opacity(0.5)
     }
 
     private var statusText: String {
-        if server.isRunning { return "Connected (\(server.toolCount) tools)" }
+        if server.isRunning { return "Connected \u{00B7} \(server.toolCount) tools" }
         if server.error != nil { return "Error" }
         if server.hasToken { return "Not running" }
         return "No token"
@@ -507,21 +496,40 @@ struct AddCustomServerSheet: View {
     @State private var envValue = ""
 
     var body: some View {
-        VStack(spacing: 16) {
-            Text("Add Custom MCP Server")
-                .font(.headline)
+        VStack(spacing: 0) {
+            // Header
+            VStack(spacing: 4) {
+                Text("Add Custom MCP Server")
+                    .font(.headline)
+                Text("Configure a stdio-based MCP server to extend Majoor.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.top, 20)
+            .padding(.bottom, 12)
 
             Form {
-                TextField("Server Name", text: $name)
-                TextField("Command", text: $command)
-                TextField("Arguments (space separated)", text: $args)
-                TextField("Env Variable Name (optional)", text: $envKey)
-                SecureField("Env Variable Value / Token (optional)", text: $envValue)
+                Section {
+                    TextField("Server Name", text: $name)
+                    TextField("Command", text: $command)
+                    TextField("Arguments (space separated)", text: $args)
+                } header: {
+                    Text("Server")
+                }
+
+                Section {
+                    TextField("Environment Variable Name", text: $envKey)
+                    SecureField("Token or Value", text: $envValue)
+                } header: {
+                    Text("Authentication (optional)")
+                }
             }
             .formStyle(.grouped)
 
+            // Buttons
             HStack {
                 Button("Cancel") { onCancel() }
+                    .keyboardShortcut(.cancelAction)
                 Spacer()
                 Button("Add Server") {
                     guard !name.isEmpty, !command.isEmpty else { return }
@@ -529,10 +537,11 @@ struct AddCustomServerSheet: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .disabled(name.isEmpty || command.isEmpty)
+                .keyboardShortcut(.defaultAction)
             }
-            .padding(.horizontal)
+            .padding(.horizontal, 20)
+            .padding(.bottom, 16)
         }
-        .padding()
-        .frame(width: 400, height: 320)
+        .frame(width: 440, height: 360)
     }
 }

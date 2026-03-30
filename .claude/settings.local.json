@@ -1,7 +1,8 @@
 {
   "permissions": {
     "allow": [
-      "Bash(find /Users/kushpatel/majoor -name \"*.swift\" | wc -l && find /Users/kushpatel/majoor -name \"*.swift\" -exec wc -l {} + | tail -1)"
+      "Bash(find /Users/kushpatel/majoor -name \"*.swift\" | wc -l && find /Users/kushpatel/majoor -name \"*.swift\" -exec wc -l {} + | tail -1)",
+      "Bash(xcodebuild -project Majoor.xcodeproj -scheme Majoor -configuration Debug build)"
     ]
   }
 }
