@@ -16,33 +16,39 @@ struct MemorySettingsView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // Header
-            HStack {
-                TextField("Search memories...", text: $searchText)
-                    .textFieldStyle(.roundedBorder)
-                    .font(.system(size: 12))
-                Text("\(memoryCount) memories")
+            // Search + count
+            HStack(spacing: 8) {
+                Image(systemName: "magnifyingglass")
+                    .foregroundStyle(.tertiary)
+                TextField("Search memories", text: $searchText)
+                    .textFieldStyle(.plain)
+                    .font(.body)
+                Spacer()
+                Text("\(memoryCount)")
                     .font(.caption)
-                    .foregroundColor(.secondary)
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
             }
-            .padding(.horizontal)
-            .padding(.top, 12)
-            .padding(.bottom, 8)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            .background(.bar)
+
+            Divider()
 
             // Memory list
             if filteredMemories.isEmpty {
                 Spacer()
                 VStack(spacing: 8) {
                     Image(systemName: "brain")
-                        .font(.system(size: 32))
-                        .foregroundColor(.secondary.opacity(0.5))
-                    Text(memories.isEmpty ? "No memories yet" : "No matching memories")
-                        .font(.system(size: 13))
-                        .foregroundColor(.secondary)
+                        .font(.system(size: 28))
+                        .foregroundStyle(.quaternary)
+                    Text(memories.isEmpty ? "No memories yet" : "No results")
+                        .font(.body)
+                        .foregroundStyle(.secondary)
                     if memories.isEmpty {
-                        Text("Majoor will remember things as you use it.\nTry: \"Remember that I prefer dark mode\"")
+                        Text("Majoor learns as you use it.\nTry: \"Remember that I prefer dark mode\"")
                             .font(.caption)
-                            .foregroundColor(.secondary.opacity(0.7))
+                            .foregroundStyle(.tertiary)
                             .multilineTextAlignment(.center)
                     }
                 }
@@ -55,19 +61,35 @@ struct MemorySettingsView: View {
                         })
                     }
                 }
-                .listStyle(.plain)
+                .listStyle(.inset(alternatesRowBackgrounds: true))
             }
+
+            Divider()
 
             // Footer
             HStack {
-                Button("Clear All") { showClearConfirmation = true }
-                    .disabled(memories.isEmpty)
-                    .font(.caption)
+                Button(role: .destructive) {
+                    showClearConfirmation = true
+                } label: {
+                    Text("Clear All...")
+                }
+                .disabled(memories.isEmpty)
+                .buttonStyle(.plain)
+                .foregroundColor(memories.isEmpty ? .secondary : .red)
+                .font(.caption)
+
                 Spacer()
-                Button("Refresh") { loadMemories() }
-                    .font(.caption)
+
+                Button {
+                    loadMemories()
+                } label: {
+                    Label("Refresh", systemImage: "arrow.clockwise")
+                }
+                .font(.caption)
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
             }
-            .padding(.horizontal)
+            .padding(.horizontal, 16)
             .padding(.vertical, 8)
         }
         .onAppear { loadMemories() }
@@ -99,43 +121,56 @@ struct MemoryRow: View {
     let memory: Memory
     let onDelete: () -> Void
 
+    @State private var isHovered = false
+    @State private var showDeleteConfirmation = false
+
     var body: some View {
-        HStack(alignment: .top, spacing: 8) {
-            // Category badge
+        HStack(alignment: .top, spacing: 10) {
             Text(memory.category.displayName)
-                .font(.system(size: 9, weight: .medium))
+                .font(.system(size: 10, weight: .medium))
                 .padding(.horizontal, 6)
                 .padding(.vertical, 2)
-                .background(categoryColor.opacity(0.15))
-                .foregroundColor(categoryColor)
-                .cornerRadius(4)
+                .background(categoryColor.opacity(0.12))
+                .foregroundStyle(categoryColor)
+                .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
 
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: 3) {
                 Text(memory.content)
                     .font(.system(size: 12))
                     .lineLimit(2)
-                HStack(spacing: 8) {
+                HStack(spacing: 6) {
                     Text(memory.createdAt.formatted(date: .abbreviated, time: .omitted))
-                        .font(.system(size: 10))
-                        .foregroundColor(.secondary)
                     if memory.accessCount > 0 {
-                        Text("used \(memory.accessCount)x")
-                            .font(.system(size: 10))
-                            .foregroundColor(.secondary)
+                        Text("\u{00B7}")
+                        Text("used \(memory.accessCount)\u{00D7}")
                     }
                 }
+                .font(.system(size: 10))
+                .foregroundStyle(.tertiary)
             }
 
             Spacer()
 
-            Button(action: onDelete) {
+            Button {
+                showDeleteConfirmation = true
+            } label: {
                 Image(systemName: "trash")
                     .font(.system(size: 11))
-                    .foregroundColor(.secondary)
+                    .foregroundStyle(isHovered ? .red : .clear)
             }
             .buttonStyle(.plain)
+            .alert("Delete Memory?", isPresented: $showDeleteConfirmation) {
+                Button("Cancel", role: .cancel) {}
+                Button("Delete", role: .destructive) { onDelete() }
+            } message: {
+                Text("This memory will be permanently deleted.")
+            }
         }
-        .padding(.vertical, 4)
+        .padding(.vertical, 3)
+        .contentShape(Rectangle())
+        .onHover { hovering in
+            isHovered = hovering
+        }
     }
 
     private var categoryColor: Color {

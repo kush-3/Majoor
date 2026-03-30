@@ -8,15 +8,19 @@ import Foundation
 
 nonisolated struct CommandSanitizer: Sendable {
 
-    // Commands that are always blocked
+    // Defense-in-depth: this blocklist is NOT a sandbox. It catches accidental or
+    // prompt-injection-induced commands that an LLM agent should never run.
+    // The goal is to reduce blast radius, not to provide hermetic isolation.
     private static let blockedCommands: [String] = [
         "rm -rf /", "rm -rf /*", "rm -rf ~", "rm -rf ~/*",
-        "sudo", "su ", "su\n",
+        "sudo", "doas",
         "mkfs", "dd if=", "format",
         "chmod -R 777 /", "chmod -R 777 ~",
         "chown -R", "> /dev/sda",
         ":(){ :|:& };:",  // fork bomb
-        "wget http", "curl http",  // raw downloads (use web tools instead)
+        "wget http", "curl http", "curl ftp",
+        "python -c", "python3 -c", "node -e", "ruby -e",
+        "eval ", "base64 -d", "base64 --decode", "xxd -r",
         "shutdown", "reboot", "halt",
         "launchctl unload", "killall Finder", "killall Dock",
         "defaults delete", "networksetup",
@@ -31,6 +35,13 @@ nonisolated struct CommandSanitizer: Sendable {
         #"chmod\s+777\s+/"#,
         #"pip\s+install\s+--user"#,                        // system-level installs need review
         #"npm\s+install\s+-g"#,
+        #"\|\s*(bash|sh|zsh|fish|python3?|node|ruby)\b"#,  // pipe to shell
+        #";\s*(bash|sh|zsh|fish)\b"#,                       // chained shell spawn
+        #"\bsu\s"#,                                          // su command (word boundary avoids "resource", "issue")
+        #">\s*~/.ssh/"#,                                     // write to sensitive dotfiles
+        #">\s*~/.zshrc"#,
+        #">\s*~/.bashrc"#,
+        #">\s*~/.bash_profile"#,
     ]
 
     // Directories the agent should never touch
@@ -88,12 +99,5 @@ nonisolated struct CommandSanitizer: Sendable {
         }
 
         return ValidationResult(isAllowed: true, reason: nil)
-    }
-
-    /// Check if a command is considered destructive (needs extra caution from the agent)
-    static func isDestructive(command: String) -> Bool {
-        let destructivePatterns = ["rm ", "rm\t", "rmdir", "git push", "git reset", "drop ", "delete ", "truncate "]
-        let lower = command.lowercased()
-        return destructivePatterns.contains { lower.contains($0) }
     }
 }

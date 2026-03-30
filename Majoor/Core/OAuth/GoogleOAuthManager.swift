@@ -270,18 +270,46 @@ nonisolated final class GoogleOAuthManager: NSObject, @unchecked Sendable {
         request.httpBody = body.map { "\($0.key)=\($0.value.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? $0.value)" }
             .joined(separator: "&").data(using: .utf8)
 
-        let (data, response) = try await URLSession.shared.data(for: request)
-        guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
-            let errBody = String(data: data, encoding: .utf8) ?? "unknown"
-            throw OAuthError.refreshFailed(errBody)
+        let maxAttempts = 2
+        for attempt in 1...maxAttempts {
+            let data: Data
+            let response: URLResponse
+            do {
+                (data, response) = try await URLSession.shared.data(for: request)
+            } catch {
+                if attempt < maxAttempts {
+                    try await Task.sleep(for: .seconds(2))
+                    continue
+                }
+                throw OAuthError.refreshFailed(error.localizedDescription)
+            }
+
+            guard let httpResponse = response as? HTTPURLResponse else {
+                throw OAuthError.refreshFailed("Invalid response")
+            }
+
+            switch httpResponse.statusCode {
+            case 200:
+                let tokenResponse = try JSONDecoder().decode(TokenResponse.self, from: data)
+                return Tokens(
+                    accessToken: tokenResponse.access_token,
+                    refreshToken: tokenResponse.refresh_token ?? refreshToken,
+                    expiresIn: tokenResponse.expires_in
+                )
+            case 400, 401:
+                disconnect()
+                throw OAuthError.notAuthenticated
+            default:
+                if attempt < maxAttempts {
+                    try await Task.sleep(for: .seconds(2))
+                    continue
+                }
+                let errBody = String(data: data, encoding: .utf8) ?? "unknown"
+                throw OAuthError.refreshFailed(errBody)
+            }
         }
 
-        let tokenResponse = try JSONDecoder().decode(TokenResponse.self, from: data)
-        return Tokens(
-            accessToken: tokenResponse.access_token,
-            refreshToken: tokenResponse.refresh_token ?? refreshToken,
-            expiresIn: tokenResponse.expires_in
-        )
+        throw OAuthError.refreshFailed("Retry attempts exhausted")
     }
 
     // MARK: - User Info
@@ -301,7 +329,7 @@ nonisolated final class GoogleOAuthManager: NSObject, @unchecked Sendable {
     // MARK: - Storage
 
     private func storeTokens(_ tokens: Tokens, email: String?) {
-        MajoorLogger.log("Storing tokens — access: \(tokens.accessToken.prefix(10))..., refresh: \(tokens.refreshToken?.prefix(10) ?? "nil"), expiresIn: \(tokens.expiresIn)")
+        MajoorLogger.log("Storing tokens — access: \(tokens.accessToken.count) chars, refresh: \(tokens.refreshToken?.count ?? 0) chars, expiresIn: \(tokens.expiresIn)")
         KeychainManager.shared.save(key: Self.accessTokenKey, value: tokens.accessToken)
         if let refresh = tokens.refreshToken {
             KeychainManager.shared.save(key: Self.refreshTokenKey, value: refresh)

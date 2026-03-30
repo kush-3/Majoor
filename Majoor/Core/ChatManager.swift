@@ -30,6 +30,7 @@ class ChatManager: ObservableObject {
     @Published var messages: [ChatMessage] = []
     @Published var isStreaming: Bool = false
     @Published var streamingText: String = ""
+    private var streamingTask: Task<Void, Never>?
 
     private let systemPrompt = """
     You are Majoor, a helpful AI assistant running as a native macOS menu bar app. \
@@ -60,7 +61,7 @@ class ChatManager: ObservableObject {
             model: "claude-sonnet-4-20250514"
         )
 
-        Task { [weak self] in
+        streamingTask = Task { [weak self] in
             guard let self else { return }
             do {
                 let (response, usage) = try await provider.stream(
@@ -92,15 +93,23 @@ class ChatManager: ObservableObject {
 
                 // Track usage
                 if let usage {
-                    await MainActor.run {
-                        UsageStore.shared.recordUsage(
-                            model: provider.model,
-                            inputTokens: usage.inputTokens,
-                            outputTokens: usage.outputTokens
-                        )
-                    }
+                    UsageStore.shared.recordUsage(
+                        model: provider.model,
+                        inputTokens: usage.inputTokens,
+                        outputTokens: usage.outputTokens
+                    )
                 }
             } catch {
+                // Don't show error for intentional cancellation (stop button)
+                guard !Task.isCancelled else {
+                    await MainActor.run {
+                        if self.isStreaming {
+                            self.isStreaming = false
+                            self.streamingText = ""
+                        }
+                    }
+                    return
+                }
                 await MainActor.run {
                     self.messages.append(ChatMessage(role: .assistant, content: "Error: \(error.localizedDescription)"))
                     self.isStreaming = false
@@ -110,7 +119,19 @@ class ChatManager: ObservableObject {
         }
     }
 
+    func cancelStreaming() {
+        streamingTask?.cancel()
+        streamingTask = nil
+        if !streamingText.isEmpty {
+            messages.append(ChatMessage(role: .assistant, content: streamingText))
+        }
+        isStreaming = false
+        streamingText = ""
+    }
+
     func clearHistory() {
+        streamingTask?.cancel()
+        streamingTask = nil
         messages.removeAll()
         isStreaming = false
         streamingText = ""

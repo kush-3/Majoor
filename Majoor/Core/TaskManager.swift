@@ -27,21 +27,6 @@ struct Toast: Identifiable {
     var actionLabel: String?             // Optional action button text
 }
 
-// MARK: - Task Notification Model
-
-enum TaskNotificationType {
-    case success
-    case error
-}
-
-struct TaskNotification: Identifiable {
-    let id = UUID()
-    let type: TaskNotificationType
-    let title: String
-    let body: String
-    let task: AgentTask?  // Associated task for "View Details"
-}
-
 // MARK: - Task Manager
 
 class TaskManager: ObservableObject {
@@ -64,8 +49,6 @@ class TaskManager: ObservableObject {
     // In-app confirmation UI state
     @Published var activeConfirmation: ConfirmationContext?
 
-    // In-app task completion/error notification
-    @Published var activeNotification: TaskNotification?
 
     var runningTasks: [AgentTask] {
         tasks.filter { $0.status == .running }
@@ -73,16 +56,6 @@ class TaskManager: ObservableObject {
 
     var completedTasks: [AgentTask] {
         tasks.filter { $0.status == .completed }
-    }
-
-    // MARK: - Task Notification Methods
-
-    func showNotification(type: TaskNotificationType, title: String, body: String, task: AgentTask? = nil) {
-        activeNotification = TaskNotification(type: type, title: title, body: body, task: task)
-    }
-
-    func dismissNotification() {
-        activeNotification = nil
     }
 
     // MARK: - Toast Methods

@@ -1,0 +1,4 @@
+- [Design System Audit](design_system_audit.md) -- No centralized design system; 15+ font sizes, 14+ opacity values, 5 corner radii, all hardcoded inline across 11 UI files
+- [Settings Onboarding Redesign](settings_onboarding_redesign.md) -- Apple HIG redesign completed for all 6 settings tabs + onboarding wizard (2026-03-30)
+- [Full UI Redesign](full_ui_redesign.md) -- Complete Apple-grade redesign of all 11 UI files: DesignTokens, MainPanel, ActivityFeed, Chat, CommandBar, Toast, Confirmation, Pipeline, ResponseDetail, StatusBar (2026-03-30)
+- [Final Critique](final_critique_2026_03_30.md) -- Post-redesign: 6 world-class, 9 good, 3 acceptable. Top gaps: click-outside-to-dismiss, settings token migration, confirmation hover states

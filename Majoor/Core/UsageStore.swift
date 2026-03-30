@@ -64,11 +64,14 @@ nonisolated final class UsageStore: @unchecked Sendable {
 
     private init() {}
 
-    /// Thread-safe date formatting (DateFormatter is not thread-safe)
+    private static let _dateFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM-dd"
+        return f
+    }()
+
     private func formatDate(_ date: Date) -> String {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd"
-        return formatter.string(from: date)
+        Self._dateFormatter.string(from: date)
     }
 
     func recordUsage(model: String, inputTokens: Int, outputTokens: Int) {

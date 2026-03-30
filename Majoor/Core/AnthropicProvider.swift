@@ -8,18 +8,54 @@ final nonisolated class AnthropicProvider: LLMProvider, @unchecked Sendable {
     
     let name: String
     let model: String
-    private var apiKey: String
+    private var _apiKey: String
+    private var apiKey: String { stateLock.withLock { _apiKey } }
     private let baseURL = "https://api.anthropic.com/v1/messages"
     private let apiVersion = "2023-06-01"
     private let maxTokens = 16384
     
-    // Retry configuration
+    // Retry configuration — 3 retries = 4 total attempts (0, 1, 2, 3)
     private let maxRetries = 3
     private let baseDelaySeconds: Double = 2.0      // For 429s: 2s, 4s, 8s
     private let networkRetryBaseSeconds: Double = 10.0 // For network timeouts: 10s, 20s, 40s
-    
+
+    // Circuit breaker — stops hammering a down API
+    // Protected by stateLock because complete() and stream() can run concurrently
+    private let stateLock = NSLock()
+    private var _consecutiveFailures: Int = 0
+    private var _circuitOpenUntil: Date?
+    private let circuitBreakerThreshold = 5
+    private let circuitBreakerCooldownSeconds: TimeInterval = 60
+
+    private func checkCircuitBreaker() throws {
+        stateLock.lock()
+        let openUntil = _circuitOpenUntil
+        stateLock.unlock()
+        if let openUntil, Date() < openUntil {
+            let remaining = Int(openUntil.timeIntervalSince(Date()))
+            throw LLMError.apiError("Claude API is temporarily paused after repeated failures. Resuming in \(remaining)s.")
+        }
+    }
+
+    private func recordSuccess() {
+        stateLock.withLock {
+            _consecutiveFailures = 0
+            _circuitOpenUntil = nil
+        }
+    }
+
+    private func recordExhaustedRetries() {
+        stateLock.withLock {
+            _consecutiveFailures += 1
+            if _consecutiveFailures >= circuitBreakerThreshold {
+                _circuitOpenUntil = Date().addingTimeInterval(circuitBreakerCooldownSeconds)
+                MajoorLogger.error("Circuit breaker OPEN — \(_consecutiveFailures) consecutive failures. Pausing API calls for \(Int(circuitBreakerCooldownSeconds))s.")
+            }
+        }
+    }
+
     init(apiKey: String, model: String = "claude-sonnet-4-20250514") {
-        self.apiKey = apiKey
+        self._apiKey = apiKey
         self.model = model
         self.name = model.contains("opus") ? "Claude Opus" :
                     model.contains("sonnet") ? "Claude Sonnet" :
@@ -27,7 +63,7 @@ final nonisolated class AnthropicProvider: LLMProvider, @unchecked Sendable {
     }
     
     func updateAPIKey(_ newKey: String) {
-        self.apiKey = newKey
+        stateLock.withLock { _apiKey = newKey }
     }
     
     func complete(
@@ -37,7 +73,8 @@ final nonisolated class AnthropicProvider: LLMProvider, @unchecked Sendable {
     ) async throws -> (response: LLMResponse, usage: AnthropicUsage?) {
         
         guard !apiKey.isEmpty else { throw LLMError.invalidAPIKey }
-        
+        try checkCircuitBreaker()
+
         let request = AnthropicRequest(
             model: model,
             maxTokens: maxTokens,
@@ -131,12 +168,14 @@ final nonisolated class AnthropicProvider: LLMProvider, @unchecked Sendable {
                         let message = recoveryText.isEmpty
                             ? "My previous response was truncated because the output was too large. I'll break this into smaller steps."
                             : recoveryText + "\n\n[Output was truncated. Breaking into smaller steps.]"
+                        recordSuccess()
                         return (.text(message), response.usage)
                     }
                 }
-                
+
                 let llmResponse = parseResponse(response)
                 MajoorLogger.log("✅ API: \(response.stopReason ?? "?"), tokens: \(response.usage?.inputTokens ?? 0)in/\(response.usage?.outputTokens ?? 0)out")
+                recordSuccess()
                 return (llmResponse, response.usage)
                 
             case 401:
@@ -185,10 +224,11 @@ final nonisolated class AnthropicProvider: LLMProvider, @unchecked Sendable {
             }
         }
         
-        // All retries exhausted
+        // All retries exhausted — update circuit breaker
+        recordExhaustedRetries()
         throw lastError ?? LLMError.apiError("Request failed after \(maxRetries + 1) attempts")
     }
-    
+
     // MARK: - Streaming
 
     func stream(
@@ -198,23 +238,17 @@ final nonisolated class AnthropicProvider: LLMProvider, @unchecked Sendable {
         onDelta: @Sendable @escaping (StreamDelta) -> Void
     ) async throws -> (response: LLMResponse, usage: AnthropicUsage?) {
         guard !apiKey.isEmpty else { throw LLMError.invalidAPIKey }
+        try checkCircuitBreaker()
 
-        // Build request body with stream: true
-        let request = AnthropicRequest(
+        var request = AnthropicRequest(
             model: model,
             maxTokens: maxTokens,
             system: systemPrompt,
             messages: messages,
             tools: tools.isEmpty ? nil : tools
         )
-
-        var requestDict: [String: Any]
-        let encoder = JSONEncoder()
-        let requestData = try encoder.encode(request)
-        requestDict = (try? JSONSerialization.jsonObject(with: requestData) as? [String: Any]) ?? [:]
-        requestDict["stream"] = true
-
-        let body = try JSONSerialization.data(withJSONObject: requestDict)
+        request.stream = true
+        let body = try JSONEncoder().encode(request)
 
         var urlRequest = URLRequest(url: URL(string: baseURL)!)
         urlRequest.httpMethod = "POST"
@@ -233,6 +267,10 @@ final nonisolated class AnthropicProvider: LLMProvider, @unchecked Sendable {
             // Collect error body
             var errorData = Data()
             for try await byte in bytes { errorData.append(byte) }
+            // Trip circuit breaker on retryable server errors
+            if [429, 500, 502, 503, 529].contains(http.statusCode) {
+                recordExhaustedRetries()
+            }
             if http.statusCode == 401 { throw LLMError.invalidAPIKey }
             if http.statusCode == 429 { throw LLMError.rateLimited(retryAfter: nil) }
             if http.statusCode == 529 { throw LLMError.serverOverloaded }
@@ -288,6 +326,7 @@ final nonisolated class AnthropicProvider: LLMProvider, @unchecked Sendable {
 
         let totalUsage: AnthropicUsage? = finalUsage
 
+        recordSuccess()
         return (.text(accumulatedText), totalUsage)
     }
 

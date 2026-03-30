@@ -1,8 +1,10 @@
 // ChatView.swift
 // Majoor — Streaming Chat Interface
 //
-// Interactive conversation with streaming responses.
-// Message bubbles, auto-scroll, inline input.
+// Design reference: Messages.app
+// User bubbles: accent-filled, right-aligned.
+// Assistant bubbles: light material fill, left-aligned.
+// Input bar: frosted material footer with single-line field.
 
 import SwiftUI
 
@@ -11,27 +13,20 @@ struct ChatView: View {
     @State private var inputText = ""
     @FocusState private var inputFocused: Bool
 
+    private static let suggestions = [
+        "Summarize my recent git commits",
+        "Draft a follow-up email",
+        "Explain this error message",
+    ]
+
     var body: some View {
         VStack(spacing: 0) {
             // Messages area
             ScrollViewReader { proxy in
                 ScrollView {
-                    LazyVStack(spacing: 12) {
+                    LazyVStack(spacing: DT.Spacing.sm) {
                         if chatManager.messages.isEmpty && !chatManager.isStreaming {
-                            // Empty state
-                            VStack(spacing: 8) {
-                                Spacer(minLength: 60)
-                                Image(systemName: "bubble.left.and.bubble.right")
-                                    .font(.system(size: 28))
-                                    .foregroundColor(.secondary.opacity(0.4))
-                                Text("Start a conversation")
-                                    .font(.system(size: 13, weight: .medium))
-                                    .foregroundColor(.secondary)
-                                Text("Ask Majoor anything")
-                                    .font(.system(size: 11))
-                                    .foregroundColor(.secondary.opacity(0.6))
-                            }
-                            .frame(maxWidth: .infinity)
+                            emptyState
                         }
 
                         ForEach(chatManager.messages) { message in
@@ -39,69 +34,135 @@ struct ChatView: View {
                                 .id(message.id)
                         }
 
-                        // Streaming indicator
                         if chatManager.isStreaming {
                             StreamingBubble(text: chatManager.streamingText)
                                 .id("streaming")
                         }
                     }
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
+                    .padding(.horizontal, DT.Spacing.lg)
+                    .padding(.vertical, DT.Spacing.md)
                 }
-                .onChange(of: chatManager.messages.count) { _ in
+                .onChange(of: chatManager.messages.count) { _, _ in
                     scrollToBottom(proxy: proxy)
                 }
-                .onChange(of: chatManager.streamingText) { _ in
+                .onChange(of: chatManager.streamingText) { _, _ in
                     scrollToBottom(proxy: proxy)
+                }
+                .onChange(of: chatManager.isStreaming) { _, isStreaming in
+                    // Re-focus input when streaming ends
+                    if !isStreaming { inputFocused = true }
                 }
             }
 
-            Divider()
+            // Input bar — frosted material footer
+            inputBar
+        }
+        .onAppear { inputFocused = true }
+    }
 
-            // Input bar
-            HStack(spacing: 8) {
-                TextField("Message...", text: $inputText)
-                    .textFieldStyle(.plain)
-                    .font(.system(size: 13))
-                    .focused($inputFocused)
-                    .onSubmit { sendMessage() }
+    // MARK: - Empty State
 
-                if chatManager.isStreaming {
-                    ProgressView()
-                        .controlSize(.small)
-                        .scaleEffect(0.8)
-                } else {
-                    Button(action: sendMessage) {
-                        Image(systemName: "arrow.up.circle.fill")
-                            .font(.system(size: 20))
-                            .foregroundColor(inputText.isEmpty ? .secondary.opacity(0.3) : .accentColor)
+    private var emptyState: some View {
+        VStack(spacing: DT.Spacing.lg) {
+            Spacer(minLength: 48)
+
+            Image(systemName: "bubble.left.and.bubble.right")
+                .font(.system(size: 32, weight: .thin))
+                .foregroundStyle(.quaternary)
+
+            VStack(spacing: DT.Spacing.xs) {
+                Text("Start a conversation")
+                    .font(DT.Font.body(.medium))
+                    .foregroundStyle(.secondary)
+
+                Text("Fast responses powered by Sonnet")
+                    .font(DT.Font.micro)
+                    .foregroundStyle(.tertiary)
+            }
+
+            VStack(spacing: DT.Spacing.xs) {
+                ForEach(Self.suggestions, id: \.self) { suggestion in
+                    Button {
+                        inputText = suggestion
+                        sendMessage()
+                    } label: {
+                        Text(suggestion)
+                            .font(DT.Font.caption)
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, DT.Spacing.md)
+                            .padding(.vertical, DT.Spacing.sm)
+                            .background(
+                                RoundedRectangle(cornerRadius: DT.Radius.small, style: .continuous)
+                                    .fill(.ultraThinMaterial)
+                            )
                     }
                     .buttonStyle(.plain)
-                    .disabled(inputText.isEmpty)
                 }
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 10)
+            .padding(.top, DT.Spacing.xs)
 
-            // Bottom toolbar
-            HStack {
-                Button(action: { chatManager.clearHistory() }) {
-                    Label("Clear", systemImage: "trash")
-                        .font(.system(size: 10))
+            Spacer(minLength: 24)
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    // MARK: - Input Bar
+
+    private var inputBar: some View {
+        VStack(spacing: 0) {
+            // Subtle separator — no harsh Divider()
+            Rectangle()
+                .fill(Color.primary.opacity(0.06))
+                .frame(height: 0.5)
+
+            HStack(spacing: DT.Spacing.sm) {
+                TextField(
+                    chatManager.isStreaming ? "Waiting..." : "Message...",
+                    text: $inputText
+                )
+                .textFieldStyle(.plain)
+                .font(DT.Font.body)
+                .focused($inputFocused)
+                .onSubmit { sendMessage() }
+                .disabled(chatManager.isStreaming)
+                .opacity(chatManager.isStreaming ? 0.4 : 1)
+
+                Button(action: chatManager.isStreaming ? stopStreaming : sendMessage) {
+                    Image(systemName: chatManager.isStreaming
+                          ? "stop.circle.fill"
+                          : "arrow.up.circle.fill")
+                        .font(.system(size: 22))
+                        .foregroundStyle(sendButtonColor)
+                        .contentTransition(.symbolEffect(.replace))
                 }
                 .buttonStyle(.plain)
-                .foregroundColor(.secondary.opacity(0.5))
-                .disabled(chatManager.messages.isEmpty)
-
-                Spacer()
-
-                Text("Sonnet")
-                    .font(.system(size: 9))
-                    .foregroundColor(.secondary.opacity(0.4))
+                .disabled(!chatManager.isStreaming && inputText.isEmpty)
             }
-            .padding(.horizontal, 14)
-            .padding(.bottom, 8)
+            .padding(.horizontal, DT.Spacing.lg)
+            .padding(.vertical, DT.Spacing.md)
+
+            // Clear conversation link
+            if !chatManager.messages.isEmpty {
+                Button {
+                    chatManager.clearHistory()
+                } label: {
+                    Text("Clear conversation")
+                        .font(DT.Font.micro)
+                        .foregroundStyle(.quaternary)
+                }
+                .buttonStyle(.plain)
+                .padding(.bottom, DT.Spacing.sm)
+            }
         }
+        .background(.ultraThinMaterial)
+    }
+
+    // MARK: - Helpers
+
+    private var sendButtonColor: Color {
+        if chatManager.isStreaming { return DT.Color.error }
+        return inputText.isEmpty ? DT.Color.textQuaternary : DT.Color.accent
     }
 
     private func sendMessage() {
@@ -109,10 +170,17 @@ struct ChatView: View {
         guard !text.isEmpty, !chatManager.isStreaming else { return }
         chatManager.send(text)
         inputText = ""
+        // Keep input focused after sending so user can continue typing
+        inputFocused = true
+    }
+
+    private func stopStreaming() {
+        chatManager.cancelStreaming()
+        inputFocused = true
     }
 
     private func scrollToBottom(proxy: ScrollViewProxy) {
-        withAnimation(.easeOut(duration: 0.15)) {
+        withAnimation(DT.Anim.smooth) {
             if chatManager.isStreaming {
                 proxy.scrollTo("streaming", anchor: .bottom)
             } else if let lastId = chatManager.messages.last?.id {
@@ -123,38 +191,44 @@ struct ChatView: View {
 }
 
 // MARK: - Chat Bubble
+//
+// Messages.app style: user = accent fill + white text, right-aligned.
+// Assistant = subtle material fill, left-aligned. Both use continuous corners.
 
 private struct ChatBubble: View {
     let message: ChatMessage
 
     var body: some View {
-        HStack {
-            if message.role == .user { Spacer(minLength: 40) }
+        HStack(alignment: .bottom) {
+            if message.role == .user { Spacer(minLength: 48) }
 
-            VStack(alignment: message.role == .user ? .trailing : .leading, spacing: 4) {
-                if message.role == .user {
-                    Text(message.content)
-                        .font(.system(size: 12))
-                        .foregroundColor(.white)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 8)
-                        .background(Color.accentColor)
-                        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-                        .textSelection(.enabled)
-                } else {
-                    // Assistant message
-                    Text(message.content)
-                        .font(.system(size: 12))
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 8)
-                        .background(Color.primary.opacity(0.05))
-                        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-                        .textSelection(.enabled)
-                }
+            if message.role == .user {
+                Text(message.content)
+                    .font(DT.Font.body)
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, DT.Spacing.md)
+                    .padding(.vertical, DT.Spacing.sm)
+                    .background(Color.accentColor, in: chatBubbleShape)
+                    .textSelection(.enabled)
+            } else {
+                let attributed = (try? AttributedString(
+                    markdown: message.content,
+                    options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)
+                )) ?? AttributedString(message.content)
+                Text(attributed)
+                    .font(DT.Font.body)
+                    .padding(.horizontal, DT.Spacing.md)
+                    .padding(.vertical, DT.Spacing.sm)
+                    .background(.ultraThinMaterial, in: chatBubbleShape)
+                    .textSelection(.enabled)
             }
 
-            if message.role == .assistant { Spacer(minLength: 40) }
+            if message.role == .assistant { Spacer(minLength: 48) }
         }
+    }
+
+    private var chatBubbleShape: some Shape {
+        RoundedRectangle(cornerRadius: DT.Radius.bubble, style: .continuous)
     }
 }
 
@@ -162,34 +236,46 @@ private struct ChatBubble: View {
 
 private struct StreamingBubble: View {
     let text: String
+    @State private var dotAnimating = false
 
     var body: some View {
-        HStack {
-            VStack(alignment: .leading, spacing: 4) {
-                if text.isEmpty {
-                    // Typing indicator
-                    HStack(spacing: 4) {
-                        ForEach(0..<3, id: \.self) { i in
-                            Circle()
-                                .fill(Color.secondary.opacity(0.4))
-                                .frame(width: 5, height: 5)
-                        }
+        HStack(alignment: .bottom) {
+            if text.isEmpty {
+                // Typing indicator — three animated dots
+                HStack(spacing: 4) {
+                    ForEach(0..<3, id: \.self) { i in
+                        Circle()
+                            .fill(Color.secondary.opacity(0.4))
+                            .frame(width: 5, height: 5)
+                            .offset(y: dotAnimating ? -3 : 0)
+                            .animation(
+                                .easeInOut(duration: 0.4)
+                                .repeatForever(autoreverses: true)
+                                .delay(Double(i) * 0.12),
+                                value: dotAnimating
+                            )
                     }
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 10)
-                    .background(Color.primary.opacity(0.05))
-                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-                } else {
-                    Text(text)
-                        .font(.system(size: 12))
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 8)
-                        .background(Color.primary.opacity(0.05))
-                        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-                        .textSelection(.enabled)
                 }
+                .onAppear { dotAnimating = true }
+                .padding(.horizontal, DT.Spacing.md)
+                .padding(.vertical, DT.Spacing.md)
+                .background(
+                    .ultraThinMaterial,
+                    in: RoundedRectangle(cornerRadius: DT.Radius.bubble, style: .continuous)
+                )
+            } else {
+                Text(text)
+                    .font(DT.Font.body)
+                    .padding(.horizontal, DT.Spacing.md)
+                    .padding(.vertical, DT.Spacing.sm)
+                    .background(
+                        .ultraThinMaterial,
+                        in: RoundedRectangle(cornerRadius: DT.Radius.bubble, style: .continuous)
+                    )
+                    .textSelection(.enabled)
             }
-            Spacer(minLength: 40)
+
+            Spacer(minLength: 48)
         }
     }
 }

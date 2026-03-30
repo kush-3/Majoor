@@ -165,7 +165,16 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
                     self.taskManager.isTaskRunning = false
                     self.statusBarController?.setState(.success)
                     let completedTask = self.taskManager.tasks.first
-                    self.taskManager.showNotification(type: .success, title: "Task Complete", body: result.summary, task: completedTask)
+                    self.taskManager.showToast(
+                        type: .info, title: "Task Complete", body: result.summary, autoDismiss: 6.0,
+                        actionLabel: "View Details",
+                        action: {
+                            if let task = completedTask {
+                                NotificationCenter.default.post(
+                                    name: .majoorOpenTaskDetail, object: nil,
+                                    userInfo: ["taskId": task.id.uuidString])
+                            }
+                        })
                     self.showPanel()
                 }
             } catch is CancellationError {
@@ -184,7 +193,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
                 await MainActor.run {
                     self.taskManager.isTaskRunning = false
                     self.statusBarController?.setState(.error, message: error.localizedDescription)
-                    self.taskManager.showNotification(type: .error, title: "Task Failed", body: error.localizedDescription)
+                    self.taskManager.showToast(type: .error, title: "Task Failed", body: error.localizedDescription)
                     self.showPanel()
                 }
             }
@@ -207,7 +216,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     private func handleLLMError(_ error: LLMError) {
         let errorDesc = error.errorDescription ?? "Unknown error"
         statusBarController?.setState(.error, message: errorDesc)
-        taskManager.showNotification(type: .error, title: "Task Failed", body: errorDesc)
+        taskManager.showToast(type: .error, title: "Task Failed", body: errorDesc)
         showPanel()
     }
 
@@ -222,10 +231,22 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
 
     private func togglePanel() {
         if let w = panelWindow, w.isVisible {
-            w.close()
+            hidePanel()
         } else {
             showPanel()
         }
+    }
+
+    private func hidePanel() {
+        guard let panel = panelWindow else { return }
+        NSAnimationContext.runAnimationGroup({ ctx in
+            ctx.duration = 0.1
+            ctx.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            panel.animator().alphaValue = 0
+        }, completionHandler: { [weak self] in
+            self?.panelWindow?.close()
+            self?.panelWindow?.alphaValue = 1
+        })
     }
 
     func showPanel() {
@@ -235,7 +256,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
                 .environmentObject(taskManager)
                 .environmentObject(chatManager)
             let hosting = NSHostingView(rootView: view)
-            hosting.frame = NSRect(x: 0, y: 0, width: 400, height: 520)
+            hosting.frame = NSRect(x: 0, y: 0, width: DT.Layout.panelWidth, height: DT.Layout.panelHeight)
 
             let panel = NSPanel(
                 contentRect: hosting.frame,
@@ -252,12 +273,25 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             panelWindow = panel
         }
 
-        // Position below the status bar icon
+        // Position below the status bar icon, clamped to screen bounds
         if let button = statusBarController?.statusItem?.button, let bw = button.window, let panel = panelWindow {
             let f = bw.frame
-            panel.setFrameOrigin(NSPoint(x: f.midX - panel.frame.width / 2, y: f.minY - panel.frame.height - 5))
+            var origin = NSPoint(x: f.midX - panel.frame.width / 2, y: f.minY - panel.frame.height - 5)
+
+            if let screen = NSScreen.main?.visibleFrame {
+                origin.x = max(screen.minX, min(origin.x, screen.maxX - panel.frame.width))
+                origin.y = max(screen.minY, min(origin.y, screen.maxY - panel.frame.height))
+            }
+
+            panel.setFrameOrigin(origin)
         }
+        panelWindow?.alphaValue = 0
         panelWindow?.makeKeyAndOrderFront(nil)
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = 0.15
+            ctx.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            self.panelWindow?.animator().alphaValue = 1
+        }
     }
 
     func showOnboarding() {
@@ -270,7 +304,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             let window = NSWindow(contentViewController: hostingController)
             window.title = "Welcome to Majoor"
             window.styleMask = [.titled, .closable]
-            window.setContentSize(NSSize(width: 500, height: 400))
+            window.setContentSize(NSSize(width: DT.Layout.onboardingWidth, height: DT.Layout.onboardingHeight))
             window.center()
             window.isReleasedWhenClosed = false
             onboardingWindow = window
@@ -286,7 +320,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             let window = NSWindow(contentViewController: hostingController)
             window.title = "Settings"
             window.styleMask = [.titled, .closable, .miniaturizable]
-            window.setContentSize(NSSize(width: 500, height: 350))
+            window.setContentSize(NSSize(width: DT.Layout.settingsWidth, height: DT.Layout.settingsHeight))
             window.center()
             window.isReleasedWhenClosed = false
             settingsWindow = window

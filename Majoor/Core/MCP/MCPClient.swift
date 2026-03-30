@@ -39,6 +39,7 @@ actor MCPClient {
     private var stdoutHandle: FileHandle?
     private var requestId: Int = 0
     private var pending: [Int: CheckedContinuation<[String: Any], Error>] = [:]
+    private var timeoutTasks: [Int: Task<Void, Never>] = [:]
     private var readTask: Task<Void, Never>?
     private var buffer = Data()
     private(set) var discoveredTools: [MCPToolDefinition] = []
@@ -179,6 +180,9 @@ actor MCPClient {
             }
         }
 
+        // Clear stderr handler before releasing process to break retain cycle
+        (process?.standardError as? Pipe)?.fileHandleForReading.readabilityHandler = nil
+
         stdinHandle = nil
         stdoutHandle = nil
         process = nil
@@ -188,8 +192,17 @@ actor MCPClient {
         MajoorLogger.log("MCP[\(serverName)] shut down")
     }
 
+    private func timeoutRequest(id: Int) {
+        timeoutTasks.removeValue(forKey: id)
+        if let cont = pending.removeValue(forKey: id) {
+            cont.resume(throwing: MCPError.timeout)
+        }
+    }
+
     /// Resume all pending continuations with an error (called when process dies or on shutdown).
     private func failAllPending(error: Error) {
+        timeoutTasks.values.forEach { $0.cancel() }
+        timeoutTasks.removeAll()
         let orphaned = pending
         pending.removeAll()
         for (id, continuation) in orphaned {
@@ -277,13 +290,11 @@ actor MCPClient {
             pending[id] = continuation
             stdinHandle.write(message)
 
-            // Timeout after 30 seconds
-            Task {
+            let timeoutTask = Task { [weak self] in
                 try? await Task.sleep(nanoseconds: 30_000_000_000)
-                if let cont = pending.removeValue(forKey: id) {
-                    cont.resume(throwing: MCPError.timeout)
-                }
+                await self?.timeoutRequest(id: id)
             }
+            timeoutTasks[id] = timeoutTask
         }
     }
 
@@ -346,14 +357,17 @@ actor MCPClient {
                 if let error = json["error"] as? [String: Any] {
                     let message = error["message"] as? String ?? "Unknown error"
                     let code = error["code"] as? Int ?? -1
+                    timeoutTasks.removeValue(forKey: id)?.cancel()
                     if let continuation = pending.removeValue(forKey: id) {
                         continuation.resume(throwing: MCPError.toolCallFailed("[\(code)] \(message)"))
                     }
                 } else if let result = json["result"] as? [String: Any] {
+                    timeoutTasks.removeValue(forKey: id)?.cancel()
                     if let continuation = pending.removeValue(forKey: id) {
                         continuation.resume(returning: result)
                     }
                 } else {
+                    timeoutTasks.removeValue(forKey: id)?.cancel()
                     if let continuation = pending.removeValue(forKey: id) {
                         continuation.resume(returning: [:])
                     }

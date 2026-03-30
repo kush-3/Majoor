@@ -11,38 +11,51 @@ struct UsageSettingsView: View {
 
     var body: some View {
         Form {
-            Section("Cost Summary") {
-                HStack {
+            Section {
+                HStack(spacing: 12) {
                     UsageCard(title: "Today", usage: todayUsage)
                     UsageCard(title: "This Week", usage: weekUsage)
                     UsageCard(title: "This Month", usage: monthUsage)
                 }
+                .padding(.vertical, 4)
+            } header: {
+                Text("Cost Summary")
             }
 
-            Section("Usage by Model (30 days)") {
+            Section {
                 if modelBreakdown.isEmpty {
-                    Text("No usage data yet")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
+                    VStack(spacing: 8) {
+                        Image(systemName: "chart.bar")
+                            .font(.system(size: 24))
+                            .foregroundStyle(.quaternary)
+                        Text("No usage data yet")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 12)
                 } else {
                     ForEach(modelBreakdown, id: \.model) { entry in
-                        HStack {
-                            Text(friendlyModelName(entry.model))
-                                .font(.system(size: 12, weight: .medium))
-                            Spacer()
-                            Text(formatTokens(entry.tokens))
-                                .font(.system(size: 11, design: .monospaced))
-                                .foregroundColor(.secondary)
-                            Text(formatCost(entry.cost))
-                                .font(.system(size: 11, weight: .medium, design: .monospaced))
-                                .frame(width: 70, alignment: .trailing)
+                        LabeledContent {
+                            HStack(spacing: 16) {
+                                Text(formatTokens(entry.tokens))
+                                    .font(.system(size: 11, design: .monospaced))
+                                    .foregroundStyle(.secondary)
+                                    .frame(width: 60, alignment: .trailing)
+                                Text(formatCost(entry.cost))
+                                    .font(.system(size: 12, weight: .medium, design: .monospaced))
+                                    .frame(width: 64, alignment: .trailing)
+                            }
+                        } label: {
+                            Text(friendlyModel(entry.model))
                         }
                     }
                 }
+            } header: {
+                Text("Usage by Model (30 days)")
             }
         }
         .formStyle(.grouped)
-        .padding()
         .onAppear { loadUsage() }
     }
 
@@ -51,19 +64,6 @@ struct UsageSettingsView: View {
         weekUsage = UsageStore.shared.weekUsage()
         monthUsage = UsageStore.shared.monthUsage()
         modelBreakdown = UsageStore.shared.usageByModel(days: 30)
-    }
-
-    private func friendlyModelName(_ model: String) -> String {
-        if model.contains("opus") { return "Claude Opus" }
-        if model.contains("haiku") { return "Claude Haiku" }
-        if model.contains("sonnet") { return "Claude Sonnet" }
-        return model
-    }
-
-    private func formatTokens(_ tokens: Int) -> String {
-        if tokens >= 1_000_000 { return String(format: "%.1fM tokens", Double(tokens) / 1_000_000) }
-        if tokens >= 1_000 { return String(format: "%.1fK tokens", Double(tokens) / 1_000) }
-        return "\(tokens) tokens"
     }
 
     private func formatCost(_ cost: Double) -> String {
@@ -77,24 +77,27 @@ struct UsageCard: View {
     let usage: UsageStore.UsageSummary?
 
     var body: some View {
-        VStack(spacing: 4) {
+        VStack(spacing: 6) {
             Text(title)
-                .font(.system(size: 10, weight: .medium))
-                .foregroundColor(.secondary)
+                .font(.caption)
+                .foregroundStyle(.secondary)
             if let usage {
                 Text(usage.totalCost < 0.01 ? "< $0.01" : String(format: "$%.2f", usage.totalCost))
-                    .font(.system(size: 16, weight: .semibold, design: .monospaced))
+                    .font(.system(size: 18, weight: .medium, design: .rounded))
                 Text("\(usage.taskCount) tasks")
                     .font(.system(size: 10))
-                    .foregroundColor(.secondary)
+                    .foregroundStyle(.tertiary)
             } else {
                 Text("--")
-                    .font(.system(size: 16, weight: .semibold))
-                    .foregroundColor(.secondary)
+                    .font(.system(size: 18, weight: .medium))
+                    .foregroundStyle(.quaternary)
             }
         }
         .frame(maxWidth: .infinity)
-        .padding(.vertical, 8)
-        .background(RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(0.04)))
+        .padding(.vertical, 12)
+        .background(
+            RoundedRectangle(cornerRadius: DT.Radius.small, style: .continuous)
+                .fill(.primary.opacity(0.03))
+        )
     }
 }

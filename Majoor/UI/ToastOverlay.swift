@@ -1,8 +1,9 @@
 // ToastOverlay.swift
 // Majoor — In-App Toast Notification System
 //
-// Floating toast cards that appear at the top of the panel.
-// Replaces macOS notifications as the primary feedback mechanism.
+// Design reference: macOS notification banners.
+// Frosted material, gentle shadow, swipe-to-dismiss.
+// Compact, non-intrusive, auto-dismissing.
 
 import SwiftUI
 
@@ -10,87 +11,109 @@ struct ToastOverlayView: View {
     @EnvironmentObject var taskManager: TaskManager
 
     var body: some View {
-        VStack(spacing: 8) {
+        VStack(spacing: 6) {
             ForEach(taskManager.toasts) { toast in
                 ToastCard(toast: toast, onDismiss: {
-                    withAnimation(.easeOut(duration: 0.2)) {
-                        taskManager.dismissToast(id: toast.id)
-                    }
+                    taskManager.dismissToast(id: toast.id)
                 })
-                .transition(.move(edge: .top).combined(with: .opacity))
+                .transition(
+                    .asymmetric(
+                        insertion: .move(edge: .top).combined(with: .opacity).combined(with: .scale(scale: 0.95)),
+                        removal: .move(edge: .top).combined(with: .opacity)
+                    )
+                )
             }
         }
-        .padding(.horizontal, 12)
-        .padding(.top, 8)
-        .animation(.easeInOut(duration: 0.25), value: taskManager.toasts.count)
+        .padding(.horizontal, DT.Spacing.md)
+        .padding(.top, DT.Spacing.sm)
+        .animation(DT.Anim.normal, value: taskManager.toasts.count)
     }
 }
 
 struct ToastCard: View {
     let toast: Toast
     var onDismiss: () -> Void
+    @State private var dragOffset: CGFloat = 0
+    @State private var isHovered = false
 
-    private var iconName: String {
+    private var iconConfig: (name: String, color: Color) {
         switch toast.type {
-        case .info: return "checkmark.circle.fill"
-        case .error: return "exclamationmark.triangle.fill"
-        case .warning: return "exclamationmark.circle.fill"
-        }
-    }
-
-    private var iconColor: Color {
-        switch toast.type {
-        case .info: return .green
-        case .error: return .red
-        case .warning: return .orange
+        case .info:    return ("checkmark.circle.fill", .green)
+        case .error:   return ("exclamationmark.triangle.fill", .red)
+        case .warning: return ("exclamationmark.circle.fill", .orange)
         }
     }
 
     var body: some View {
-        HStack(alignment: .top, spacing: 10) {
-            Image(systemName: iconName)
-                .font(.system(size: 16, weight: .medium))
-                .foregroundColor(iconColor)
-                .frame(width: 20)
+        HStack(alignment: .top, spacing: DT.Spacing.sm) {
+            Image(systemName: iconConfig.name)
+                .font(.system(size: 15, weight: .medium))
+                .foregroundStyle(iconConfig.color)
+                .frame(width: 18)
 
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: DT.Spacing.xxs) {
                 Text(toast.title)
-                    .font(.system(size: 12, weight: .semibold))
+                    .font(DT.Font.caption(.semibold))
                     .lineLimit(1)
                 Text(toast.body)
-                    .font(.system(size: 11))
-                    .foregroundColor(.secondary)
-                    .lineLimit(3)
+                    .font(DT.Font.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
             }
 
-            Spacer(minLength: 4)
+            Spacer(minLength: DT.Spacing.xs)
 
             if let actionLabel = toast.actionLabel, let action = toast.action {
                 Button(actionLabel) {
                     action()
                     onDismiss()
                 }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .font(.system(size: 10, weight: .medium))
+                .font(DT.Font.caption(.medium))
+                .foregroundStyle(Color.accentColor)
+                .buttonStyle(.plain)
             }
 
-            Button(action: onDismiss) {
-                Image(systemName: "xmark")
-                    .font(.system(size: 9, weight: .semibold))
-                    .foregroundColor(.secondary)
+            // Dismiss button — only on hover to reduce visual noise
+            if isHovered {
+                Button(action: onDismiss) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 8, weight: .bold))
+                        .foregroundStyle(.tertiary)
+                        .frame(width: 18, height: 18)
+                        .background(Circle().fill(Color.primary.opacity(0.06)))
+                }
+                .buttonStyle(.plain)
+                .transition(.opacity)
             }
-            .buttonStyle(.plain)
-            .frame(width: 16, height: 16)
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
-        .background(.regularMaterial)
-        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .shadow(color: .black.opacity(0.1), radius: 8, y: 4)
-        .overlay(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .strokeBorder(Color.primary.opacity(0.06), lineWidth: 0.5)
+        .padding(.horizontal, DT.Spacing.md)
+        .padding(.vertical, DT.Spacing.sm)
+        .background(
+            RoundedRectangle(cornerRadius: DT.Radius.medium, style: .continuous)
+                .fill(.thinMaterial)
         )
+        .toastShadow()
+        .overlay(
+            RoundedRectangle(cornerRadius: DT.Radius.medium, style: .continuous)
+                .strokeBorder(Color.primary.opacity(0.04), lineWidth: 0.5)
+        )
+        .offset(x: dragOffset)
+        .opacity(dragOffset > 0 ? Double(max(0, 1.0 - dragOffset / 120.0)) : 1.0)
+        .gesture(
+            DragGesture()
+                .onChanged { value in
+                    dragOffset = max(0, value.translation.width)
+                }
+                .onEnded { value in
+                    if value.translation.width > 60 {
+                        withAnimation(DT.Anim.fast) { onDismiss() }
+                    } else {
+                        withAnimation(DT.Anim.spring) { dragOffset = 0 }
+                    }
+                }
+        )
+        .onHover { hovering in
+            withAnimation(DT.Anim.fast) { isHovered = hovering }
+        }
     }
 }
