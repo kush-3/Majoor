@@ -269,11 +269,23 @@ nonisolated func runShellCommand(_ command: String, workingDirectory: String, ti
         }
     }
 
-    process.waitUntilExit()
+    // Read pipes concurrently on non-cooperative threads to avoid >64KB deadlock
+    async let stdoutRead: Data = Task.detached {
+        stdoutPipe.fileHandleForReading.readDataToEndOfFile()
+    }.value
+    async let stderrRead: Data = Task.detached {
+        stderrPipe.fileHandleForReading.readDataToEndOfFile()
+    }.value
+    let (stdoutData, stderrData) = await (stdoutRead, stderrRead)
+
+    // Wait for process exit without blocking a cooperative thread.
+    // Set terminationHandler unconditionally — Foundation calls it retroactively
+    // even if the process already exited, avoiding TOCTOU race on isRunning.
+    await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+        process.terminationHandler = { _ in continuation.resume() }
+    }
     timeoutTask.cancel()
 
-    let stdoutData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
-    let stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
     let stdout = String(data: stdoutData, encoding: .utf8) ?? ""
     let stderr = String(data: stderrData, encoding: .utf8) ?? ""
 

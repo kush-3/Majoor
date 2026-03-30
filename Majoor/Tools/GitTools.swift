@@ -6,6 +6,15 @@
 
 import Foundation
 
+private func shellEscape(_ s: String) -> String {
+    "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"
+}
+
+private func isValidBranchName(_ name: String) -> Bool {
+    let pattern = #"^[a-zA-Z0-9/_.\-]+$"#
+    return name.range(of: pattern, options: .regularExpression) != nil
+}
+
 // MARK: - Git Status
 
 nonisolated struct GitStatusTool: AgentTool {
@@ -46,7 +55,7 @@ nonisolated struct GitDiffTool: AgentTool {
         let expanded = NSString(string: path).expandingTildeInPath
         var cmd = "git diff"
         if arguments["staged"] == "true" { cmd += " --cached" }
-        if let file = arguments["file"] { cmd += " -- \(file)" }
+        if let file = arguments["file"] { cmd += " -- \(shellEscape(file))" }
         return await runShellCommand(cmd, workingDirectory: expanded, timeout: 10)
     }
 }
@@ -67,7 +76,7 @@ nonisolated struct GitLogTool: AgentTool {
         guard let path = arguments["repo_path"] else {
             return ToolResult(success: false, output: "Error: 'repo_path' is required")
         }
-        let count = arguments["count"] ?? "10"
+        let count = Int(arguments["count"] ?? "10") ?? 10
         let expanded = NSString(string: path).expandingTildeInPath
         return await runShellCommand("git log --oneline --graph -\(count)", workingDirectory: expanded, timeout: 10)
     }
@@ -91,7 +100,10 @@ nonisolated struct GitBranchTool: AgentTool {
         }
         let expanded = NSString(string: path).expandingTildeInPath
         let branchName = name.hasPrefix("agent/") ? name : "agent/\(name)"
-        return await runShellCommand("git checkout -b \(branchName)", workingDirectory: expanded, timeout: 10)
+        guard isValidBranchName(branchName) else {
+            return ToolResult(success: false, output: "Error: Invalid branch name '\(branchName)'")
+        }
+        return await runShellCommand("git checkout -b \(shellEscape(branchName))", workingDirectory: expanded, timeout: 10)
     }
 }
 
@@ -112,7 +124,10 @@ nonisolated struct GitCheckoutTool: AgentTool {
             return ToolResult(success: false, output: "Error: 'repo_path' and 'branch' are required")
         }
         let expanded = NSString(string: path).expandingTildeInPath
-        return await runShellCommand("git checkout \(branch)", workingDirectory: expanded, timeout: 10)
+        guard isValidBranchName(branch) else {
+            return ToolResult(success: false, output: "Error: Invalid branch name '\(branch)'")
+        }
+        return await runShellCommand("git checkout \(shellEscape(branch))", workingDirectory: expanded, timeout: 10)
     }
 }
 
@@ -145,15 +160,25 @@ nonisolated struct GitCommitTool: AgentTool {
             return ToolResult(success: false, output: "⛔ Cannot commit to protected branch '\(currentBranch)'. Create a new branch first with git_create_branch.")
         }
 
-        // Stage files
-        let stageResult = await runShellCommand("git add \(files)", workingDirectory: expanded, timeout: 10)
+        // Stage files — escape each path to prevent shell injection
+        let escapedFiles = files == "."
+            ? "."
+            : files.components(separatedBy: " ").map { shellEscape($0) }.joined(separator: " ")
+        let stageResult = await runShellCommand("git add \(escapedFiles)", workingDirectory: expanded, timeout: 10)
         if !stageResult.success {
             return ToolResult(success: false, output: "Failed to stage files: \(stageResult.output)")
         }
 
-        // Commit
-        let escapedMessage = message.replacingOccurrences(of: "'", with: "'\\''")
-        return await runShellCommand("git commit -m '\(escapedMessage)'", workingDirectory: expanded, timeout: 15)
+        // Commit via temp file to handle arbitrary message content
+        let tempDir = NSTemporaryDirectory()
+        let msgPath = (tempDir as NSString).appendingPathComponent("majoor_commit_msg_\(UUID().uuidString).txt")
+        do {
+            try message.write(toFile: msgPath, atomically: true, encoding: .utf8)
+        } catch {
+            return ToolResult(success: false, output: "Error writing commit message: \(error.localizedDescription)")
+        }
+        defer { try? FileManager.default.removeItem(atPath: msgPath) }
+        return await runShellCommand("git commit -F \(shellEscape(msgPath))", workingDirectory: expanded, timeout: 15)
     }
 }
 
@@ -185,7 +210,7 @@ nonisolated struct GitPushTool: AgentTool {
         }
 
         let setUpstream = arguments["set_upstream"] != "false"
-        let cmd = setUpstream ? "git push -u origin \(branch)" : "git push"
+        let cmd = setUpstream ? "git push -u origin \(shellEscape(branch))" : "git push"
         return await runShellCommand(cmd, workingDirectory: expanded, timeout: 30)
     }
 }
@@ -219,9 +244,7 @@ nonisolated struct GitCreatePRTool: AgentTool {
             return ToolResult(success: false, output: "Error: 'gh' CLI not found. Install it: brew install gh")
         }
 
-        let escapedTitle = title.replacingOccurrences(of: "'", with: "'\\''")
-        let escapedBody = body.replacingOccurrences(of: "'", with: "'\\''")
-        let cmd = "gh pr create --title '\(escapedTitle)' --body '\(escapedBody)' --base \(base)"
+        let cmd = "gh pr create --title \(shellEscape(title)) --body \(shellEscape(body)) --base \(shellEscape(base))"
         return await runShellCommand(cmd, workingDirectory: expanded, timeout: 30)
     }
 }
