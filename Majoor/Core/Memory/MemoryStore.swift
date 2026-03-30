@@ -47,12 +47,10 @@ nonisolated final class MemoryStore: @unchecked Sendable {
                 .map { "\"\($0.replacingOccurrences(of: "\"", with: "\"\""))\"" }
                 .joined(separator: " OR ")
 
-            // Use a subquery to avoid fragile rowid join — memories uses TEXT primary key
-            // so rowid is not stable across VACUUM operations.
             let sql = """
                 SELECT m.* FROM memories m
-                WHERE m.rowid IN (
-                    SELECT memories_fts.rowid FROM memories_fts WHERE memories_fts MATCH ?
+                WHERE m.id IN (
+                    SELECT memory_id FROM memories_fts WHERE memories_fts MATCH ?
                 )
                 ORDER BY m.relevanceScore DESC, m.accessCount DESC, m.lastAccessedAt DESC
                 LIMIT ?

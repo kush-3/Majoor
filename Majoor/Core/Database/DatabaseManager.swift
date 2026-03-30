@@ -135,6 +135,47 @@ nonisolated final class DatabaseManager: @unchecked Sendable {
             """)
         }
 
+        migrator.registerMigration("v3_fts5_contentless") { db in
+            // Drop the old content-backed FTS table and its triggers
+            try db.execute(sql: "DROP TRIGGER IF EXISTS memories_ai")
+            try db.execute(sql: "DROP TRIGGER IF EXISTS memories_ad")
+            try db.execute(sql: "DROP TRIGGER IF EXISTS memories_au")
+            try db.execute(sql: "DROP TABLE IF EXISTS memories_fts")
+
+            // Recreate as contentless FTS5 with memory_id for stable joins
+            try db.execute(sql: """
+                CREATE VIRTUAL TABLE memories_fts
+                USING fts5(content, memory_id UNINDEXED, content='')
+            """)
+
+            // Populate from current memories
+            try db.execute(sql: """
+                INSERT INTO memories_fts(content, memory_id)
+                SELECT content, id FROM memories
+            """)
+
+            // Triggers using TEXT primary key (id), not rowid
+            try db.execute(sql: """
+                CREATE TRIGGER memories_ai AFTER INSERT ON memories BEGIN
+                  INSERT INTO memories_fts(content, memory_id) VALUES (new.content, new.id);
+                END
+            """)
+            // Contentless FTS5 delete commands require rowid. For contentless tables,
+            // FTS5 tracks its own internal rowids. We must pass the rowid of the FTS
+            // entry, which matches the memories table rowid at insert time.
+            try db.execute(sql: """
+                CREATE TRIGGER memories_ad AFTER DELETE ON memories BEGIN
+                  INSERT INTO memories_fts(memories_fts, rowid, content, memory_id) VALUES('delete', old.rowid, old.content, old.id);
+                END
+            """)
+            try db.execute(sql: """
+                CREATE TRIGGER memories_au AFTER UPDATE ON memories BEGIN
+                  INSERT INTO memories_fts(memories_fts, rowid, content, memory_id) VALUES('delete', old.rowid, old.content, old.id);
+                  INSERT INTO memories_fts(rowid, content, memory_id) VALUES (new.rowid, new.content, new.id);
+                END
+            """)
+        }
+
         try migrator.migrate(dbQueue)
     }
 }
