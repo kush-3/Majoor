@@ -8,8 +8,6 @@ struct SettingsView: View {
         TabView {
             GeneralSettingsTab()
                 .tabItem { Label("General", systemImage: "gear") }
-            ModelsSettingsTab()
-                .tabItem { Label("Models", systemImage: "cpu") }
             AccountsSettingsView()
                 .tabItem { Label("Accounts", systemImage: "person.crop.circle") }
             MCPSettingsView()
@@ -21,7 +19,7 @@ struct SettingsView: View {
             AboutTab()
                 .tabItem { Label("About", systemImage: "info.circle") }
         }
-        .frame(width: 500, height: 420)
+        .frame(width: 540, height: 480)
     }
 }
 
@@ -66,6 +64,19 @@ struct GeneralSettingsTab: View {
                     }
                 }
             }
+            Section("Model Routing") {
+                ModelRow(label: "Code & Deep Research", model: "Claude Opus", detail: ModelRouter.opusModel)
+                ModelRow(label: "General & File Tasks", model: "Claude Sonnet", detail: ModelRouter.sonnetModel)
+                ModelRow(label: "Classification", model: "Claude Haiku", detail: ModelRouter.haikuModel)
+            }
+            Section("API Status") {
+                HStack {
+                    Image(systemName: APIConfig.claudeAPIKey.isEmpty ? "xmark.circle.fill" : "checkmark.circle.fill")
+                        .foregroundColor(APIConfig.claudeAPIKey.isEmpty ? .red : .green)
+                    Text(APIConfig.claudeAPIKey.isEmpty ? "No API key configured" : "API key configured")
+                        .font(.system(size: 12))
+                }
+            }
             Section("Setup") {
                 Button("Run Setup Wizard") {
                     if let delegate = NSApp.delegate as? AppDelegate {
@@ -96,32 +107,6 @@ struct GeneralSettingsTab: View {
     }
 }
 
-struct ModelsSettingsTab: View {
-    var body: some View {
-        Form {
-            Section("Model Routing") {
-                ModelRow(label: "Code & Deep Research", model: "Claude Opus", detail: ModelRouter.opusModel)
-                ModelRow(label: "General & File Tasks", model: "Claude Sonnet", detail: ModelRouter.sonnetModel)
-                ModelRow(label: "Classification", model: "Claude Haiku", detail: ModelRouter.haikuModel)
-            }
-            Section("API Status") {
-                HStack {
-                    Image(systemName: APIConfig.claudeAPIKey.isEmpty ? "xmark.circle.fill" : "checkmark.circle.fill")
-                        .foregroundColor(APIConfig.claudeAPIKey.isEmpty ? .red : .green)
-                    Text(APIConfig.claudeAPIKey.isEmpty ? "No API key configured" : "API key configured")
-                        .font(.system(size: 12))
-                }
-            }
-            Section {
-                Text("Tasks are automatically routed to the best model based on their content.")
-                    .font(.caption).foregroundColor(.secondary.opacity(0.7))
-            }
-        }
-        .formStyle(.grouped)
-        .padding()
-    }
-}
-
 struct ModelRow: View {
     let label: String
     let model: String
@@ -140,21 +125,50 @@ struct ModelRow: View {
 
 struct AboutTab: View {
     private var appVersion: String {
-        let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.6.0"
-        let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "1"
-        return "Version \(version) (\(build))"
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.6.0"
+    }
+
+    private var buildNumber: String {
+        Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "1"
     }
 
     var body: some View {
-        VStack(spacing: 16) {
+        VStack(spacing: 12) {
             Spacer()
-            Image(systemName: "hammer.fill").font(.system(size: 48)).foregroundColor(.accentColor)
-            Text("Majoor").font(.system(size: 24, weight: .bold))
-            Text("Your AI that does the work").font(.system(size: 14)).foregroundColor(.secondary)
-            Text(appVersion).font(.system(size: 12)).foregroundColor(.secondary.opacity(0.7))
+
+            Image(nsImage: NSApp.applicationIconImage)
+                .resizable()
+                .frame(width: 80, height: 80)
+
+            Text("Majoor")
+                .font(.system(size: 24, weight: .bold))
+
+            Text("Your AI agent for macOS")
+                .font(.system(size: 14))
+                .foregroundColor(.secondary)
+
+            Text("Version \(appVersion) (\(buildNumber))")
+                .font(.system(size: 12))
+                .foregroundColor(.secondary)
+
             Spacer()
-            Link("majoor.ai", destination: URL(string: "https://majoor.ai")!).font(.caption)
+
+            VStack(spacing: 6) {
+                Text("Built with GRDB.swift")
+                    .font(.system(size: 11))
+                    .foregroundColor(.secondary)
+
+                HStack(spacing: 16) {
+                    Link("Website", destination: URL(string: "https://majoor.ai")!)
+                    Link("GitHub", destination: URL(string: "https://github.com/kush-3/majoor")!)
+                }
+                .font(.system(size: 12))
+            }
+
             Spacer()
-        }.frame(maxWidth: .infinity).padding()
+                .frame(height: 16)
+        }
+        .frame(maxWidth: .infinity)
+        .padding()
     }
 }

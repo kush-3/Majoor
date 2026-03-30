@@ -35,14 +35,14 @@ struct MemorySettingsView: View {
                 VStack(spacing: 8) {
                     Image(systemName: "brain")
                         .font(.system(size: 32))
-                        .foregroundColor(.secondary.opacity(0.5))
+                        .foregroundColor(.secondary)
                     Text(memories.isEmpty ? "No memories yet" : "No matching memories")
                         .font(.system(size: 13))
                         .foregroundColor(.secondary)
                     if memories.isEmpty {
                         Text("Majoor will remember things as you use it.\nTry: \"Remember that I prefer dark mode\"")
                             .font(.caption)
-                            .foregroundColor(.secondary.opacity(0.7))
+                            .foregroundColor(.secondary)
                             .multilineTextAlignment(.center)
                     }
                 }

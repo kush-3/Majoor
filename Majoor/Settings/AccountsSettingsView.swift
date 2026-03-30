@@ -89,7 +89,7 @@ struct AccountsSettingsView: View {
             Section {
                 Text("Connected accounts allow Majoor to read, draft, and send emails, and manage your calendar events.")
                     .font(.caption)
-                    .foregroundColor(.secondary.opacity(0.7))
+                    .foregroundColor(.secondary)
             }
         }
         .formStyle(.grouped)

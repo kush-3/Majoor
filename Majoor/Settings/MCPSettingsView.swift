@@ -83,7 +83,7 @@ struct MCPSettingsView: View {
             Section {
                 Text("MCP servers connect Majoor to external services. Add tokens above, or edit ~/.majoor/mcp.json directly for custom servers.")
                     .font(.caption)
-                    .foregroundColor(.secondary.opacity(0.7))
+                    .foregroundColor(.secondary)
             }
         }
         .formStyle(.grouped)
@@ -303,10 +303,14 @@ struct MCPServerRow: View {
     var onRemoveToken: () -> Void
     var onTest: () -> Void
 
+    enum TestResult { case idle, testing, success(Int), failure(String) }
+
     @State private var showTokenInput = false
     @State private var tokenText = ""
     @State private var extraInputs: [String: String] = [:]  // keychainKey -> text
     @State private var showExtraInput: String? = nil          // keychainKey being edited
+    @State private var testResult: TestResult = .idle
+    @State private var showRemoveConfirmation = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -341,11 +345,16 @@ struct MCPServerRow: View {
                     Spacer()
                     Button("Change") { showTokenInput = true }
                         .font(.caption)
-                    Button("Test") { onTest() }
-                        .font(.caption)
-                    Button("Remove") { onRemoveToken() }
+                    testButton
+                    Button("Remove") { showRemoveConfirmation = true }
                         .font(.caption)
                         .foregroundColor(.red)
+                        .alert("Remove \(server.name.capitalized)?", isPresented: $showRemoveConfirmation) {
+                            Button("Cancel", role: .cancel) {}
+                            Button("Remove", role: .destructive) { onRemoveToken() }
+                        } message: {
+                            Text("This will delete the token and stop the server.")
+                        }
                 }
             } else {
                 Button("Add Token") { showTokenInput = true }
@@ -418,6 +427,59 @@ struct MCPServerRow: View {
             }
         }
         .padding(.vertical, 4)
+    }
+
+    @ViewBuilder
+    private var testButton: some View {
+        switch testResult {
+        case .idle:
+            Button("Test") { runTest() }
+                .font(.caption)
+        case .testing:
+            HStack(spacing: 4) {
+                ProgressView().controlSize(.mini)
+                Text("Testing...")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+        case .success(let count):
+            HStack(spacing: 2) {
+                Image(systemName: "checkmark.circle.fill")
+                    .foregroundColor(.green)
+                    .font(.caption)
+                Text("\(count) tools")
+                    .font(.caption)
+                    .foregroundColor(.green)
+            }
+        case .failure(let message):
+            HStack(spacing: 2) {
+                Image(systemName: "xmark.circle.fill")
+                    .foregroundColor(.red)
+                    .font(.caption)
+                Text(message)
+                    .font(.caption)
+                    .foregroundColor(.red)
+                    .lineLimit(1)
+            }
+        }
+    }
+
+    private func runTest() {
+        testResult = .testing
+        Task {
+            if let client = await MCPServerManager.shared.client(for: server.name) {
+                do {
+                    let tools = try await client.listTools()
+                    testResult = .success(tools.count)
+                } catch {
+                    testResult = .failure("Failed")
+                }
+            } else {
+                testResult = .failure("Not running")
+            }
+            try? await Task.sleep(for: .seconds(4))
+            testResult = .idle
+        }
     }
 
     private var statusColor: Color {
