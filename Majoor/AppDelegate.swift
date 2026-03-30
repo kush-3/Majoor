@@ -165,7 +165,16 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
                     self.taskManager.isTaskRunning = false
                     self.statusBarController?.setState(.success)
                     let completedTask = self.taskManager.tasks.first
-                    self.taskManager.showNotification(type: .success, title: "Task Complete", body: result.summary, task: completedTask)
+                    self.taskManager.showToast(
+                        type: .info, title: "Task Complete", body: result.summary, autoDismiss: 6.0,
+                        actionLabel: "View Details",
+                        action: {
+                            if let task = completedTask {
+                                NotificationCenter.default.post(
+                                    name: .majoorOpenTaskDetail, object: nil,
+                                    userInfo: ["taskId": task.id.uuidString])
+                            }
+                        })
                     self.showPanel()
                 }
             } catch is CancellationError {
@@ -184,7 +193,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
                 await MainActor.run {
                     self.taskManager.isTaskRunning = false
                     self.statusBarController?.setState(.error, message: error.localizedDescription)
-                    self.taskManager.showNotification(type: .error, title: "Task Failed", body: error.localizedDescription)
+                    self.taskManager.showToast(type: .error, title: "Task Failed", body: error.localizedDescription)
                     self.showPanel()
                 }
             }
@@ -207,7 +216,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     private func handleLLMError(_ error: LLMError) {
         let errorDesc = error.errorDescription ?? "Unknown error"
         statusBarController?.setState(.error, message: errorDesc)
-        taskManager.showNotification(type: .error, title: "Task Failed", body: errorDesc)
+        taskManager.showToast(type: .error, title: "Task Failed", body: errorDesc)
         showPanel()
     }
 

@@ -2,7 +2,7 @@
 // Majoor — Dropdown Panel
 //
 // The main panel that appears when clicking the menu bar icon.
-// Shows activity feed, confirmations, pipeline progress, and (soon) chat.
+// Shows activity feed, confirmations, pipeline progress, and chat.
 // Toast overlay provides in-app feedback for task completions and errors.
 
 import SwiftUI
@@ -24,6 +24,8 @@ struct MainPanelView: View {
                                 Image(systemName: "chevron.left").font(.system(size: 11))
                                 Text("Back").font(.system(size: 12))
                             }
+                            .contentShape(Rectangle())
+                            .padding(.vertical, DT.Spacing.xs)
                         }
                         .buttonStyle(.plain)
                         .foregroundColor(.accentColor)
@@ -32,6 +34,7 @@ struct MainPanelView: View {
                     .padding(.horizontal, 16).padding(.vertical, 8)
                     Divider()
                     ResponseDetailView(task: task)
+                        .transition(.move(edge: .trailing).combined(with: .opacity))
 
                 } else if let confirmation = taskManager.activeConfirmation {
                     // Interactive confirmation sheet (email, calendar, pipeline, generic)
@@ -41,25 +44,19 @@ struct MainPanelView: View {
                         let title = taskId.flatMap { id in taskManager.tasks.first(where: { $0.id == id })?.userInput } ?? "Pipeline"
                         PipelineProgressView(title: String(title.prefix(50)))
                             .environmentObject(taskManager)
+                            .transition(.opacity)
                     } else {
                         ConfirmationSheet(confirmation: confirmation)
                             .environmentObject(taskManager)
+                            .transition(.opacity)
                     }
-
-                } else if let notification = taskManager.activeNotification {
-                    // Task completion/error notification
-                    TaskNotificationView(notification: notification, onDismiss: {
-                        taskManager.dismissNotification()
-                    }, onViewDetails: { task in
-                        taskManager.dismissNotification()
-                        selectedTask = task
-                    })
 
                 } else if taskManager.pipelineExecuting, let taskId = taskManager.pendingPipelineTaskId {
                     // Pipeline executing without pending confirmation
                     let title = taskManager.tasks.first(where: { $0.id == taskId })?.userInput ?? "Pipeline"
                     PipelineProgressView(title: String(title.prefix(50)))
                         .environmentObject(taskManager)
+                        .transition(.opacity)
 
                 } else {
                     // Normal panel: header + tabs
@@ -91,8 +88,18 @@ struct MainPanelView: View {
                         ChatView()
                             .environmentObject(chatManager)
                     }
+
+                    Group {
+                        Button("") { taskManager.selectedTab = 0 }
+                            .keyboardShortcut("1", modifiers: .command)
+                            .frame(width: 0, height: 0).hidden()
+                        Button("") { taskManager.selectedTab = 1 }
+                            .keyboardShortcut("2", modifiers: .command)
+                            .frame(width: 0, height: 0).hidden()
+                    }
                 }
             }
+            .animation(.easeInOut(duration: 0.2), value: selectedTask?.id)
 
             // Toast overlay — floats above content
             ToastOverlayView()
@@ -105,60 +112,6 @@ struct MainPanelView: View {
                let task = taskManager.tasks.first(where: { $0.id.uuidString == taskId }) {
                 selectedTask = task
             }
-        }
-    }
-}
-
-// MARK: - Task Notification View
-
-struct TaskNotificationView: View {
-    let notification: TaskNotification
-    var onDismiss: () -> Void
-    var onViewDetails: ((AgentTask) -> Void)?
-
-    private var isSuccess: Bool { notification.type == .success }
-
-    var body: some View {
-        VStack(spacing: 0) {
-            Spacer()
-
-            VStack(spacing: 16) {
-                // Icon
-                Image(systemName: isSuccess ? "checkmark.circle.fill" : "xmark.circle.fill")
-                    .font(.system(size: 40))
-                    .foregroundColor(isSuccess ? .green : .red)
-
-                // Title
-                Text(notification.title)
-                    .font(.system(size: 16, weight: .semibold))
-
-                // Body
-                Text(notification.body)
-                    .font(.system(size: 13))
-                    .foregroundColor(.secondary)
-                    .multilineTextAlignment(.center)
-                    .lineLimit(5)
-                    .padding(.horizontal, 24)
-            }
-
-            Spacer()
-
-            Divider()
-
-            // Action buttons
-            HStack(spacing: 12) {
-                if let task = notification.task, let onViewDetails {
-                    Button("View Details") { onViewDetails(task) }
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
-                }
-                Spacer()
-                Button("OK") { onDismiss() }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.small)
-            }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 12)
         }
     }
 }
