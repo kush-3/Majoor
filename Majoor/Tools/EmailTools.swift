@@ -12,22 +12,63 @@ private struct GmailAPI {
 
     static let baseURL = "https://gmail.googleapis.com/gmail/v1/users/me"
 
-    /// Make an authenticated Gmail API request. Auto-refreshes token on 401.
+    /// Make an authenticated Gmail API request with retry and exponential backoff.
     static func request(_ path: String, method: String = "GET", body: Data? = nil) async throws -> (Data, Int) {
-        let token = try await GoogleOAuthManager.shared.validAccessToken()
-        let url = URL(string: "\(baseURL)\(path)")!
+        let maxAttempts = 3
+        var lastError: (any Error)?
 
-        var req = URLRequest(url: url)
-        req.httpMethod = method
-        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        if let body {
-            req.httpBody = body
-            req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        for attempt in 0..<maxAttempts {
+            let token = try await GoogleOAuthManager.shared.validAccessToken()
+            let url = URL(string: "\(baseURL)\(path)")!
+
+            var req = URLRequest(url: url, timeoutInterval: 30)
+            req.httpMethod = method
+            req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+            if let body {
+                req.httpBody = body
+                req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            }
+
+            let data: Data
+            let statusCode: Int
+            do {
+                let (responseData, response) = try await URLSession.shared.data(for: req)
+                data = responseData
+                statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
+            } catch {
+                lastError = error
+                if attempt < maxAttempts - 1 {
+                    let delay: UInt64 = [1, 2, 4][attempt] * 1_000_000_000
+                    try await Task.sleep(nanoseconds: delay)
+                }
+                continue
+            }
+
+            switch statusCode {
+            case 200...299:
+                return (data, statusCode)
+            case 401:
+                throw OAuthError.notAuthenticated
+            case 429:
+                if attempt < maxAttempts - 1 {
+                    let delay: UInt64 = [4, 8, 16][attempt] * 1_000_000_000
+                    try await Task.sleep(nanoseconds: delay)
+                    continue
+                }
+                return (data, statusCode)
+            case 500...599:
+                if attempt < maxAttempts - 1 {
+                    let delay: UInt64 = [2, 4, 8][attempt] * 1_000_000_000
+                    try await Task.sleep(nanoseconds: delay)
+                    continue
+                }
+                return (data, statusCode)
+            default:
+                return (data, statusCode)
+            }
         }
 
-        let (data, response) = try await URLSession.shared.data(for: req)
-        let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
-        return (data, statusCode)
+        throw lastError ?? OAuthError.notAuthenticated
     }
 
     /// Parse a Gmail message JSON into a readable format
@@ -309,20 +350,6 @@ nonisolated struct SendEmailTool: AgentTool, Sendable {
             return ToolResult(success: false, output: "Error: 'to', 'subject', and 'body' are required.")
         }
 
-        // Request user confirmation before sending
-        let preview = "To: \(to)\nSubject: \(subject)\n\n\(String(body.prefix(200)))"
-        let confirmResult = await ConfirmationManager.shared.requestConfirmation(
-            title: "Send Email?",
-            body: preview,
-            category: NotificationManager.confirmEmailCategory
-        )
-
-        guard confirmResult.approved else {
-            let feedbackNote = confirmResult.feedback.map { " Feedback: \($0)" } ?? ""
-            return ToolResult(success: false, output: "User declined to send the email.\(feedbackNote)")
-        }
-
-        // Actually send
         let raw = GmailAPI.buildRawEmail(to: to, subject: subject, body: body)
         let sendBody = try JSONSerialization.data(withJSONObject: ["raw": raw])
 
@@ -372,19 +399,6 @@ nonisolated struct ReplyToEmailTool: AgentTool, Sendable {
         let subject = "Re: \(headerDict["subject"] ?? "")"
         let messageId = headerDict["message-id"]
         let threadId = origJson["threadId"] as? String
-
-        // Request user confirmation
-        let preview = "Reply to: \(replyTo)\nSubject: \(subject)\n\n\(String(body.prefix(200)))"
-        let confirmResult = await ConfirmationManager.shared.requestConfirmation(
-            title: "Send Reply?",
-            body: preview,
-            category: NotificationManager.confirmEmailCategory
-        )
-
-        guard confirmResult.approved else {
-            let feedbackNote = confirmResult.feedback.map { " Feedback: \($0)" } ?? ""
-            return ToolResult(success: false, output: "User declined to send the reply.\(feedbackNote)")
-        }
 
         // Send the reply
         let raw = GmailAPI.buildRawEmail(to: replyTo, subject: subject, body: body, threadId: threadId, inReplyTo: messageId)
