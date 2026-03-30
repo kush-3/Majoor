@@ -96,3 +96,648 @@ Two separate execution paths:
 ### Conversation Continuity
 
 AgentLoop maintains a `conversationHistory` of the last 10 minutes, auto-injected as context for subsequent tasks. Stale entries are pruned automatically.
+
+# CLAUDE.md — Majoor
+
+This document defines how Claude Code should understand, reason about, and modify this repository.  
+It is written to maximize reliability, correctness, and architectural consistency.
+
+---
+
+# Project Overview
+
+Majoor is a **native macOS AI agent** that autonomously performs tasks across:
+
+- Filesystem
+- Email (Gmail OAuth)
+- Calendar (EventKit)
+- Web research
+- Code execution
+- External MCP tools (GitHub, Slack, Notion, Linear)
+
+The system is designed around a **tool‑driven agent loop** with memory, planning, and model routing.
+
+This is **not** a typical MVC/macOS app.  
+It is an **agent runtime with a UI shell**.
+
+---
+
+# Core Engineering Principles
+
+Claude MUST follow these principles when modifying code:
+
+### 1. Agent First Architecture
+
+- The **AgentLoop** is the brain
+- UI is a thin wrapper
+- Tools are capabilities
+- Memory is persistent intelligence
+
+Never move logic from AgentLoop into UI.
+
+---
+
+### 2. Deterministic Tooling
+
+Tools must:
+
+- Be stateless where possible
+- Return structured responses
+- Never print logs as primary output
+- Avoid hidden side effects
+
+---
+
+### 3. Safety & Reliability
+
+Claude must:
+
+- Avoid destructive operations without confirmation
+- Preserve existing architecture
+- Prefer additive changes
+- Avoid refactoring unrelated files
+
+---
+
+# Build & Run
+
+This is a native macOS app built with Xcode.
+
+There is **no CLI build pipeline**.
+
+### Build from CLI
+
+```bash
+xcodebuild -project Majoor.xcodeproj -scheme Majoor -configuration Debug build
+```
+
+### Run
+
+```
+⌘ + R (Xcode)
+```
+
+### Clean Build
+
+```
+⌘ + Shift + K
+```
+
+or
+
+```bash
+xcodebuild -project Majoor.xcodeproj -scheme Majoor clean
+```
+
+---
+
+# Project Constraints
+
+### Swift Version
+
+- Swift 6
+- `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor`
+
+This means:
+
+- Everything defaults to `@MainActor`
+- Background workers must be explicitly:
+
+```
+nonisolated
+```
+
+If concurrency is used:
+
+```
+@unchecked Sendable
+```
+
+---
+
+### File System Sync
+
+Project uses:
+
+```
+PBXFileSystemSynchronizedRootGroup
+```
+
+Do NOT manually edit:
+
+```
+project.pbxproj
+```
+
+To add files:
+
+- Create `.swift` file in correct directory
+- Xcode auto-discovers
+
+---
+
+### Dependencies
+
+Single dependency:
+
+- **GRDB.swift v7.10.0**
+- SQLite ORM
+- Static library via SPM
+
+Do NOT introduce new dependencies unless necessary.
+
+---
+
+### Sandbox
+
+Sandbox is **disabled intentionally**.
+
+The app requires:
+
+- shell execution
+- git CLI
+- process spawning
+
+Do not enable sandbox.
+
+---
+
+### API Keys
+
+Stored in:
+
+```
+APIConfig.swift
+```
+
+Hardcoded intentionally.
+
+Do not refactor unless explicitly requested.
+
+---
+
+# Architecture
+
+# Agent Loop
+
+Location:
+
+```
+Core/AgentLoop.swift
+```
+
+This is the **central brain**.
+
+Pipeline:
+
+1. Classify → TaskClassifier
+2. Route → ModelRouter
+3. Retrieve Memory → MemoryRetriever
+4. LLM Loop (max 25 iterations)
+5. Persist Results
+
+---
+
+## Classification
+
+```
+TaskClassifier
+```
+
+- 72+ keywords
+- 8 categories
+
+Claude must **not break classifier assumptions**.
+
+---
+
+## Model Routing
+
+```
+ModelRouter
+```
+
+Routing rules:
+
+| Category | Model |
+|----------|-------|
+| Coding | Opus |
+| Research | Opus |
+| Email | Sonnet |
+| General | Sonnet |
+
+Do not hardcode model logic elsewhere.
+
+---
+
+## Memory Injection
+
+```
+MemoryRetriever
+```
+
+SQLite search:
+
+- Semantic retrieval
+- Inject into system prompt
+
+Memory is critical.
+
+Never remove memory logic.
+
+---
+
+## LLM Loop
+
+Max:
+
+```
+25 iterations
+```
+
+Cycle:
+
+1. Call Claude
+2. Tool call OR text response
+3. Execute tool
+4. Feed back
+
+This loop is **nonisolated**.
+
+UI updates must use:
+
+```
+MainActor.run
+```
+
+---
+
+# Tool System
+
+Location:
+
+```
+Tools/
+```
+
+34 tools across 6 files.
+
+All tools conform to:
+
+```
+AgentTool
+```
+
+Defined in:
+
+```
+ToolProtocol.swift
+```
+
+Tool Interface:
+
+- name
+- description
+- parameters
+- requiresConfirmation
+- execute()
+
+---
+
+# Confirmation Flow
+
+Used for:
+
+- send_email
+- delete_calendar_event
+- destructive actions
+
+Flow:
+
+1. Notification
+2. Suspend loop
+3. Await response
+4. Resume continuation
+
+Managed by:
+
+```
+ConfirmationManager
+```
+
+Uses:
+
+```
+CheckedContinuation
+```
+
+The agent loop **blocks intentionally**.
+
+Do not introduce concurrency here.
+
+---
+
+# Google OAuth
+
+Location:
+
+```
+Core/OAuth/GoogleOAuthManager.swift
+```
+
+Uses:
+
+```
+127.0.0.1 loopback server
+```
+
+Reason:
+
+Google blocks custom URL schemes.
+
+Tokens stored in:
+
+```
+macOS Keychain
+```
+
+Do not change OAuth flow.
+
+---
+
+# EventKit
+
+Use global:
+
+```
+sharedEventStore
+```
+
+Defined in:
+
+```
+CalendarTools.swift
+```
+
+Do NOT create local:
+
+```
+EKEventStore
+```
+
+Reset permissions:
+
+```bash
+tccutil reset Calendar com.Majoor
+```
+
+---
+
+# Database
+
+Location:
+
+```
+Core/Database/DatabaseManager.swift
+```
+
+SQLite via GRDB
+
+Path:
+
+```
+~/Library/Application Support/ai.majoor.agent/majoor.sqlite
+```
+
+Tables:
+
+- memories
+- tasks
+- usageStats
+
+Migrations run on startup.
+
+---
+
+# MCP Client
+
+Location:
+
+```
+Core/MCP/
+```
+
+Components:
+
+### MCPClient
+
+- actor
+- stdio JSON‑RPC
+- tool discovery
+
+### MCPServerManager
+
+- lifecycle management
+- restart
+- health checks
+
+### MCPToolBridge
+
+- converts MCP tools to AgentTool
+
+### MCPConfig
+
+Loads:
+
+```
+~/.majoor/mcp.json
+```
+
+Supports:
+
+```
+keychain:
+```
+
+Environment variables.
+
+---
+
+# MCP Servers
+
+Preconfigured:
+
+| Server | Tools |
+|--------|------|
+| GitHub | 26 |
+| Slack | 8 |
+| Notion | 22 |
+| Linear | 5 |
+
+---
+
+# Pipeline System
+
+Triggered when:
+
+```
+3+ tools required
+```
+
+Flow:
+
+1. Plan
+2. User approve
+3. Execute sequentially
+
+Marker:
+
+```
+%%PIPELINE_CONFIRM%%
+```
+
+UI:
+
+```
+PipelineProgressView
+```
+
+---
+
+# Chat vs Task Mode
+
+## Task Mode
+
+Uses:
+
+```
+AgentLoop
+```
+
+- Background execution
+- Tool execution
+- Memory persistence
+
+---
+
+## Chat Mode
+
+Uses:
+
+```
+ChatManager
+```
+
+- Sonnet
+- Streaming SSE
+- No tool execution
+
+---
+
+# Conversation Continuity
+
+AgentLoop stores:
+
+```
+conversationHistory
+```
+
+Retention:
+
+```
+10 minutes
+```
+
+Auto pruning.
+
+---
+
+# Coding Rules
+
+Claude must:
+
+- Prefer small changes
+- Avoid large refactors
+- Preserve architecture
+- Avoid introducing new frameworks
+- Maintain Swift concurrency correctness
+- Avoid blocking main thread
+
+---
+
+# File Organization
+
+```
+Core/
+Tools/
+UI/
+Models/
+Services/
+```
+
+Follow existing structure.
+
+---
+
+# When Adding New Tools
+
+Claude must:
+
+1. Create tool file in Tools/
+2. Conform to AgentTool
+3. Register in ToolRegistry
+4. Add description
+5. Define parameters
+
+---
+
+# When Modifying Agent Loop
+
+Claude must:
+
+- Avoid changing iteration logic
+- Avoid breaking tool dispatch
+- Preserve memory injection
+
+---
+
+# Performance Constraints
+
+Avoid:
+
+- Blocking calls on MainActor
+- Long synchronous operations
+- Heavy UI updates
+
+---
+
+# Debugging
+
+Logs are acceptable but:
+
+- Avoid verbose logs
+- Avoid print spam
+- Prefer structured logs
+
+---
+
+# Testing
+
+No test framework configured.
+
+Manual testing only.
+
+---
+
+# Final Rule
+
+Claude should treat this repository as:
+
+> A production‑grade autonomous agent runtime
+
+All changes must preserve:
+
+- Reliability
+- Determinism
+- Safety
+- Performance
