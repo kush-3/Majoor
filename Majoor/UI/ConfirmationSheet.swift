@@ -77,6 +77,7 @@ struct ConfirmationSheet: View {
                     .background(Color.primary.opacity(0.04))
                     .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
                     .focused($feedbackFocused)
+                    .onSubmit { resolveConfirmation(approved: true) }
 
                 HStack(spacing: 10) {
                     if taskManager.pendingPipelinePlan != nil {

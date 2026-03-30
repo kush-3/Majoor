@@ -96,7 +96,7 @@ struct PipelineProgressView: View {
             }
         } else {
             ProgressView()
-                .scaleEffect(0.6)
+                .controlSize(.small)
         }
     }
 }
@@ -162,7 +162,7 @@ struct PipelineStepRow: View {
             }
         case .running:
             ProgressView()
-                .scaleEffect(0.5)
+                .controlSize(.mini)
         case .completed:
             Image(systemName: "checkmark.circle.fill")
                 .font(.system(size: 14))

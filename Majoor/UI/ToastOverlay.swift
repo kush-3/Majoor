@@ -13,9 +13,7 @@ struct ToastOverlayView: View {
         VStack(spacing: 8) {
             ForEach(taskManager.toasts) { toast in
                 ToastCard(toast: toast, onDismiss: {
-                    withAnimation(.easeOut(duration: 0.2)) {
-                        taskManager.dismissToast(id: toast.id)
-                    }
+                    taskManager.dismissToast(id: toast.id)
                 })
                 .transition(.move(edge: .top).combined(with: .opacity))
             }

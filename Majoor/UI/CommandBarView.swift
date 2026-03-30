@@ -18,6 +18,7 @@ struct CommandBarView: View {
         return CommandMode(rawValue: saved.capitalized) ?? .task
     }()
     @State private var historyIndex: Int = -1
+    @State private var modeToggleHovered = false
     @FocusState private var isFocused: Bool
 
     let isTaskRunning: Bool
@@ -82,10 +83,13 @@ struct CommandBarView: View {
                             .padding(.vertical, 4)
                             .background(
                                 Capsule()
-                                    .fill(mode == .task ? Color.accentColor : Color.accentColor.opacity(0.12))
+                                    .fill(mode == .task
+                                          ? Color.accentColor.opacity(modeToggleHovered ? 0.85 : 1.0)
+                                          : Color.accentColor.opacity(modeToggleHovered ? 0.2 : 0.12))
                             )
                     }
                     .buttonStyle(.plain)
+                    .onHover { modeToggleHovered = $0 }
                     .help("Tab to switch mode")
 
                     // Input field

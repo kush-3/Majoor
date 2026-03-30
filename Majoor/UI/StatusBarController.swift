@@ -100,6 +100,7 @@ class StatusBarController {
         successRevertTimer = nil
         currentState = state
         guard let button = statusItem?.button else { return }
+        button.alphaValue = 1.0
 
         switch state {
         case .idle:
@@ -113,12 +114,18 @@ class StatusBarController {
             let tooltip = message ?? "Working..."
             button.toolTip = "Majoor — \(tooltip)"
             button.contentTintColor = nil
+            button.image = NSImage(systemSymbolName: "hammer.fill", accessibilityDescription: "Working")
+            button.image?.isTemplate = true
             pulseOn = true
-            pulseTimer = Timer.scheduledTimer(withTimeInterval: 0.6, repeats: true) { [weak self] _ in
+            pulseTimer = Timer.scheduledTimer(withTimeInterval: 0.8, repeats: true) { [weak self] _ in
                 guard let self, let btn = self.statusItem?.button else { return }
                 self.pulseOn.toggle()
-                btn.image = NSImage(systemSymbolName: self.pulseOn ? "hammer.fill" : "hammer", accessibilityDescription: "Working")
-                btn.image?.isTemplate = true
+                let target: CGFloat = self.pulseOn ? 1.0 : 0.3
+                NSAnimationContext.runAnimationGroup { ctx in
+                    ctx.duration = 0.6
+                    ctx.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+                    btn.animator().alphaValue = target
+                }
             }
 
         case .success:
