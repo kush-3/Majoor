@@ -25,6 +25,7 @@ final nonisolated class AgentLoop: @unchecked Sendable {
         let timestamp: Date
     }
     private var conversationHistory: [ConversationContext] = []
+    private let historyLock = NSLock()
 
     private let systemPrompt = """
     You are Majoor, an autonomous AI agent running as a native macOS menu bar app. \
@@ -83,14 +84,15 @@ final nonisolated class AgentLoop: @unchecked Sendable {
 
         // 1. Hybrid routing: keyword fast-path or LLM classification
         // Include recent conversation context so the router understands follow-ups
-        let recentContext = conversationHistory.suffix(3).map { $0.userInput }.joined(separator: " | ")
+        let historySnapshot = historyLock.withLock { conversationHistory }
+        let recentContext = historySnapshot.suffix(3).map { $0.userInput }.joined(separator: " | ")
         let routingInput = recentContext.isEmpty ? userInput : "\(userInput) [recent context: \(recentContext)]"
         let (provider, routedToolSets) = await ModelRouter.routeHybrid(routingInput)
 
         // Merge tool sets from recent conversations so follow-ups retain access
         var toolSets = routedToolSets
         let now = Date()
-        let recentToolSets = conversationHistory
+        let recentToolSets = historySnapshot
             .filter { now.timeIntervalSince($0.timestamp) < conversationTimeoutSeconds }
             .flatMap { $0.toolSets }
         for ts in recentToolSets {
@@ -137,7 +139,7 @@ final nonisolated class AgentLoop: @unchecked Sendable {
 
         // 5. Build messages — inject all conversations from the last 10 minutes
         var messages: [AnthropicMessage] = []
-        let recentConversations = conversationHistory.filter {
+        let recentConversations = historySnapshot.filter {
             now.timeIntervalSince($0.timestamp) < conversationTimeoutSeconds
         }
         if !recentConversations.isEmpty {
@@ -335,17 +337,18 @@ final nonisolated class AgentLoop: @unchecked Sendable {
 
                 // 6. Store conversation for continuity and prune stale/excess entries
                 let completedAt = Date()
-                conversationHistory.removeAll { completedAt.timeIntervalSince($0.timestamp) >= conversationTimeoutSeconds }
-                conversationHistory.append(ConversationContext(
-                    userInput: userInput,
-                    responseText: String(text.prefix(maxResponseTextLength)),
-                    toolSummaries: Array(toolSummaries.suffix(10)),
-                    toolSets: toolSets,
-                    timestamp: completedAt
-                ))
-                // Cap at maxConversationEntries
-                if conversationHistory.count > maxConversationEntries {
-                    conversationHistory.removeFirst(conversationHistory.count - maxConversationEntries)
+                historyLock.withLock {
+                    conversationHistory.removeAll { completedAt.timeIntervalSince($0.timestamp) >= conversationTimeoutSeconds }
+                    conversationHistory.append(ConversationContext(
+                        userInput: userInput,
+                        responseText: String(text.prefix(maxResponseTextLength)),
+                        toolSummaries: Array(toolSummaries.suffix(10)),
+                        toolSets: toolSets,
+                        timestamp: completedAt
+                    ))
+                    if conversationHistory.count > maxConversationEntries {
+                        conversationHistory.removeFirst(conversationHistory.count - maxConversationEntries)
+                    }
                 }
 
                 return TaskResult(summary: summarize(text), steps: task.steps, tokensUsed: totalTokens)
@@ -443,16 +446,18 @@ final nonisolated class AgentLoop: @unchecked Sendable {
 
         // Store conversation for continuity and prune stale/excess entries
         let completedAt = Date()
-        conversationHistory.removeAll { completedAt.timeIntervalSince($0.timestamp) >= conversationTimeoutSeconds }
-        conversationHistory.append(ConversationContext(
-            userInput: userInput,
-            responseText: finalText.isEmpty ? "Completed (max iterations)" : String(finalText.prefix(maxResponseTextLength)),
-            toolSummaries: Array(toolSummaries.suffix(10)),
-            toolSets: toolSets,
-            timestamp: completedAt
-        ))
-        if conversationHistory.count > maxConversationEntries {
-            conversationHistory.removeFirst(conversationHistory.count - maxConversationEntries)
+        historyLock.withLock {
+            conversationHistory.removeAll { completedAt.timeIntervalSince($0.timestamp) >= conversationTimeoutSeconds }
+            conversationHistory.append(ConversationContext(
+                userInput: userInput,
+                responseText: finalText.isEmpty ? "Completed (max iterations)" : String(finalText.prefix(maxResponseTextLength)),
+                toolSummaries: Array(toolSummaries.suffix(10)),
+                toolSets: toolSets,
+                timestamp: completedAt
+            ))
+            if conversationHistory.count > maxConversationEntries {
+                conversationHistory.removeFirst(conversationHistory.count - maxConversationEntries)
+            }
         }
 
         return TaskResult(summary: task.summary, steps: task.steps, tokensUsed: totalTokens)
@@ -487,7 +492,8 @@ final nonisolated class AgentLoop: @unchecked Sendable {
             await MainActor.run {
                 task.steps.append(callStep)
                 // Update pipeline step tracking if executing a pipeline
-                if let matchedIndex = matchToolToPipelineStep(call.toolName, arguments: call.arguments) {
+                let pipelineSteps = taskManager.pipelineSteps
+                if let matchedIndex = matchToolToPipelineStep(call.toolName, arguments: call.arguments, steps: pipelineSteps) {
                     taskManager.addToolCallToPipelineStep(at: matchedIndex, toolName: call.toolName)
                     taskManager.updatePipelineStep(at: matchedIndex, status: .running)
                 }
@@ -555,7 +561,8 @@ final nonisolated class AgentLoop: @unchecked Sendable {
             await MainActor.run {
                 task.steps.append(resultStep)
                 // Update pipeline step status based on result
-                if let matchedIndex = matchToolToPipelineStep(call.toolName, arguments: call.arguments) {
+                let pipelineSteps = taskManager.pipelineSteps
+                if let matchedIndex = matchToolToPipelineStep(call.toolName, arguments: call.arguments, steps: pipelineSteps) {
                     let isError = output.lowercased().hasPrefix("error")
                     if isError {
                         taskManager.updatePipelineStep(at: matchedIndex, status: .failed, error: String(output.prefix(200)))
@@ -665,8 +672,7 @@ final nonisolated class AgentLoop: @unchecked Sendable {
 
     /// Match a tool call to the best pipeline step.
     /// Returns the index into taskManager.pipelineSteps, or nil if no match.
-    private func matchToolToPipelineStep(_ toolName: String, arguments: [String: String]) -> Int? {
-        let steps = taskManager.pipelineSteps
+    private func matchToolToPipelineStep(_ toolName: String, arguments: [String: String], steps: [PipelineStep]) -> Int? {
         guard !steps.isEmpty else { return nil }
 
         // First: find steps that are currently running (already matched to this tool)

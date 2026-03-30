@@ -8,7 +8,8 @@ final nonisolated class AnthropicProvider: LLMProvider, @unchecked Sendable {
     
     let name: String
     let model: String
-    private var apiKey: String
+    private var _apiKey: String
+    private var apiKey: String { stateLock.withLock { _apiKey } }
     private let baseURL = "https://api.anthropic.com/v1/messages"
     private let apiVersion = "2023-06-01"
     private let maxTokens = 16384
@@ -54,7 +55,7 @@ final nonisolated class AnthropicProvider: LLMProvider, @unchecked Sendable {
     }
 
     init(apiKey: String, model: String = "claude-sonnet-4-20250514") {
-        self.apiKey = apiKey
+        self._apiKey = apiKey
         self.model = model
         self.name = model.contains("opus") ? "Claude Opus" :
                     model.contains("sonnet") ? "Claude Sonnet" :
@@ -62,7 +63,7 @@ final nonisolated class AnthropicProvider: LLMProvider, @unchecked Sendable {
     }
     
     func updateAPIKey(_ newKey: String) {
-        self.apiKey = newKey
+        stateLock.withLock { _apiKey = newKey }
     }
     
     func complete(
@@ -239,22 +240,15 @@ final nonisolated class AnthropicProvider: LLMProvider, @unchecked Sendable {
         guard !apiKey.isEmpty else { throw LLMError.invalidAPIKey }
         try checkCircuitBreaker()
 
-        // Build request body with stream: true
-        let request = AnthropicRequest(
+        var request = AnthropicRequest(
             model: model,
             maxTokens: maxTokens,
             system: systemPrompt,
             messages: messages,
             tools: tools.isEmpty ? nil : tools
         )
-
-        var requestDict: [String: Any]
-        let encoder = JSONEncoder()
-        let requestData = try encoder.encode(request)
-        requestDict = (try? JSONSerialization.jsonObject(with: requestData) as? [String: Any]) ?? [:]
-        requestDict["stream"] = true
-
-        let body = try JSONSerialization.data(withJSONObject: requestDict)
+        request.stream = true
+        let body = try JSONEncoder().encode(request)
 
         var urlRequest = URLRequest(url: URL(string: baseURL)!)
         urlRequest.httpMethod = "POST"

@@ -13,11 +13,12 @@ nonisolated struct AnthropicRequest: Codable, Sendable {
     let system: String?
     let messages: [AnthropicMessage]
     let tools: [AnthropicTool]?
-    
+    var stream: Bool?
+
     enum CodingKeys: String, CodingKey {
         case model
         case maxTokens = "max_tokens"
-        case system, messages, tools
+        case system, messages, tools, stream
     }
 }
 
