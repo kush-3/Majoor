@@ -179,6 +179,9 @@ actor MCPClient {
             }
         }
 
+        // Clear stderr handler before releasing process to break retain cycle
+        (process?.standardError as? Pipe)?.fileHandleForReading.readabilityHandler = nil
+
         stdinHandle = nil
         stdoutHandle = nil
         process = nil

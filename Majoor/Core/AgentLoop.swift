@@ -111,14 +111,13 @@ final nonisolated class AgentLoop: @unchecked Sendable {
             fullSystemPrompt += "\n\n" + mcpSummary
         }
 
-        // 3. Build the tool list: local tools + filtered MCP tools based on routing
+        // 3. Build the tool list: local tools + MCP tools (live or cached)
+        let includeAllMCP = toolSets.isEmpty || toolSets.contains("all")
         var activeTools: [any AgentTool] = Array(tools)
         let allMcpTools = await MCPServerManager.shared.allAvailableTools()
         if !allMcpTools.isEmpty {
-            // Filter MCP tools by the tool sets the router selected
-            let includeAll = toolSets.isEmpty || toolSets.contains("all")
             let filteredMcpTools: [MCPToolBridge]
-            if includeAll {
+            if includeAllMCP {
                 filteredMcpTools = allMcpTools
             } else {
                 filteredMcpTools = allMcpTools.filter { tool in
@@ -136,7 +135,7 @@ final nonisolated class AgentLoop: @unchecked Sendable {
         let task = AgentTask(userInput: userInput)
         await MainActor.run { taskManager.addTask(task) }
 
-        // 4. Build messages — inject all conversations from the last 10 minutes
+        // 5. Build messages — inject all conversations from the last 10 minutes
         var messages: [AnthropicMessage] = []
         let recentConversations = conversationHistory.filter {
             now.timeIntervalSince($0.timestamp) < conversationTimeoutSeconds
