@@ -40,17 +40,22 @@ struct OnboardingView: View {
                 ? .asymmetric(insertion: .move(edge: .trailing).combined(with: .opacity), removal: .move(edge: .leading).combined(with: .opacity))
                 : .asymmetric(insertion: .move(edge: .leading).combined(with: .opacity), removal: .move(edge: .trailing).combined(with: .opacity))
             )
-            .animation(.easeInOut(duration: 0.25), value: currentStep)
+            .animation(DT.Anim.page, value: currentStep)
 
             Divider()
 
             // Navigation bar
             HStack {
-                if currentStep > 0 && currentStep < totalSteps - 1 {
-                    Button("Back") { direction = -1; currentStep -= 1 }
-                        .buttonStyle(.plain)
-                        .foregroundColor(.secondary)
+                // Fixed-width back container to prevent dot shift
+                Group {
+                    if currentStep > 0 && currentStep < totalSteps - 1 {
+                        Button("Back") { direction = -1; currentStep -= 1 }
+                            .buttonStyle(.plain)
+                            .foregroundColor(.secondary)
+                            .keyboardShortcut(.escape, modifiers: [])
+                    }
                 }
+                .frame(width: 80, alignment: .leading)
 
                 Spacer()
 
@@ -70,29 +75,37 @@ struct OnboardingView: View {
 
                 Spacer()
 
-                if currentStep == 0 {
-                    Button("Get Started") { direction = 1; currentStep = 1 }
-                        .buttonStyle(.borderedProminent)
-                } else if currentStep < totalSteps - 1 {
-                    if currentStep == 1 {
-                        Button("Next") { direction = 1; currentStep += 1 }
+                // Fixed-width next container to prevent dot shift
+                Group {
+                    if currentStep == 0 {
+                        Button("Get Started") { direction = 1; currentStep = 1 }
                             .buttonStyle(.borderedProminent)
-                            .disabled(claudeKeyValid != .valid)
+                            .keyboardShortcut(.return, modifiers: [])
+                    } else if currentStep < totalSteps - 1 {
+                        if currentStep == 1 {
+                            Button("Next") { direction = 1; currentStep += 1 }
+                                .buttonStyle(.borderedProminent)
+                                .disabled(claudeKeyValid != .valid)
+                                .keyboardShortcut(.return, modifiers: [])
+                        } else {
+                            Button("Next") { direction = 1; currentStep += 1 }
+                                .buttonStyle(.borderedProminent)
+                                .keyboardShortcut(.return, modifiers: [])
+                        }
                     } else {
-                        Button("Next") { direction = 1; currentStep += 1 }
-                            .buttonStyle(.borderedProminent)
+                        Button("Open Majoor") {
+                            UserDefaults.standard.set(true, forKey: "hasCompletedOnboarding")
+                            onComplete()
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .keyboardShortcut(.return, modifiers: [])
                     }
-                } else {
-                    Button("Open Majoor") {
-                        UserDefaults.standard.set(true, forKey: "hasCompletedOnboarding")
-                        onComplete()
-                    }
-                    .buttonStyle(.borderedProminent)
                 }
+                .frame(width: 120, alignment: .trailing)
             }
             .padding()
         }
-        .frame(width: 500, height: 400)
+        .frame(width: DT.Layout.onboardingWidth, height: DT.Layout.onboardingHeight)
     }
 
     // MARK: - Step 1: Welcome
@@ -104,29 +117,13 @@ struct OnboardingView: View {
                 .resizable()
                 .frame(width: 80, height: 80)
             Text("Welcome to Majoor")
-                .font(.system(size: 24, weight: .bold))
+                .font(DT.TitleFont.hero)
             Text("Your AI agent that lives in the menu bar.\nIt runs tasks, writes code, manages email, and more.")
                 .font(.system(size: 14))
                 .foregroundColor(.secondary)
                 .multilineTextAlignment(.center)
                 .lineSpacing(4)
-
             Spacer()
-
-            // Safety disclaimer
-            HStack(spacing: 8) {
-                Image(systemName: "exclamationmark.triangle")
-                    .font(.system(size: 12))
-                    .foregroundColor(.orange)
-                Text("Majoor is an AI assistant and can make mistakes. Always review actions before approving, especially for emails, file changes, and code commits.")
-                    .font(.system(size: 10))
-                    .foregroundColor(.secondary)
-                    .lineSpacing(2)
-            }
-            .padding(10)
-            .background(Color.orange.opacity(0.08))
-            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-            .padding(.horizontal, 8)
         }
         .padding()
     }
@@ -136,7 +133,7 @@ struct OnboardingView: View {
     private var apiKeyStep: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Anthropic API Key")
-                .font(.system(size: 18, weight: .semibold))
+                .font(DT.TitleFont.section)
                 .padding(.top, 24)
 
             Text("Majoor uses Claude to understand your tasks. You'll need an API key from Anthropic.")
@@ -217,7 +214,7 @@ struct OnboardingView: View {
     private var integrationsStep: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Integrations")
-                .font(.system(size: 18, weight: .semibold))
+                .font(DT.TitleFont.section)
                 .padding(.top, 24)
 
             Text("Connect external services. Only GitHub is recommended to start — you can set up others later in Settings.")
@@ -271,7 +268,7 @@ struct OnboardingView: View {
     private var permissionsStep: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Permissions")
-                .font(.system(size: 18, weight: .semibold))
+                .font(DT.TitleFont.section)
                 .padding(.top, 24)
 
             Text("Majoor can manage your calendar events through Apple Calendar.")
@@ -326,7 +323,7 @@ struct OnboardingView: View {
                 .font(.system(size: 48))
                 .foregroundColor(.green)
             Text("You're all set!")
-                .font(.system(size: 22, weight: .bold))
+                .font(DT.TitleFont.medium)
 
             VStack(alignment: .leading, spacing: 8) {
                 SummaryRow(icon: "checkmark.circle.fill", color: .green, text: "Anthropic API key configured")
