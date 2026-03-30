@@ -70,6 +70,29 @@ Must use the shared global `sharedEventStore` instance (defined in `CalendarTool
 
 SQLite via GRDB at `~/Library/Application Support/ai.majoor.agent/majoor.sqlite`. Three tables: `memories`, `tasks`, `usageStats`. Migrations registered on startup.
 
+### MCP Client (`Core/MCP/`)
+
+Native Swift MCP implementation over stdio/JSON-RPC:
+- `MCPClient` (actor) — Manages a single MCP server process, newline-delimited JSON-RPC framing, tool discovery
+- `MCPServerManager` (actor) — Lifecycle management for all MCP servers: start, stop, health monitoring, crash restart
+- `MCPToolBridge` — Bridges MCP-discovered tools into the `AgentTool` protocol so the agent loop treats them identically to local tools
+- `MCPConfig` — Loads `~/.majoor/mcp.json`, resolves `keychain:` prefixed env values from macOS Keychain at start time
+
+Four pre-configured servers: GitHub (26 tools), Slack (8), Notion (22), Linear (5).
+
+### Pipeline System
+
+Complex tasks (3+ tools) trigger plan-then-execute flow:
+1. Agent proposes a numbered plan
+2. User can toggle steps on/off, add notes, then approve via `%%PIPELINE_CONFIRM%%` marker
+3. Steps execute sequentially with real-time progress in `PipelineProgressView`
+
+### Chat vs Task Modes
+
+Two separate execution paths:
+- **Task mode**: Uses `AgentLoop` (classify → route → tools → persist). Fire-and-forget, runs in background.
+- **Chat mode**: Uses `ChatManager` with Sonnet + SSE streaming. Interactive, no tool execution.
+
 ### Conversation Continuity
 
 AgentLoop maintains a `conversationHistory` of the last 10 minutes, auto-injected as context for subsequent tasks. Stale entries are pruned automatically.
