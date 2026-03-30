@@ -42,8 +42,14 @@ class CommandBarWindow {
                 let f = screen.visibleFrame
                 panel.setFrameOrigin(NSPoint(x: f.midX - 300, y: f.midY + f.height * 0.15))
             }
+            panel.alphaValue = 0
             panel.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
+            NSAnimationContext.runAnimationGroup { ctx in
+                ctx.duration = 0.15
+                ctx.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+                panel.animator().alphaValue = 1
+            }
             return
         }
 
@@ -65,11 +71,27 @@ class CommandBarWindow {
             let f = screen.visibleFrame
             newPanel.setFrameOrigin(NSPoint(x: f.midX - 300, y: f.midY + f.height * 0.15))
         }
+        newPanel.alphaValue = 0
         newPanel.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = 0.15
+            ctx.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            newPanel.animator().alphaValue = 1
+        }
         panel = newPanel
         hostingView = hosting
     }
 
-    func hide() { panel?.orderOut(nil) }
+    func hide() {
+        guard let panel else { return }
+        NSAnimationContext.runAnimationGroup({ ctx in
+            ctx.duration = 0.1
+            ctx.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            panel.animator().alphaValue = 0
+        }, completionHandler: { [weak self] in
+            self?.panel?.orderOut(nil)
+            self?.panel?.alphaValue = 1
+        })
+    }
 }

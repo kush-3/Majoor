@@ -231,10 +231,22 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
 
     private func togglePanel() {
         if let w = panelWindow, w.isVisible {
-            w.close()
+            hidePanel()
         } else {
             showPanel()
         }
+    }
+
+    private func hidePanel() {
+        guard let panel = panelWindow else { return }
+        NSAnimationContext.runAnimationGroup({ ctx in
+            ctx.duration = 0.1
+            ctx.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            panel.animator().alphaValue = 0
+        }, completionHandler: { [weak self] in
+            self?.panelWindow?.close()
+            self?.panelWindow?.alphaValue = 1
+        })
     }
 
     func showPanel() {
@@ -261,12 +273,25 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             panelWindow = panel
         }
 
-        // Position below the status bar icon
+        // Position below the status bar icon, clamped to screen bounds
         if let button = statusBarController?.statusItem?.button, let bw = button.window, let panel = panelWindow {
             let f = bw.frame
-            panel.setFrameOrigin(NSPoint(x: f.midX - panel.frame.width / 2, y: f.minY - panel.frame.height - 5))
+            var origin = NSPoint(x: f.midX - panel.frame.width / 2, y: f.minY - panel.frame.height - 5)
+
+            if let screen = NSScreen.main?.visibleFrame {
+                origin.x = max(screen.minX, min(origin.x, screen.maxX - panel.frame.width))
+                origin.y = max(screen.minY, min(origin.y, screen.maxY - panel.frame.height))
+            }
+
+            panel.setFrameOrigin(origin)
         }
+        panelWindow?.alphaValue = 0
         panelWindow?.makeKeyAndOrderFront(nil)
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = 0.15
+            ctx.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            self.panelWindow?.animator().alphaValue = 1
+        }
     }
 
     func showOnboarding() {

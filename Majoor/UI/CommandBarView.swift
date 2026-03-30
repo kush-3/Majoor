@@ -77,10 +77,10 @@ struct CommandBarView: View {
                     // Mode toggle
                     Button(action: toggleMode) {
                         Text(mode.rawValue)
-                            .font(.system(size: 10, weight: .semibold))
+                            .font(DT.Font.caption(.semibold))
                             .foregroundColor(mode == .task ? .white : .accentColor)
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 4)
+                            .padding(.horizontal, DT.Spacing.md)
+                            .padding(.vertical, DT.Spacing.xs + 1)
                             .background(
                                 Capsule()
                                     .fill(mode == .task

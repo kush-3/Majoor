@@ -120,7 +120,7 @@ class StatusBarController {
             pulseTimer = Timer.scheduledTimer(withTimeInterval: 0.8, repeats: true) { [weak self] _ in
                 guard let self, let btn = self.statusItem?.button else { return }
                 self.pulseOn.toggle()
-                let target: CGFloat = self.pulseOn ? 1.0 : 0.3
+                let target: CGFloat = self.pulseOn ? 1.0 : 0.55
                 NSAnimationContext.runAnimationGroup { ctx in
                     ctx.duration = 0.6
                     ctx.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
@@ -129,10 +129,10 @@ class StatusBarController {
             }
 
         case .success:
-            // Brief checkmark flash, then revert to idle
+            // Brief green checkmark flash, then revert to idle
             button.image = NSImage(systemSymbolName: "checkmark.circle.fill", accessibilityDescription: "Done")
-            button.image?.isTemplate = true
-            button.contentTintColor = nil
+            button.image?.isTemplate = false
+            button.contentTintColor = .systemGreen
             button.toolTip = "Majoor — Task complete"
             errorMessage = nil
             successRevertTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: false) { [weak self] _ in
