@@ -11,6 +11,12 @@ struct ChatView: View {
     @State private var inputText = ""
     @FocusState private var inputFocused: Bool
 
+    private static let suggestions = [
+        "Summarize my recent git commits",
+        "Draft a follow-up email",
+        "Explain this error message",
+    ]
+
     var body: some View {
         VStack(spacing: 0) {
             // Messages area
@@ -18,20 +24,7 @@ struct ChatView: View {
                 ScrollView {
                     LazyVStack(spacing: 12) {
                         if chatManager.messages.isEmpty && !chatManager.isStreaming {
-                            // Empty state
-                            VStack(spacing: 8) {
-                                Spacer(minLength: 60)
-                                Image(systemName: "bubble.left.and.bubble.right")
-                                    .font(.system(size: 28))
-                                    .foregroundColor(.secondary.opacity(0.4))
-                                Text("Start a conversation")
-                                    .font(.system(size: 13, weight: .medium))
-                                    .foregroundColor(.secondary)
-                                Text("Ask Majoor anything")
-                                    .font(.system(size: 11))
-                                    .foregroundColor(.secondary.opacity(0.6))
-                            }
-                            .frame(maxWidth: .infinity)
+                            emptyState
                         }
 
                         ForEach(chatManager.messages) { message in
@@ -56,52 +49,96 @@ struct ChatView: View {
                 }
             }
 
-            Divider()
+            // Input area with depth separation
+            VStack(spacing: 0) {
+                Divider()
 
-            // Input bar
-            HStack(spacing: 8) {
-                TextField("Message...", text: $inputText)
+                HStack(spacing: 8) {
+                    TextField(
+                        chatManager.isStreaming ? "Waiting for response..." : "Message...",
+                        text: $inputText
+                    )
                     .textFieldStyle(.plain)
-                    .font(.system(size: 13))
+                    .font(DT.Font.body)
                     .focused($inputFocused)
                     .onSubmit { sendMessage() }
+                    .disabled(chatManager.isStreaming)
+                    .opacity(chatManager.isStreaming ? 0.5 : 1)
 
-                if chatManager.isStreaming {
-                    ProgressView()
-                        .controlSize(.small)
-                        .scaleEffect(0.8)
-                } else {
-                    Button(action: sendMessage) {
-                        Image(systemName: "arrow.up.circle.fill")
+                    Button(action: chatManager.isStreaming ? stopStreaming : sendMessage) {
+                        Image(systemName: chatManager.isStreaming
+                              ? "stop.circle.fill"
+                              : "arrow.up.circle.fill")
                             .font(.system(size: 20))
-                            .foregroundColor(inputText.isEmpty ? .secondary.opacity(0.3) : .accentColor)
+                            .foregroundColor(sendButtonColor)
+                            .animation(DT.Anim.fast, value: chatManager.isStreaming)
                     }
                     .buttonStyle(.plain)
-                    .disabled(inputText.isEmpty)
+                    .disabled(!chatManager.isStreaming && inputText.isEmpty)
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
+
+                if !chatManager.messages.isEmpty {
+                    Button(action: { chatManager.clearHistory() }) {
+                        Text("Clear conversation")
+                            .font(DT.Font.micro)
+                            .foregroundColor(DT.Color.textQuaternary)
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.bottom, 8)
                 }
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 10)
-
-            // Bottom toolbar
-            HStack {
-                Button(action: { chatManager.clearHistory() }) {
-                    Label("Clear", systemImage: "trash")
-                        .font(.system(size: 10))
-                }
-                .buttonStyle(.plain)
-                .foregroundColor(.secondary.opacity(0.5))
-                .disabled(chatManager.messages.isEmpty)
-
-                Spacer()
-
-                Text("Sonnet")
-                    .font(.system(size: 9))
-                    .foregroundColor(.secondary.opacity(0.4))
-            }
-            .padding(.horizontal, 14)
-            .padding(.bottom, 8)
+            .background(.ultraThinMaterial)
         }
+    }
+
+    // MARK: - Empty State
+
+    private var emptyState: some View {
+        VStack(spacing: DT.Spacing.sm) {
+            Spacer(minLength: 60)
+
+            Image(systemName: "sparkles")
+                .font(.system(size: 24))
+                .foregroundColor(DT.Color.textQuaternary)
+
+            Text("Ask anything")
+                .font(DT.Font.body(.medium))
+                .foregroundColor(DT.Color.textSecondary)
+
+            Text("Chat uses Sonnet for fast responses")
+                .font(DT.Font.micro)
+                .foregroundColor(DT.Color.textTertiary)
+
+            VStack(spacing: DT.Spacing.xs) {
+                ForEach(Self.suggestions, id: \.self) { suggestion in
+                    Button {
+                        inputText = suggestion
+                        sendMessage()
+                    } label: {
+                        Text(suggestion)
+                            .font(DT.Font.caption)
+                            .foregroundColor(DT.Color.textSecondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, DT.Spacing.md)
+                            .padding(.vertical, DT.Spacing.sm)
+                            .background(DT.Color.surfaceCard)
+                            .clipShape(RoundedRectangle(cornerRadius: DT.Radius.small, style: .continuous))
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.top, DT.Spacing.xs)
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    // MARK: - Helpers
+
+    private var sendButtonColor: Color {
+        if chatManager.isStreaming { return DT.Color.error }
+        return inputText.isEmpty ? DT.Color.textQuaternary : DT.Color.accent
     }
 
     private func sendMessage() {
@@ -109,6 +146,10 @@ struct ChatView: View {
         guard !text.isEmpty, !chatManager.isStreaming else { return }
         chatManager.send(text)
         inputText = ""
+    }
+
+    private func stopStreaming() {
+        chatManager.cancelStreaming()
     }
 
     private func scrollToBottom(proxy: ScrollViewProxy) {
