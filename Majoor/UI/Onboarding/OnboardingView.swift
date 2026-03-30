@@ -9,6 +9,7 @@ import EventKit
 
 struct OnboardingView: View {
     @State private var currentStep = 0
+    @State private var direction: Int = 1
     @State private var claudeKey = ""
     @State private var tavilyKey = ""
     @State private var claudeKeyValid: ValidationState = .idle
@@ -33,13 +34,20 @@ struct OnboardingView: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .id(currentStep)
+            .transition(
+                direction > 0
+                ? .asymmetric(insertion: .move(edge: .trailing).combined(with: .opacity), removal: .move(edge: .leading).combined(with: .opacity))
+                : .asymmetric(insertion: .move(edge: .leading).combined(with: .opacity), removal: .move(edge: .trailing).combined(with: .opacity))
+            )
+            .animation(.easeInOut(duration: 0.25), value: currentStep)
 
             Divider()
 
             // Navigation bar
             HStack {
                 if currentStep > 0 && currentStep < totalSteps - 1 {
-                    Button("Back") { currentStep -= 1 }
+                    Button("Back") { direction = -1; currentStep -= 1 }
                         .buttonStyle(.plain)
                         .foregroundColor(.secondary)
                 }
@@ -50,23 +58,28 @@ struct OnboardingView: View {
                 HStack(spacing: 6) {
                     ForEach(0..<totalSteps, id: \.self) { i in
                         Circle()
-                            .fill(i == currentStep ? Color.accentColor : Color.secondary.opacity(0.3))
-                            .frame(width: 6, height: 6)
+                            .fill(i == currentStep ? Color.accentColor : i < currentStep ? Color.accentColor.opacity(0.4) : Color.secondary.opacity(0.3))
+                            .frame(width: i == currentStep ? 8 : 6, height: i == currentStep ? 8 : 6)
+                            .onTapGesture {
+                                guard i < currentStep else { return }
+                                direction = -1
+                                currentStep = i
+                            }
                     }
                 }
 
                 Spacer()
 
                 if currentStep == 0 {
-                    Button("Get Started") { currentStep = 1 }
+                    Button("Get Started") { direction = 1; currentStep = 1 }
                         .buttonStyle(.borderedProminent)
                 } else if currentStep < totalSteps - 1 {
                     if currentStep == 1 {
-                        Button("Next") { currentStep += 1 }
+                        Button("Next") { direction = 1; currentStep += 1 }
                             .buttonStyle(.borderedProminent)
                             .disabled(claudeKeyValid != .valid)
                     } else {
-                        Button("Next") { currentStep += 1 }
+                        Button("Next") { direction = 1; currentStep += 1 }
                             .buttonStyle(.borderedProminent)
                     }
                 } else {
@@ -87,9 +100,9 @@ struct OnboardingView: View {
     private var welcomeStep: some View {
         VStack(spacing: 16) {
             Spacer()
-            Image(systemName: "hammer.fill")
-                .font(.system(size: 48))
-                .foregroundColor(.accentColor)
+            Image(nsImage: NSApp.applicationIconImage)
+                .resizable()
+                .frame(width: 80, height: 80)
             Text("Welcome to Majoor")
                 .font(.system(size: 24, weight: .bold))
             Text("Your AI agent that lives in the menu bar.\nIt runs tasks, writes code, manages email, and more.")
@@ -401,7 +414,7 @@ struct OnboardingView: View {
     }
 
     private func requestCalendarAccess() {
-        let store = EKEventStore()
+        let store = sharedEventStore
         if #available(macOS 14.0, *) {
             store.requestFullAccessToEvents { granted, _ in
                 DispatchQueue.main.async { calendarGranted = granted }
