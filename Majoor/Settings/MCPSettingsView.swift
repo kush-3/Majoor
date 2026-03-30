@@ -70,20 +70,18 @@ struct MCPSettingsView: View {
 
             Section {
                 HStack {
-                    Button("Add Custom Server") { showAddCustom = true }
-                        .font(.caption)
+                    Button { Task { await refresh() } } label: {
+                        Label("Reload", systemImage: "arrow.clockwise")
+                    }
+                    .font(.caption)
                     Spacer()
                     Button("Open mcp.json") { openConfigFile() }
                         .font(.caption)
-                    Button("Reload") { Task { await refresh() } }
+                    Spacer()
+                    Button("Add Custom Server...") { showAddCustom = true }
                         .font(.caption)
+                        .buttonStyle(.bordered)
                 }
-            }
-
-            Section {
-                Text("MCP servers connect Majoor to external services. Add tokens above, or edit ~/.majoor/mcp.json directly for custom servers.")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
             }
         }
         .formStyle(.grouped)
@@ -343,7 +341,7 @@ struct MCPServerRow: View {
                             .foregroundColor(.secondary)
                     }
                     Spacer()
-                    Button("Change") { showTokenInput = true }
+                    Button("Change") { withAnimation(DT.Anim.normal) { showTokenInput = true } }
                         .font(.caption)
                     testButton
                     Button("Remove") { showRemoveConfirmation = true }
@@ -357,7 +355,7 @@ struct MCPServerRow: View {
                         }
                 }
             } else {
-                Button("Add Token") { showTokenInput = true }
+                Button("Add Token") { withAnimation(DT.Anim.normal) { showTokenInput = true } }
                     .font(.caption)
             }
 
@@ -477,7 +475,7 @@ struct MCPServerRow: View {
             } else {
                 testResult = .failure("Not running")
             }
-            try? await Task.sleep(for: .seconds(4))
+            try? await Task.sleep(for: .seconds(8))
             testResult = .idle
         }
     }

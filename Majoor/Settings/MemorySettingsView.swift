@@ -99,11 +99,13 @@ struct MemoryRow: View {
     let memory: Memory
     let onDelete: () -> Void
 
+    @State private var isHovered = false
+    @State private var showDeleteConfirmation = false
+
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
-            // Category badge
             Text(memory.category.displayName)
-                .font(.system(size: 9, weight: .medium))
+                .font(DT.Font.micro(.medium))
                 .padding(.horizontal, 6)
                 .padding(.vertical, 2)
                 .background(categoryColor.opacity(0.15))
@@ -128,14 +130,23 @@ struct MemoryRow: View {
 
             Spacer()
 
-            Button(action: onDelete) {
+            Button { showDeleteConfirmation = true } label: {
                 Image(systemName: "trash")
                     .font(.system(size: 11))
-                    .foregroundColor(.secondary)
+                    .foregroundColor(isHovered ? DT.Color.destructive : .clear)
             }
             .buttonStyle(.plain)
+            .alert("Delete Memory?", isPresented: $showDeleteConfirmation) {
+                Button("Cancel", role: .cancel) {}
+                Button("Delete", role: .destructive) { onDelete() }
+            } message: {
+                Text("This memory will be permanently deleted.")
+            }
         }
         .padding(.vertical, 4)
+        .onHover { hovering in
+            withAnimation(DT.Anim.fast) { isHovered = hovering }
+        }
     }
 
     private var categoryColor: Color {

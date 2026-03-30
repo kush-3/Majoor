@@ -37,8 +37,13 @@ struct AccountsSettingsView: View {
                     HStack {
                         Image(systemName: "xmark.circle.fill")
                             .foregroundColor(.secondary)
-                        Text("Not connected")
-                            .font(.system(size: 12))
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Not connected")
+                                .font(.system(size: 12))
+                            Text("Send and manage email through Majoor")
+                                .font(.system(size: 10))
+                                .foregroundColor(.secondary)
+                        }
                         Spacer()
                         if isConnecting {
                             ProgressView()
@@ -68,6 +73,10 @@ struct AccountsSettingsView: View {
                             Text("Grant access in System Settings > Privacy & Security > Calendars")
                                 .font(.system(size: 10))
                                 .foregroundColor(.secondary)
+                        } else if calendarStatus == .notDetermined {
+                            Text("Create and manage calendar events with Majoor")
+                                .font(.system(size: 10))
+                                .foregroundColor(.secondary)
                         }
                     }
                     Spacer()
@@ -84,12 +93,6 @@ struct AccountsSettingsView: View {
                             .font(.caption)
                     }
                 }
-            }
-
-            Section {
-                Text("Connected accounts allow Majoor to read, draft, and send emails, and manage your calendar events.")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
             }
         }
         .formStyle(.grouped)
@@ -201,8 +204,8 @@ struct AccountsSettingsView: View {
         switch calendarStatus {
         case .fullAccess, .authorized: return "checkmark.circle.fill"
         case .denied, .restricted: return "xmark.circle.fill"
-        case .notDetermined: return "questionmark.circle.fill"
-        @unknown default: return "questionmark.circle.fill"
+        case .notDetermined: return "circle.dashed"
+        @unknown default: return "circle.dashed"
         }
     }
 

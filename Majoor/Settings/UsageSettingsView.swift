@@ -21,13 +21,20 @@ struct UsageSettingsView: View {
 
             Section("Usage by Model (30 days)") {
                 if modelBreakdown.isEmpty {
-                    Text("No usage data yet")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
+                    VStack(spacing: DT.Spacing.sm) {
+                        Image(systemName: "chart.bar")
+                            .font(.system(size: 24))
+                            .foregroundStyle(.quaternary)
+                        Text("No usage data yet")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, DT.Spacing.sm)
                 } else {
                     ForEach(modelBreakdown, id: \.model) { entry in
                         HStack {
-                            Text(friendlyModelName(entry.model))
+                            Text(friendlyModel(entry.model))
                                 .font(.system(size: 12, weight: .medium))
                             Spacer()
                             Text(formatTokens(entry.tokens))
@@ -51,19 +58,6 @@ struct UsageSettingsView: View {
         weekUsage = UsageStore.shared.weekUsage()
         monthUsage = UsageStore.shared.monthUsage()
         modelBreakdown = UsageStore.shared.usageByModel(days: 30)
-    }
-
-    private func friendlyModelName(_ model: String) -> String {
-        if model.contains("opus") { return "Claude Opus" }
-        if model.contains("haiku") { return "Claude Haiku" }
-        if model.contains("sonnet") { return "Claude Sonnet" }
-        return model
-    }
-
-    private func formatTokens(_ tokens: Int) -> String {
-        if tokens >= 1_000_000 { return String(format: "%.1fM tokens", Double(tokens) / 1_000_000) }
-        if tokens >= 1_000 { return String(format: "%.1fK tokens", Double(tokens) / 1_000) }
-        return "\(tokens) tokens"
     }
 
     private func formatCost(_ cost: Double) -> String {
@@ -95,6 +89,6 @@ struct UsageCard: View {
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 8)
-        .background(RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(0.04)))
+        .background(RoundedRectangle(cornerRadius: DT.Radius.small).fill(Color.primary.opacity(DT.Opacity.cardFill)))
     }
 }

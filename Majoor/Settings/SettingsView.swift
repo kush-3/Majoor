@@ -19,7 +19,7 @@ struct SettingsView: View {
             AboutTab()
                 .tabItem { Label("About", systemImage: "info.circle") }
         }
-        .frame(width: 540, height: 480)
+        .frame(width: DT.Layout.settingsWidth, height: DT.Layout.settingsHeight)
     }
 }
 
@@ -64,19 +64,6 @@ struct GeneralSettingsTab: View {
                     }
                 }
             }
-            Section("Model Routing") {
-                ModelRow(label: "Code & Deep Research", model: "Claude Opus", detail: ModelRouter.opusModel)
-                ModelRow(label: "General & File Tasks", model: "Claude Sonnet", detail: ModelRouter.sonnetModel)
-                ModelRow(label: "Classification", model: "Claude Haiku", detail: ModelRouter.haikuModel)
-            }
-            Section("API Status") {
-                HStack {
-                    Image(systemName: APIConfig.claudeAPIKey.isEmpty ? "xmark.circle.fill" : "checkmark.circle.fill")
-                        .foregroundColor(APIConfig.claudeAPIKey.isEmpty ? .red : .green)
-                    Text(APIConfig.claudeAPIKey.isEmpty ? "No API key configured" : "API key configured")
-                        .font(.system(size: 12))
-                }
-            }
             Section("Setup") {
                 Button("Run Setup Wizard") {
                     if let delegate = NSApp.delegate as? AppDelegate {
@@ -84,19 +71,6 @@ struct GeneralSettingsTab: View {
                     }
                 }
                 .font(.system(size: 12))
-            }
-            Section {
-                HStack(alignment: .top, spacing: 8) {
-                    Image(systemName: "exclamationmark.triangle")
-                        .font(.system(size: 11))
-                        .foregroundColor(.orange)
-                    Text("Majoor is an AI assistant and can make mistakes. Always review actions before approving, especially for emails, file changes, and code commits.")
-                        .font(.system(size: 11))
-                        .foregroundColor(.secondary)
-                        .lineSpacing(2)
-                }
-            } header: {
-                Text("Safety")
             }
         }
         .formStyle(.grouped)
@@ -133,7 +107,7 @@ struct AboutTab: View {
     }
 
     var body: some View {
-        VStack(spacing: 12) {
+        VStack(spacing: DT.Spacing.md) {
             Spacer()
 
             Image(nsImage: NSApp.applicationIconImage)
@@ -141,32 +115,52 @@ struct AboutTab: View {
                 .frame(width: 80, height: 80)
 
             Text("Majoor")
-                .font(.system(size: 24, weight: .bold))
+                .font(DT.TitleFont.hero)
 
             Text("Your AI agent for macOS")
-                .font(.system(size: 14))
+                .font(DT.Font.headline)
                 .foregroundColor(.secondary)
 
             Text("Version \(appVersion) (\(buildNumber))")
-                .font(.system(size: 12))
+                .font(DT.Font.caption)
                 .foregroundColor(.secondary)
+
+            // Model Routing info card
+            VStack(alignment: .leading, spacing: DT.Spacing.sm) {
+                Text("Model Routing")
+                    .font(DT.Font.caption(.semibold))
+                    .foregroundColor(.secondary)
+                ModelRow(label: "Code & Deep Research", model: "Claude Opus", detail: ModelRouter.opusModel)
+                ModelRow(label: "General & File Tasks", model: "Claude Sonnet", detail: ModelRouter.sonnetModel)
+                ModelRow(label: "Classification", model: "Claude Haiku", detail: ModelRouter.haikuModel)
+                Divider()
+                HStack(spacing: DT.Spacing.xs) {
+                    Image(systemName: APIConfig.claudeAPIKey.isEmpty ? "xmark.circle.fill" : "checkmark.circle.fill")
+                        .foregroundColor(APIConfig.claudeAPIKey.isEmpty ? DT.Color.error : DT.Color.success)
+                    Text(APIConfig.claudeAPIKey.isEmpty ? "No API key configured" : "API key configured")
+                        .font(DT.Font.caption)
+                }
+            }
+            .padding(DT.Spacing.md)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(RoundedRectangle(cornerRadius: DT.Radius.medium, style: .continuous).fill(DT.Color.surfaceCard))
 
             Spacer()
 
-            VStack(spacing: 6) {
+            VStack(spacing: DT.Spacing.sm) {
                 Text("Built with GRDB.swift")
-                    .font(.system(size: 11))
+                    .font(DT.Font.caption)
                     .foregroundColor(.secondary)
 
-                HStack(spacing: 16) {
+                HStack(spacing: DT.Spacing.lg) {
                     Link("Website", destination: URL(string: "https://majoor.ai")!)
                     Link("GitHub", destination: URL(string: "https://github.com/kush-3/majoor")!)
                 }
-                .font(.system(size: 12))
+                .font(DT.Font.body)
             }
 
             Spacer()
-                .frame(height: 16)
+                .frame(height: DT.Spacing.lg)
         }
         .frame(maxWidth: .infinity)
         .padding()
