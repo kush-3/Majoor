@@ -1,0 +1,1 @@
+- [Design System Audit](design_system_audit.md) -- No centralized design system; 15+ font sizes, 14+ opacity values, 5 corner radii, all hardcoded inline across 11 UI files
