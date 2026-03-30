@@ -50,7 +50,7 @@ class StatusBarController {
         guard let button = statusItem?.button else { return }
 
         // Use a clean, recognizable symbol
-        button.image = NSImage(systemSymbolName: "sparkle", accessibilityDescription: "Majoor")
+        button.image = NSImage(systemSymbolName: "hammer.fill", accessibilityDescription: "Majoor")
         button.image?.size = NSSize(width: 16, height: 16)
         button.image?.isTemplate = true
         button.action = #selector(handleClick)
@@ -108,7 +108,7 @@ class StatusBarController {
 
         switch state {
         case .idle:
-            button.image = NSImage(systemSymbolName: "sparkle", accessibilityDescription: "Ready")
+            button.image = NSImage(systemSymbolName: "hammer.fill", accessibilityDescription: "Ready")
             button.image?.isTemplate = true
             button.contentTintColor = nil
             button.toolTip = "Majoor"
@@ -117,7 +117,7 @@ class StatusBarController {
             let tooltip = message ?? "Working..."
             button.toolTip = "Majoor -- \(tooltip)"
             button.contentTintColor = nil
-            button.image = NSImage(systemSymbolName: "sparkle", accessibilityDescription: "Working")
+            button.image = NSImage(systemSymbolName: "hammer.fill", accessibilityDescription: "Working")
             button.image?.isTemplate = true
 
             // Gentle pulse — not jarring, just enough to signal activity
@@ -143,7 +143,7 @@ class StatusBarController {
             }
 
         case .attention:
-            button.image = NSImage(systemSymbolName: "sparkle.magnifyingglass", accessibilityDescription: "Needs Input")
+            button.image = NSImage(systemSymbolName: "hammer.circle", accessibilityDescription: "Needs Input")
             button.image?.isTemplate = true
             button.contentTintColor = nil
             button.toolTip = "Majoor -- Waiting for input"

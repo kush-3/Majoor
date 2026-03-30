@@ -48,11 +48,16 @@ struct ChatView: View {
                 .onChange(of: chatManager.streamingText) { _ in
                     scrollToBottom(proxy: proxy)
                 }
+                .onChange(of: chatManager.isStreaming) { _, isStreaming in
+                    // Re-focus input when streaming ends
+                    if !isStreaming { inputFocused = true }
+                }
             }
 
             // Input bar — frosted material footer
             inputBar
         }
+        .onAppear { inputFocused = true }
     }
 
     // MARK: - Empty State
@@ -165,10 +170,13 @@ struct ChatView: View {
         guard !text.isEmpty, !chatManager.isStreaming else { return }
         chatManager.send(text)
         inputText = ""
+        // Keep input focused after sending so user can continue typing
+        inputFocused = true
     }
 
     private func stopStreaming() {
         chatManager.cancelStreaming()
+        inputFocused = true
     }
 
     private func scrollToBottom(proxy: ScrollViewProxy) {
