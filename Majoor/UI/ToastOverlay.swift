@@ -27,6 +27,7 @@ struct ToastOverlayView: View {
 struct ToastCard: View {
     let toast: Toast
     var onDismiss: () -> Void
+    @State private var dragOffset: CGFloat = 0
 
     private var iconName: String {
         switch toast.type {
@@ -79,7 +80,8 @@ struct ToastCard: View {
                     .foregroundColor(.secondary)
             }
             .buttonStyle(.plain)
-            .frame(width: 16, height: 16)
+            .frame(width: 22, height: 22)
+            .contentShape(Rectangle())
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
@@ -89,6 +91,20 @@ struct ToastCard: View {
         .overlay(
             RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .strokeBorder(Color.primary.opacity(0.06), lineWidth: 0.5)
+        )
+        .offset(x: dragOffset)
+        .gesture(
+            DragGesture()
+                .onChanged { value in
+                    dragOffset = max(0, value.translation.width)
+                }
+                .onEnded { value in
+                    if value.translation.width > 80 {
+                        onDismiss()
+                    } else {
+                        withAnimation(DT.Anim.spring) { dragOffset = 0 }
+                    }
+                }
         )
     }
 }

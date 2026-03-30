@@ -78,6 +78,7 @@ private struct SectionHeader: View {
 struct TaskCardView: View {
     @ObservedObject var task: AgentTask
     @State private var isExpanded = false
+    @State private var isRunningAnimating = false
     var onViewResponse: ((AgentTask) -> Void)? = nil
 
     var body: some View {
@@ -85,8 +86,8 @@ struct TaskCardView: View {
             // Top row: status + timestamp
             HStack(spacing: 6) {
                 statusIcon
-                Text(task.status.rawValue)
-                    .font(.system(size: 11, weight: .medium))
+                Text(task.status.rawValue.capitalized)
+                    .font(DT.Font.caption(.medium))
                     .foregroundColor(statusColor)
                 Spacer()
                 Text(task.createdAt.timeAgo())
@@ -96,7 +97,7 @@ struct TaskCardView: View {
 
             // User input
             Text(task.userInput)
-                .font(.system(size: 12, weight: .semibold))
+                .font(DT.Font.body(.semibold))
                 .lineLimit(isExpanded ? nil : 2)
 
             // Summary (completed tasks)
@@ -110,22 +111,27 @@ struct TaskCardView: View {
             // Expanded step details
             if isExpanded {
                 Divider().padding(.vertical, 2)
-                ForEach(task.steps) { step in
-                    HStack(alignment: .top, spacing: 8) {
-                        stepIcon(step.type).frame(width: 14)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(step.description)
-                                .font(.system(size: 11))
-                                .lineLimit(3)
-                            if let d = step.detail {
-                                Text(d)
-                                    .font(.system(size: 10, design: .monospaced))
-                                    .foregroundColor(.secondary)
-                                    .lineLimit(4)
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(task.steps) { step in
+                        HStack(alignment: .top, spacing: 8) {
+                            stepIcon(step.type).frame(width: 14)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(step.description)
+                                    .font(DT.Font.caption)
+                                    .lineLimit(3)
+                                if let d = step.detail {
+                                    Text(d)
+                                        .font(.system(size: 10, design: .monospaced))
+                                        .foregroundColor(.secondary)
+                                        .lineLimit(4)
+                                }
                             }
                         }
                     }
                 }
+                .padding(DT.Spacing.sm)
+                .background(DT.Color.surfaceCard)
+                .clipShape(RoundedRectangle(cornerRadius: DT.Radius.small, style: .continuous))
             }
 
             // Action buttons
@@ -176,9 +182,17 @@ struct TaskCardView: View {
     private var statusIcon: some View {
         switch task.status {
         case .running:
-            Image(systemName: "circle.dotted")
-                .font(.system(size: 12))
-                .foregroundColor(.orange)
+            Circle()
+                .fill(DT.Color.running)
+                .frame(width: 8, height: 8)
+                .overlay(
+                    Circle()
+                        .stroke(DT.Color.running.opacity(0.4), lineWidth: 2)
+                        .scaleEffect(isRunningAnimating ? 2.0 : 1.0)
+                        .opacity(isRunningAnimating ? 0 : 0.8)
+                        .animation(.easeOut(duration: 1.2).repeatForever(autoreverses: false), value: isRunningAnimating)
+                )
+                .onAppear { isRunningAnimating = true }
         case .completed:
             Image(systemName: "checkmark.circle.fill")
                 .font(.system(size: 12))

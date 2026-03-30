@@ -8,13 +8,14 @@ import SwiftUI
 
 struct ResponseDetailView: View {
     let task: AgentTask
+    @State private var didCopy = false
 
     var body: some View {
         VStack(spacing: 0) {
             // Header with metadata
             VStack(alignment: .leading, spacing: 6) {
                 Text(task.userInput)
-                    .font(.system(size: 13, weight: .semibold))
+                    .font(DT.Font.body(.semibold))
                     .lineLimit(2)
 
                 HStack(spacing: 12) {
@@ -29,19 +30,20 @@ struct ResponseDetailView: View {
                     }
                     Spacer()
                     Button(action: copyResponse) {
-                        Image(systemName: "doc.on.doc")
+                        Image(systemName: didCopy ? "checkmark" : "doc.on.doc")
                             .font(.system(size: 11))
+                            .contentTransition(.symbolEffect(.replace))
                     }
                     .buttonStyle(.plain)
-                    .foregroundColor(.secondary)
+                    .foregroundColor(didCopy ? .green : .secondary)
                     .help("Copy response")
                 }
-                .font(.system(size: 10))
+                .font(DT.Font.micro)
                 .foregroundColor(.secondary)
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 12)
-            .background(Color.primary.opacity(0.02))
+            .background(Color.primary.opacity(DT.Opacity.cardFill))
 
             Divider()
 
@@ -66,7 +68,7 @@ struct ResponseDetailView: View {
                         }
                     } else {
                         Text("No response content available.")
-                            .font(.system(size: 12))
+                            .font(DT.Font.body)
                             .foregroundColor(.secondary)
                     }
 
@@ -82,7 +84,7 @@ struct ResponseDetailView: View {
                                             .frame(width: 12)
                                         VStack(alignment: .leading, spacing: 2) {
                                             Text(step.description)
-                                                .font(.system(size: 11, weight: .medium))
+                                                .font(DT.Font.caption(.medium))
                                             if let detail = step.detail {
                                                 Text(detail)
                                                     .font(.system(size: 10, design: .monospaced))
@@ -97,9 +99,9 @@ struct ResponseDetailView: View {
                         } label: {
                             HStack(spacing: 4) {
                                 Image(systemName: "wrench.and.screwdriver")
-                                    .font(.system(size: 10))
+                                    .font(DT.Font.micro)
                                 Text("Tool Calls (\(toolSteps.filter { $0.type == .toolCall }.count))")
-                                    .font(.system(size: 11, weight: .medium))
+                                    .font(DT.Font.caption(.medium))
                             }
                             .foregroundColor(.secondary)
                         }
@@ -127,9 +129,13 @@ struct ResponseDetailView: View {
     // MARK: - Actions
 
     private func copyResponse() {
-        if let text = fullResponseText {
-            NSPasteboard.general.clearContents()
-            NSPasteboard.general.setString(text, forType: .string)
+        guard let text = fullResponseText else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+        didCopy = true
+        Task {
+            try? await Task.sleep(for: .seconds(1.5))
+            didCopy = false
         }
     }
 
