@@ -35,22 +35,29 @@ nonisolated final class MemoryStore: @unchecked Sendable {
     }
 
     func search(query: String, limit: Int = 10) throws -> [Memory] {
-        let keywords = query.lowercased().split(separator: " ").map { "%\($0)%" }
-        guard !keywords.isEmpty else { return try recentMemories(limit: limit) }
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return try recentMemories(limit: limit) }
 
         return try db.read { db in
-            // Match any keyword in content
-            let conditions = keywords.map { keyword in
-                Column("content").like(keyword)
-            }
-            let combined = conditions.dropFirst().reduce(conditions[0]) { result, condition in
-                result || condition
-            }
-            return try Memory
-                .filter(combined)
-                .order(Column("relevanceScore").desc, Column("accessCount").desc, Column("lastAccessedAt").desc)
-                .limit(limit)
-                .fetchAll(db)
+            // Use FTS5 full-text search — significantly faster than LIKE '%...%' on large tables.
+            // Each word is quoted to prevent FTS5 syntax errors from special characters.
+            let ftsQuery = trimmed
+                .components(separatedBy: .whitespaces)
+                .filter { !$0.isEmpty }
+                .map { "\"\($0.replacingOccurrences(of: "\"", with: "\"\""))\"" }
+                .joined(separator: " OR ")
+
+            // Use a subquery to avoid fragile rowid join — memories uses TEXT primary key
+            // so rowid is not stable across VACUUM operations.
+            let sql = """
+                SELECT m.* FROM memories m
+                WHERE m.rowid IN (
+                    SELECT memories_fts.rowid FROM memories_fts WHERE memories_fts MATCH ?
+                )
+                ORDER BY m.relevanceScore DESC, m.accessCount DESC, m.lastAccessedAt DESC
+                LIMIT ?
+            """
+            return try Memory.fetchAll(db, sql: sql, arguments: [ftsQuery, limit])
         }
     }
 
