@@ -107,62 +107,66 @@ struct AboutTab: View {
     }
 
     var body: some View {
-        VStack(spacing: DT.Spacing.md) {
-            Spacer()
+        ScrollView {
+            VStack(spacing: DT.Spacing.md) {
+                Spacer()
+                    .frame(height: DT.Spacing.xl)
 
-            Image(nsImage: NSApp.applicationIconImage)
-                .resizable()
-                .frame(width: 80, height: 80)
+                Image(nsImage: NSApp.applicationIconImage)
+                    .resizable()
+                    .frame(width: 80, height: 80)
 
-            Text("Majoor")
-                .font(DT.TitleFont.hero)
+                Text("Majoor")
+                    .font(DT.TitleFont.hero)
 
-            Text("Your AI agent for macOS")
-                .font(DT.Font.headline)
-                .foregroundColor(.secondary)
-
-            Text("Version \(appVersion) (\(buildNumber))")
-                .font(DT.Font.caption)
-                .foregroundColor(.secondary)
-
-            // Model Routing info card
-            VStack(alignment: .leading, spacing: DT.Spacing.sm) {
-                Text("Model Routing")
-                    .font(DT.Font.caption(.semibold))
+                Text("Your AI agent for macOS")
+                    .font(DT.Font.headline)
                     .foregroundColor(.secondary)
-                ModelRow(label: "Code & Deep Research", model: "Claude Opus", detail: ModelRouter.opusModel)
-                ModelRow(label: "General & File Tasks", model: "Claude Sonnet", detail: ModelRouter.sonnetModel)
-                ModelRow(label: "Classification", model: "Claude Haiku", detail: ModelRouter.haikuModel)
-                Divider()
-                HStack(spacing: DT.Spacing.xs) {
-                    Image(systemName: APIConfig.claudeAPIKey.isEmpty ? "xmark.circle.fill" : "checkmark.circle.fill")
-                        .foregroundColor(APIConfig.claudeAPIKey.isEmpty ? DT.Color.error : DT.Color.success)
-                    Text(APIConfig.claudeAPIKey.isEmpty ? "No API key configured" : "API key configured")
-                        .font(DT.Font.caption)
-                }
-            }
-            .padding(DT.Spacing.md)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(RoundedRectangle(cornerRadius: DT.Radius.medium, style: .continuous).fill(DT.Color.surfaceCard))
 
-            Spacer()
-
-            VStack(spacing: DT.Spacing.sm) {
-                Text("Built with GRDB.swift")
+                Text("Version \(appVersion) (\(buildNumber))")
                     .font(DT.Font.caption)
                     .foregroundColor(.secondary)
 
-                HStack(spacing: DT.Spacing.lg) {
-                    Link("Website", destination: URL(string: "https://majoor.ai")!)
-                    Link("GitHub", destination: URL(string: "https://github.com/kush-3/majoor")!)
+                // Model Routing info card
+                VStack(alignment: .leading, spacing: DT.Spacing.sm) {
+                    Text("Model Routing")
+                        .font(DT.Font.caption(.semibold))
+                        .foregroundColor(.secondary)
+                    ModelRow(label: "Code & Deep Research", model: "Claude Opus", detail: ModelRouter.opusModel)
+                    ModelRow(label: "General & File Tasks", model: "Claude Sonnet", detail: ModelRouter.sonnetModel)
+                    ModelRow(label: "Classification", model: "Claude Haiku", detail: ModelRouter.haikuModel)
+                    Divider()
+                    HStack(spacing: DT.Spacing.xs) {
+                        Image(systemName: APIConfig.claudeAPIKey.isEmpty ? "xmark.circle.fill" : "checkmark.circle.fill")
+                            .foregroundColor(APIConfig.claudeAPIKey.isEmpty ? DT.Color.error : DT.Color.success)
+                        Text(APIConfig.claudeAPIKey.isEmpty ? "No API key configured" : "API key configured")
+                            .font(DT.Font.caption)
+                    }
                 }
-                .font(DT.Font.body)
-            }
+                .padding(DT.Spacing.md)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(RoundedRectangle(cornerRadius: DT.Radius.medium, style: .continuous).fill(DT.Color.surfaceCard))
 
-            Spacer()
-                .frame(height: DT.Spacing.lg)
+                Spacer()
+                    .frame(height: DT.Spacing.lg)
+
+                VStack(spacing: DT.Spacing.sm) {
+                    Text("Built with GRDB.swift")
+                        .font(DT.Font.caption)
+                        .foregroundColor(.secondary)
+
+                    HStack(spacing: DT.Spacing.lg) {
+                        Link("Website", destination: URL(string: "https://majoor.ai")!)
+                        Link("GitHub", destination: URL(string: "https://github.com/kush-3/majoor")!)
+                    }
+                    .font(DT.Font.body)
+                }
+
+                Spacer()
+                    .frame(height: DT.Spacing.lg)
+            }
+            .frame(maxWidth: .infinity)
+            .padding()
         }
-        .frame(maxWidth: .infinity)
-        .padding()
     }
 }
