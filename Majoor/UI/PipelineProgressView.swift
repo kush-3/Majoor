@@ -24,6 +24,9 @@ struct PipelineProgressView: View {
                 overallStatusIcon
             }
 
+            // Progress bar
+            progressBar
+
             Divider()
 
             // Steps
@@ -79,6 +82,24 @@ struct PipelineProgressView: View {
         .padding(12)
     }
 
+    private var progressBar: some View {
+        let total = taskManager.pipelineSteps.filter(\.enabled).count
+        let completed = taskManager.pipelineSteps.filter { $0.status == .completed }.count
+        let fraction = total > 0 ? CGFloat(completed) / CGFloat(total) : 0
+
+        return GeometryReader { geo in
+            ZStack(alignment: .leading) {
+                Capsule()
+                    .fill(DT.Color.surfaceCard)
+                RoundedRectangle(cornerRadius: 1.5, style: .continuous)
+                    .fill(DT.Color.accent)
+                    .frame(width: geo.size.width * fraction)
+            }
+        }
+        .frame(height: 3)
+        .animation(DT.Anim.slow, value: completed)
+    }
+
     @ViewBuilder
     private var overallStatusIcon: some View {
         let allDone = taskManager.pipelineSteps.allSatisfy {
@@ -122,27 +143,35 @@ struct PipelineStepRow: View {
 
                 if let result = step.result {
                     Text(result)
-                        .font(.system(size: 10))
+                        .font(DT.Font.micro)
                         .foregroundColor(.secondary)
                         .lineLimit(2)
                 }
 
                 if let error = step.error {
                     Text(error)
-                        .font(.system(size: 10))
-                        .foregroundColor(.red)
+                        .font(DT.Font.micro)
+                        .foregroundColor(DT.Color.error)
                         .lineLimit(2)
                 }
             }
         }
+        .padding(.horizontal, DT.Spacing.sm)
+        .padding(.vertical, DT.Spacing.xs)
+        .background(
+            step.status == .running
+                ? DT.Color.surfaceCard
+                : .clear,
+            in: RoundedRectangle(cornerRadius: DT.Radius.small, style: .continuous)
+        )
     }
 
     private var textColor: Color {
         switch step.status {
         case .pending: return step.enabled ? .secondary : .secondary.opacity(0.4)
         case .running: return .primary
-        case .completed: return .primary
-        case .failed: return .red
+        case .completed: return DT.Color.textTertiary
+        case .failed: return DT.Color.error
         case .skipped: return .secondary.opacity(0.5)
         }
     }

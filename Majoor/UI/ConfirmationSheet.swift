@@ -20,8 +20,8 @@ struct ConfirmationSheet: View {
                 Image(systemName: headerIcon)
                     .font(.system(size: 14, weight: .medium))
                     .foregroundColor(headerColor)
-                Text("Confirmation Required")
-                    .font(.system(size: 14, weight: .semibold))
+                Text(headerTitle)
+                    .font(DT.Font.headline)
                 Spacer()
             }
             .padding(.horizontal, 16)
@@ -74,8 +74,12 @@ struct ConfirmationSheet: View {
                     .textFieldStyle(.plain)
                     .font(.system(size: 12))
                     .padding(8)
-                    .background(Color.primary.opacity(0.04))
-                    .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                    .background(DT.Color.surfaceCard)
+                    .clipShape(RoundedRectangle(cornerRadius: DT.Radius.small, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: DT.Radius.small, style: .continuous)
+                            .stroke(DT.Color.surfaceBorder)
+                    )
                     .focused($feedbackFocused)
                     .onSubmit { resolveConfirmation(approved: true) }
 
@@ -84,7 +88,7 @@ struct ConfirmationSheet: View {
                         let enabled = taskManager.pipelineSteps.filter(\.enabled).count
                         let total = taskManager.pipelineSteps.count
                         Text("\(enabled)/\(total) steps")
-                            .font(.system(size: 10))
+                            .font(DT.Font.micro)
                             .foregroundColor(.secondary)
                     }
 
@@ -93,14 +97,22 @@ struct ConfirmationSheet: View {
                     Button("Deny") {
                         resolveConfirmation(approved: false)
                     }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
+                    .buttonStyle(.plain)
+                    .font(DT.Font.caption(.medium))
+                    .padding(.horizontal, DT.Spacing.md)
+                    .padding(.vertical, DT.Spacing.xs)
+                    .background(DT.Color.surfaceCard, in: RoundedRectangle(cornerRadius: DT.Radius.small, style: .continuous))
+                    .keyboardShortcut(.escape, modifiers: [])
 
                     Button("Approve") {
                         resolveConfirmation(approved: true)
                     }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.small)
+                    .buttonStyle(.plain)
+                    .font(DT.Font.caption(.medium))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, DT.Spacing.md)
+                    .padding(.vertical, DT.Spacing.xs)
+                    .background(DT.Color.accent, in: RoundedRectangle(cornerRadius: DT.Radius.small, style: .continuous))
                 }
             }
             .padding(.horizontal, 16)
@@ -109,6 +121,19 @@ struct ConfirmationSheet: View {
     }
 
     // MARK: - Helpers
+
+    private var headerTitle: String {
+        switch confirmation.category {
+        case NotificationManager.confirmEmailCategory:
+            return "Send this email?"
+        case NotificationManager.confirmDeleteCategory:
+            return "Delete this event?"
+        case NotificationManager.pipelineConfirmCategory:
+            return "Run this pipeline?"
+        default:
+            return "Confirm this action?"
+        }
+    }
 
     private var headerIcon: String {
         switch confirmation.category {

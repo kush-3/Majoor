@@ -64,19 +64,31 @@ struct MainPanelView: View {
                         HStack(spacing: 6) {
                             Image(systemName: "hammer.fill")
                                 .font(.system(size: 14, weight: .semibold))
-                                .foregroundColor(.accentColor)
+                                .foregroundColor(DT.Color.textTertiary)
                             Text("Majoor")
-                                .font(.system(size: 14, weight: .semibold))
+                                .font(DT.Font.headline)
                         }
                         Spacer()
-                        Picker("", selection: $taskManager.selectedTab) {
-                            Text("Tasks").tag(0)
-                            Text("Chat").tag(1)
+
+                        if taskManager.isTaskRunning {
+                            HStack(spacing: DT.Spacing.xs) {
+                                ProgressView()
+                                    .controlSize(.mini)
+                                Text("Working")
+                                    .font(DT.Font.caption(.medium))
+                                    .foregroundStyle(DT.Color.running)
+                            }
+                            .transition(.opacity.combined(with: .scale(scale: 0.9)))
                         }
-                        .pickerStyle(.segmented)
-                        .frame(width: 140)
+
+                        HStack(spacing: DT.Spacing.xxs) {
+                            tabButton("Tasks", tag: 0)
+                            tabButton("Chat", tag: 1)
+                        }
+                        .padding(DT.Spacing.xxs)
                     }
                     .padding(.horizontal, 16).padding(.vertical, 12)
+                    .animation(DT.Anim.fast, value: taskManager.isTaskRunning)
 
                     Divider()
 
@@ -99,13 +111,13 @@ struct MainPanelView: View {
                     }
                 }
             }
-            .animation(.easeInOut(duration: 0.2), value: selectedTask?.id)
+            .animation(DT.Anim.normal, value: selectedTask?.id)
 
             // Toast overlay — floats above content
             ToastOverlayView()
                 .environmentObject(taskManager)
         }
-        .frame(width: 400, height: 520)
+        .frame(width: DT.Layout.panelWidth, height: DT.Layout.panelHeight)
         .background(.regularMaterial)
         .onReceive(NotificationCenter.default.publisher(for: .majoorOpenTaskDetail)) { notification in
             if let taskId = notification.userInfo?["taskId"] as? String,
@@ -113,5 +125,23 @@ struct MainPanelView: View {
                 selectedTask = task
             }
         }
+    }
+
+    private func tabButton(_ label: String, tag: Int) -> some View {
+        Button {
+            withAnimation(DT.Anim.fast) { taskManager.selectedTab = tag }
+        } label: {
+            Text(label)
+                .font(DT.Font.caption(.medium))
+                .padding(.horizontal, DT.Spacing.sm)
+                .padding(.vertical, DT.Spacing.xs)
+                .background(
+                    taskManager.selectedTab == tag
+                        ? AnyShapeStyle(DT.Color.surfaceCard)
+                        : AnyShapeStyle(.clear),
+                    in: Capsule()
+                )
+        }
+        .buttonStyle(.plain)
     }
 }
