@@ -148,16 +148,17 @@ nonisolated final class DatabaseManager: @unchecked Sendable {
                 USING fts5(content, memory_id UNINDEXED, content='')
             """)
 
-            // Populate from current memories
+            // Populate from current memories — pin FTS5 rowid to memories.rowid
+            // so delete/update triggers can reference old.rowid correctly
             try db.execute(sql: """
-                INSERT INTO memories_fts(content, memory_id)
-                SELECT content, id FROM memories
+                INSERT INTO memories_fts(rowid, content, memory_id)
+                SELECT rowid, content, id FROM memories
             """)
 
-            // Triggers using TEXT primary key (id), not rowid
+            // Triggers: pin FTS5 rowid to memories.rowid at insert time
             try db.execute(sql: """
                 CREATE TRIGGER memories_ai AFTER INSERT ON memories BEGIN
-                  INSERT INTO memories_fts(content, memory_id) VALUES (new.content, new.id);
+                  INSERT INTO memories_fts(rowid, content, memory_id) VALUES (new.rowid, new.content, new.id);
                 END
             """)
             // Contentless FTS5 delete commands require rowid. For contentless tables,

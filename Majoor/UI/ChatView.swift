@@ -42,10 +42,10 @@ struct ChatView: View {
                     .padding(.horizontal, DT.Spacing.lg)
                     .padding(.vertical, DT.Spacing.md)
                 }
-                .onChange(of: chatManager.messages.count) { _ in
+                .onChange(of: chatManager.messages.count) { _, _ in
                     scrollToBottom(proxy: proxy)
                 }
-                .onChange(of: chatManager.streamingText) { _ in
+                .onChange(of: chatManager.streamingText) { _, _ in
                     scrollToBottom(proxy: proxy)
                 }
                 .onChange(of: chatManager.isStreaming) { _, isStreaming in

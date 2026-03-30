@@ -100,6 +100,16 @@ class ChatManager: ObservableObject {
                     )
                 }
             } catch {
+                // Don't show error for intentional cancellation (stop button)
+                guard !Task.isCancelled else {
+                    await MainActor.run {
+                        if self.isStreaming {
+                            self.isStreaming = false
+                            self.streamingText = ""
+                        }
+                    }
+                    return
+                }
                 await MainActor.run {
                     self.messages.append(ChatMessage(role: .assistant, content: "Error: \(error.localizedDescription)"))
                     self.isStreaming = false
