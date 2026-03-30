@@ -134,7 +134,7 @@ private struct ChatBubble: View {
             VStack(alignment: message.role == .user ? .trailing : .leading, spacing: 4) {
                 if message.role == .user {
                     Text(message.content)
-                        .font(.system(size: 12))
+                        .font(DT.Font.body)
                         .foregroundColor(.white)
                         .padding(.horizontal, 12)
                         .padding(.vertical, 8)
@@ -143,8 +143,12 @@ private struct ChatBubble: View {
                         .textSelection(.enabled)
                 } else {
                     // Assistant message
-                    Text(message.content)
-                        .font(.system(size: 12))
+                    let attributed = (try? AttributedString(
+                        markdown: message.content,
+                        options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)
+                    )) ?? AttributedString(message.content)
+                    Text(attributed)
+                        .font(DT.Font.body)
                         .padding(.horizontal, 12)
                         .padding(.vertical, 8)
                         .background(Color.primary.opacity(0.05))
@@ -162,6 +166,7 @@ private struct ChatBubble: View {
 
 private struct StreamingBubble: View {
     let text: String
+    @State private var dotAnimating = false
 
     var body: some View {
         HStack {
@@ -171,17 +176,25 @@ private struct StreamingBubble: View {
                     HStack(spacing: 4) {
                         ForEach(0..<3, id: \.self) { i in
                             Circle()
-                                .fill(Color.secondary.opacity(0.4))
+                                .fill(Color.secondary.opacity(0.5))
                                 .frame(width: 5, height: 5)
+                                .offset(y: dotAnimating ? -4 : 0)
+                                .animation(
+                                    .easeInOut(duration: 0.45)
+                                    .repeatForever(autoreverses: true)
+                                    .delay(Double(i) * 0.15),
+                                    value: dotAnimating
+                                )
                         }
                     }
+                    .onAppear { dotAnimating = true }
                     .padding(.horizontal, 12)
                     .padding(.vertical, 10)
                     .background(Color.primary.opacity(0.05))
                     .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
                 } else {
                     Text(text)
-                        .font(.system(size: 12))
+                        .font(DT.Font.body)
                         .padding(.horizontal, 12)
                         .padding(.vertical, 8)
                         .background(Color.primary.opacity(0.05))

@@ -22,7 +22,7 @@ struct ActivityFeedView: View {
                     .foregroundColor(.secondary)
                 Text("Press Cmd+Shift+Space to get started")
                     .font(.system(size: 11))
-                    .foregroundColor(.secondary.opacity(0.6))
+                    .foregroundColor(.secondary)
                 Spacer()
             }
             .frame(maxWidth: .infinity)
@@ -91,7 +91,7 @@ struct TaskCardView: View {
                 Spacer()
                 Text(task.createdAt.timeAgo())
                     .font(.system(size: 10))
-                    .foregroundColor(.secondary.opacity(0.7))
+                    .foregroundColor(.secondary)
             }
 
             // User input
@@ -152,14 +152,15 @@ struct TaskCardView: View {
                         Text(formatTokens(task.tokensUsed))
                     }
                     .font(.system(size: 9))
-                    .foregroundColor(.secondary.opacity(0.6))
+                    .foregroundColor(.secondary)
                 }
             }
         }
         .padding(12)
-        .background(Color.primary.opacity(0.03))
-        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .shadow(color: .black.opacity(0.04), radius: 3, y: 1)
+        .background(Color.primary.opacity(DT.Opacity.cardFill))
+        .clipShape(RoundedRectangle(cornerRadius: DT.Radius.medium, style: .continuous))
+        .cardShadow()
+        .hoverCard(cornerRadius: DT.Radius.medium)
         .padding(.vertical, 3)
     }
 
@@ -212,17 +213,6 @@ struct TaskCardView: View {
         }
     }
 
-    private func friendlyModel(_ model: String) -> String {
-        if model.contains("opus") { return "Opus" }
-        if model.contains("haiku") { return "Haiku" }
-        if model.contains("sonnet") { return "Sonnet" }
-        return model
-    }
-
-    private func formatTokens(_ tokens: Int) -> String {
-        if tokens >= 1000 { return String(format: "%.1fK", Double(tokens) / 1000) }
-        return "\(tokens)"
-    }
 }
 
 extension Date {

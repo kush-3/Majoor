@@ -53,12 +53,14 @@ struct ResponseDetailView: View {
                         if let attributed = try? AttributedString(markdown: responseText,
                             options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)) {
                             Text(attributed)
-                                .font(.system(size: 12))
+                                .font(DT.Font.body)
+                                .lineSpacing(4)
                                 .textSelection(.enabled)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                         } else {
                             Text(responseText)
-                                .font(.system(size: 12))
+                                .font(DT.Font.body)
+                                .lineSpacing(4)
                                 .textSelection(.enabled)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                         }
@@ -131,15 +133,4 @@ struct ResponseDetailView: View {
         }
     }
 
-    private func friendlyModel(_ model: String) -> String {
-        if model.contains("opus") { return "Opus" }
-        if model.contains("haiku") { return "Haiku" }
-        if model.contains("sonnet") { return "Sonnet" }
-        return model
-    }
-
-    private func formatTokens(_ tokens: Int) -> String {
-        if tokens >= 1000 { return String(format: "%.1fK", Double(tokens) / 1000) }
-        return "\(tokens)"
-    }
 }
