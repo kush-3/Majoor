@@ -92,13 +92,11 @@ class ChatManager: ObservableObject {
 
                 // Track usage
                 if let usage {
-                    await MainActor.run {
-                        UsageStore.shared.recordUsage(
-                            model: provider.model,
-                            inputTokens: usage.inputTokens,
-                            outputTokens: usage.outputTokens
-                        )
-                    }
+                    UsageStore.shared.recordUsage(
+                        model: provider.model,
+                        inputTokens: usage.inputTokens,
+                        outputTokens: usage.outputTokens
+                    )
                 }
             } catch {
                 await MainActor.run {
