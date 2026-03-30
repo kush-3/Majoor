@@ -113,6 +113,9 @@ struct WriteFileTool: AgentTool {
             return ToolResult(success: false, output: "Error: 'path' and 'content' required. Received keys: \(arguments.keys.sorted().joined(separator: ", "))")
         }
         let expanded = NSString(string: path).expandingTildeInPath
+        if let err = validateWritePath(expanded) {
+            return ToolResult(success: false, output: "Error: \(err)")
+        }
         let parentDir = (expanded as NSString).deletingLastPathComponent
         try? FileManager.default.createDirectory(atPath: parentDir, withIntermediateDirectories: true)
         do {
@@ -145,6 +148,9 @@ struct MoveFileTool: AgentTool {
         guard FileManager.default.fileExists(atPath: expandedSrc) else {
             return ToolResult(success: false, output: "Error: Source not found: \(src)")
         }
+        if let err = validateWritePath(expandedDst) {
+            return ToolResult(success: false, output: "Error: \(err)")
+        }
         let parentDir = (expandedDst as NSString).deletingLastPathComponent
         try? FileManager.default.createDirectory(atPath: parentDir, withIntermediateDirectories: true)
         do {
@@ -176,6 +182,9 @@ struct CopyFileTool: AgentTool {
         let expandedDst = NSString(string: dst).expandingTildeInPath
         guard FileManager.default.fileExists(atPath: expandedSrc) else {
             return ToolResult(success: false, output: "Error: Source not found: \(src)")
+        }
+        if let err = validateWritePath(expandedDst) {
+            return ToolResult(success: false, output: "Error: \(err)")
         }
         let parentDir = (expandedDst as NSString).deletingLastPathComponent
         try? FileManager.default.createDirectory(atPath: parentDir, withIntermediateDirectories: true)
@@ -328,6 +337,9 @@ struct CreateDirectoryTool: AgentTool {
             return ToolResult(success: false, output: "Error: 'path' required")
         }
         let expanded = NSString(string: path).expandingTildeInPath
+        if let err = validateWritePath(expanded) {
+            return ToolResult(success: false, output: "Error: \(err)")
+        }
         if FileManager.default.fileExists(atPath: expanded) {
             return ToolResult(success: true, output: "Directory already exists: \(path)")
         }
@@ -338,6 +350,22 @@ struct CreateDirectoryTool: AgentTool {
             return ToolResult(success: false, output: "Error: \(error.localizedDescription)")
         }
     }
+}
+
+// MARK: - Path Validation
+
+nonisolated func validateWritePath(_ expanded: String) -> String? {
+    let offLimitsPaths = ["/System", "/Library", "/Applications", "/usr", "/bin", "/sbin", "/etc", "/var", "/private", "/dev", "/cores"]
+    for path in offLimitsPaths {
+        if expanded.hasPrefix(path) { return "Cannot write to system path: \(path)" }
+    }
+    let home = NSHomeDirectory()
+    let offLimitsHomeSubpaths = [".ssh", ".gnupg", ".aws", ".config/gcloud", ".kube", ".docker", "Library/Keychains"]
+    for subpath in offLimitsHomeSubpaths {
+        let fullPath = (home as NSString).appendingPathComponent(subpath)
+        if expanded.hasPrefix(fullPath) { return "Cannot write to sensitive path: ~/\(subpath)" }
+    }
+    return nil
 }
 
 // MARK: - Helpers
@@ -369,11 +397,15 @@ nonisolated func formatBytes(_ bytes: Int64) -> String {
     return i == 0 ? "\(bytes) B" : String(format: "%.1f %@", size, units[i])
 }
 
-nonisolated func formatDate(_ date: Date) -> String {
+private nonisolated let _fileToolsDateFormatter: DateFormatter = {
     let f = DateFormatter()
     f.dateStyle = .medium
     f.timeStyle = .short
-    return f.string(from: date)
+    return f
+}()
+
+nonisolated func formatDate(_ date: Date) -> String {
+    _fileToolsDateFormatter.string(from: date)
 }
 
 // MARK: - Read PDF

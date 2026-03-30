@@ -205,8 +205,12 @@ nonisolated struct FetchMultipleURLsTool: AgentTool {
         await withTaskGroup(of: (Int, String, ToolResult).self) { group in
             for (i, url) in urls.enumerated() {
                 group.addTask {
-                    let result = try! await fetchTool.execute(arguments: ["url": url, "max_length": maxLen])
-                    return (i, url, result)
+                    do {
+                        let result = try await fetchTool.execute(arguments: ["url": url, "max_length": maxLen])
+                        return (i, url, result)
+                    } catch {
+                        return (i, url, ToolResult(success: false, output: "Error fetching \(url): \(error.localizedDescription)"))
+                    }
                 }
             }
 

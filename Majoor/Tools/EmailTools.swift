@@ -193,9 +193,15 @@ private struct GmailAPI {
     }
 }
 
+// MARK: - Validation
+
+private func isValidEmailId(_ id: String) -> Bool {
+    id.range(of: #"^[a-zA-Z0-9]+$"#, options: .regularExpression) != nil
+}
+
 // MARK: - Fetch Emails
 
-nonisolated struct FetchEmailsTool: AgentTool, Sendable {
+nonisolated struct FetchEmailsTool: AgentTool {
     let name = "fetch_emails"
     let description = "Fetch recent emails from Gmail. Supports Gmail search queries like 'is:unread', 'from:john@example.com', 'newer_than:2d'."
     let parameters: [ToolParameter] = [
@@ -225,15 +231,28 @@ nonisolated struct FetchEmailsTool: AgentTool, Sendable {
             return ToolResult(success: true, output: "No emails found matching: \(query)")
         }
 
-        // Fetch each message's metadata
-        var results: [String] = []
-        for msg in messages.prefix(maxResults) {
-            guard let msgId = msg["id"] as? String else { continue }
-            let (msgData, msgStatus) = try await GmailAPI.request("/messages/\(msgId)?format=metadata&metadataHeaders=From&metadataHeaders=Subject&metadataHeaders=Date&metadataHeaders=To")
-            guard msgStatus == 200,
-                  let msgJson = try? JSONSerialization.jsonObject(with: msgData) as? [String: Any] else { continue }
-            results.append(GmailAPI.parseMessage(msgJson))
+        // Fetch each message's metadata concurrently
+        let msgIds = messages.prefix(maxResults).compactMap { $0["id"] as? String }
+        var indexedResults: [(Int, String)] = []
+
+        try await withThrowingTaskGroup(of: (Int, String)?.self) { group in
+            for (index, msgId) in msgIds.enumerated() {
+                group.addTask {
+                    let (msgData, msgStatus) = try await GmailAPI.request(
+                        "/messages/\(msgId)?format=metadata&metadataHeaders=From&metadataHeaders=Subject&metadataHeaders=Date&metadataHeaders=To"
+                    )
+                    guard msgStatus == 200,
+                          let msgJson = try? JSONSerialization.jsonObject(with: msgData) as? [String: Any] else {
+                        return nil
+                    }
+                    return (index, GmailAPI.parseMessage(msgJson))
+                }
+            }
+            for try await result in group {
+                if let r = result { indexedResults.append(r) }
+            }
         }
+        let results = indexedResults.sorted { $0.0 < $1.0 }.map { $0.1 }
 
         if results.isEmpty {
             return ToolResult(success: true, output: "No emails found matching: \(query)")
@@ -245,7 +264,7 @@ nonisolated struct FetchEmailsTool: AgentTool, Sendable {
 
 // MARK: - Read Email
 
-nonisolated struct ReadEmailTool: AgentTool, Sendable {
+nonisolated struct ReadEmailTool: AgentTool {
     let name = "read_email"
     let description = "Read the full content of a specific email by its ID."
     let parameters: [ToolParameter] = [
@@ -260,6 +279,9 @@ nonisolated struct ReadEmailTool: AgentTool, Sendable {
         }
         guard let emailId = arguments["email_id"] else {
             return ToolResult(success: false, output: "Error: 'email_id' is required.")
+        }
+        guard isValidEmailId(emailId) else {
+            return ToolResult(success: false, output: "Error: Invalid email ID format.")
         }
 
         let (data, status) = try await GmailAPI.request("/messages/\(emailId)?format=full")
@@ -277,7 +299,7 @@ nonisolated struct ReadEmailTool: AgentTool, Sendable {
 
 // MARK: - Search Emails
 
-nonisolated struct SearchEmailsTool: AgentTool, Sendable {
+nonisolated struct SearchEmailsTool: AgentTool {
     let name = "search_emails"
     let description = "Search emails using Gmail's search syntax. Returns matching emails with snippets."
     let parameters: [ToolParameter] = [
@@ -295,7 +317,7 @@ nonisolated struct SearchEmailsTool: AgentTool, Sendable {
 
 // MARK: - Draft Email
 
-nonisolated struct DraftEmailTool: AgentTool, Sendable {
+nonisolated struct DraftEmailTool: AgentTool {
     let name = "draft_email"
     let description = "Create a Gmail draft (does NOT send). Returns the draft ID."
     let parameters: [ToolParameter] = [
@@ -331,7 +353,7 @@ nonisolated struct DraftEmailTool: AgentTool, Sendable {
 
 // MARK: - Send Email (requires confirmation)
 
-nonisolated struct SendEmailTool: AgentTool, Sendable {
+nonisolated struct SendEmailTool: AgentTool {
     let name = "send_email"
     let description = "Send an email via Gmail. Requires user confirmation via notification before sending."
     let parameters: [ToolParameter] = [
@@ -364,7 +386,7 @@ nonisolated struct SendEmailTool: AgentTool, Sendable {
 
 // MARK: - Reply to Email (requires confirmation)
 
-nonisolated struct ReplyToEmailTool: AgentTool, Sendable {
+nonisolated struct ReplyToEmailTool: AgentTool {
     let name = "reply_to_email"
     let description = "Reply to an existing email thread. Requires user confirmation before sending."
     let parameters: [ToolParameter] = [
@@ -381,6 +403,9 @@ nonisolated struct ReplyToEmailTool: AgentTool, Sendable {
         guard let emailId = arguments["email_id"], let body = arguments["body"] else {
             return ToolResult(success: false, output: "Error: 'email_id' and 'body' are required.")
         }
+        guard isValidEmailId(emailId) else {
+            return ToolResult(success: false, output: "Error: Invalid email ID format.")
+        }
 
         // Fetch original email to get thread info
         let (origData, origStatus) = try await GmailAPI.request("/messages/\(emailId)?format=metadata&metadataHeaders=From&metadataHeaders=Subject&metadataHeaders=Message-Id")
@@ -390,10 +415,13 @@ nonisolated struct ReplyToEmailTool: AgentTool, Sendable {
         }
 
         let headers = ((origJson["payload"] as? [String: Any])?["headers"] as? [[String: Any]]) ?? []
-        let headerDict = Dictionary(uniqueKeysWithValues: headers.compactMap { h -> (String, String)? in
-            guard let name = h["name"] as? String, let value = h["value"] as? String else { return nil }
-            return (name.lowercased(), value)
-        })
+        let headerDict = Dictionary(
+            headers.compactMap { h -> (String, String)? in
+                guard let name = h["name"] as? String, let value = h["value"] as? String else { return nil }
+                return (name.lowercased(), value)
+            },
+            uniquingKeysWith: { first, _ in first }
+        )
 
         let replyTo = headerDict["from"] ?? ""
         let subject = "Re: \(headerDict["subject"] ?? "")"
