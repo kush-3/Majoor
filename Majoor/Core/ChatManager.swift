@@ -58,7 +58,7 @@ class ChatManager: ObservableObject {
         // Create provider (Sonnet for fast chat)
         let provider = AnthropicProvider(
             apiKey: APIConfig.claudeAPIKey,
-            model: "claude-sonnet-4-20250514"
+            model: ModelRouter.sonnetModel
         )
 
         streamingTask = Task { [weak self] in

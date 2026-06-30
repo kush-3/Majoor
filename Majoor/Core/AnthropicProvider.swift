@@ -54,7 +54,7 @@ final nonisolated class AnthropicProvider: LLMProvider, @unchecked Sendable {
         }
     }
 
-    init(apiKey: String, model: String = "claude-sonnet-4-20250514") {
+    init(apiKey: String, model: String = "claude-sonnet-4-6") {
         self._apiKey = apiKey
         self.model = model
         self.name = model.contains("opus") ? "Claude Opus" :
