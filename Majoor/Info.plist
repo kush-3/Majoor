@@ -21,5 +21,7 @@
 	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>SUFeedURL</key>
 	<string>https://kush-3.github.io/majoor-releases/appcast.xml</string>
+	<key>SUPublicEDKey</key>
+	<string>uHW/OJsY1vEjYTaZQEVM3dHBusmDd33bujG1SCFAbD4=</string>
 </dict>
 </plist>
