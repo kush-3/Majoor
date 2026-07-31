@@ -62,18 +62,6 @@ final nonisolated class AnthropicProvider: LLMProvider, @unchecked Sendable {
                     model.contains("haiku") ? "Claude Haiku" : "Claude"
     }
 
-    // Claude 5-family models run adaptive thinking when the `thinking` param is
-    // omitted. The agent loop rebuilds assistant turns from parsed text/tool_use
-    // blocks (thinking blocks are dropped), which the API rejects mid-tool-loop
-    // when thinking is on — so keep it explicitly off to match pre-5 behavior.
-    // NOTE: revisit on every model-family bump (a future claude-*-6 won't match).
-    // On claude-opus-5, disabled thinking is only accepted at effort "high" or
-    // lower — if an output_config.effort field is ever added, xhigh/max will 400.
-    private var thinkingOverride: AnthropicThinkingConfig? {
-        let onByDefault = model.hasPrefix("claude-opus-5") || model.hasPrefix("claude-sonnet-5")
-        return onByDefault ? AnthropicThinkingConfig(type: "disabled") : nil
-    }
-    
     func updateAPIKey(_ newKey: String) {
         stateLock.withLock { _apiKey = newKey }
     }
@@ -87,14 +75,16 @@ final nonisolated class AnthropicProvider: LLMProvider, @unchecked Sendable {
         guard !apiKey.isEmpty else { throw LLMError.invalidAPIKey }
         try checkCircuitBreaker()
 
-        var request = AnthropicRequest(
+        // No `thinking` field — claude-opus-5 / claude-sonnet-5 run adaptive
+        // thinking by default, and AgentLoop echoes response blocks verbatim so
+        // thinking blocks survive the tool loop.
+        let request = AnthropicRequest(
             model: model,
             maxTokens: maxTokens,
             system: systemPrompt,
             messages: messages,
             tools: tools.isEmpty ? nil : tools
         )
-        request.thinking = thinkingOverride
 
         let encoder = JSONEncoder()
         let requestData = try encoder.encode(request)
@@ -261,7 +251,6 @@ final nonisolated class AnthropicProvider: LLMProvider, @unchecked Sendable {
             tools: tools.isEmpty ? nil : tools
         )
         request.stream = true
-        request.thinking = thinkingOverride
         let body = try JSONEncoder().encode(request)
 
         var urlRequest = URLRequest(url: URL(string: baseURL)!)
@@ -384,13 +373,22 @@ final nonisolated class AnthropicProvider: LLMProvider, @unchecked Sendable {
                     }
                     toolCalls.append(ToolCall(id: id, toolName: name, arguments: args, rawInputJSON: rawJSON))
                 }
+            case "thinking", "redacted_thinking":
+                // Deliberately contributes nothing to textParts — with the default
+                // display ("omitted") the thinking text is empty, and reasoning is
+                // never user-facing output. The blocks are preserved for the tool
+                // loop by handing `response.content` back verbatim as rawContent
+                // below; never rebuild or edit them.
+                break
             default: break
             }
         }
-        
+
         let text = textParts.joined(separator: "\n")
-        if !toolCalls.isEmpty && !text.isEmpty { return .mixed(text: text, toolCalls: toolCalls) }
-        if !toolCalls.isEmpty { return .toolCalls(toolCalls) }
+        if !toolCalls.isEmpty && !text.isEmpty {
+            return .mixed(text: text, toolCalls: toolCalls, rawContent: response.content)
+        }
+        if !toolCalls.isEmpty { return .toolCalls(toolCalls, rawContent: response.content) }
         return .text(text)
     }
 }

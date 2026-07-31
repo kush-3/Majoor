@@ -35,8 +35,7 @@ class ChatManager: ObservableObject {
     private let systemPrompt = """
     You are Majoor, a helpful AI assistant running as a native macOS menu bar app. \
     Be concise, conversational, and helpful. Use markdown formatting when appropriate. \
-    Keep responses focused and to the point. \
-    Do not include internal or system XML tags in your response.
+    Keep responses focused and to the point.
     """
 
     func send(_ userMessage: String) {

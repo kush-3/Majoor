@@ -54,8 +54,6 @@ final nonisolated class AgentLoop: @unchecked Sendable {
     11. Email safety — NEVER send an email without using the send_email or reply_to_email tools, which trigger user confirmation via notification. Always show the user what you're about to send. If only drafting, use draft_email which saves but doesn't send.
     12. Calendar — when the user asks about their schedule, use read_calendar_events. For creating events, always confirm the date/time before calling create_calendar_event.
     13. Batch operations — when performing repetitive actions on many files (move, rename, copy, delete), prefer using execute_shell or execute_script to handle them in a single command rather than calling individual file tools dozens of times. For example, use a bash loop or a short Python script to move 30 files instead of 30 separate move_file calls.
-    14. You may say a brief sentence before using a tool. Always invoke tools through tool calls — never write a tool invocation as plain text.
-    15. Do not include internal or system XML tags in your response.
 
     PIPELINE BEHAVIOR:
     When the user describes a completed action, decision, or status change that implies work across 3 or more tools/services, DO NOT immediately start executing. Instead:
@@ -355,13 +353,13 @@ final nonisolated class AgentLoop: @unchecked Sendable {
 
                 return TaskResult(summary: summarize(text), steps: task.steps, tokensUsed: totalTokens)
 
-            case .toolCalls(let calls):
-                let (aMsg, rMsg, summaries) = try await handleToolCalls(calls, task: task, activeTools: activeTools, pipelineApproved: pipelineApproved)
+            case .toolCalls(let calls, let rawContent):
+                let (aMsg, rMsg, summaries) = try await handleToolCalls(calls, task: task, assistantContent: rawContent, activeTools: activeTools, pipelineApproved: pipelineApproved)
                 messages.append(aMsg)
                 messages.append(rMsg)
                 toolSummaries.append(contentsOf: summaries)
 
-            case .mixed(let text, let calls):
+            case .mixed(let text, let calls, let rawContent):
                 // Check for pipeline confirmation in mixed responses too
                 if text.contains("%%PIPELINE_CONFIRM%%") {
                     let planText = text.replacingOccurrences(of: "%%PIPELINE_CONFIRM%%", with: "").trimmingCharacters(in: .whitespacesAndNewlines)
@@ -428,7 +426,7 @@ final nonisolated class AgentLoop: @unchecked Sendable {
                 }
 
                 MajoorLogger.log("📝 \(text.prefix(100))...")
-                let (aMsg, rMsg, summaries) = try await handleToolCalls(calls, task: task, precedingText: text, activeTools: activeTools, pipelineApproved: pipelineApproved)
+                let (aMsg, rMsg, summaries) = try await handleToolCalls(calls, task: task, assistantContent: rawContent, activeTools: activeTools, pipelineApproved: pipelineApproved)
                 messages.append(aMsg)
                 messages.append(rMsg)
                 toolSummaries.append(contentsOf: summaries)
@@ -467,23 +465,21 @@ final nonisolated class AgentLoop: @unchecked Sendable {
 
     // MARK: - Tool Execution
 
+    /// `assistantContent` is the model's response content blocks verbatim.
     private func handleToolCalls(
         _ toolCalls: [ToolCall],
         task: AgentTask,
-        precedingText: String? = nil,
+        assistantContent: [AnthropicContentBlock],
         activeTools: [any AgentTool],
         pipelineApproved: Bool = false
     ) async throws -> (assistant: AnthropicMessage, result: AnthropicMessage, toolSummaries: [String]) {
 
-        var assistantBlocks: [AnthropicContentBlock] = []
-        if let text = precedingText {
-            assistantBlocks.append(AnthropicContentBlock(type: "text", text: text, id: nil, name: nil, input: nil, toolUseId: nil, content: nil))
-        }
-        for call in toolCalls {
-            let inputDict = call.arguments.mapValues { AnyCodable($0) }
-            assistantBlocks.append(AnthropicContentBlock(type: "tool_use", text: nil, id: call.id, name: call.toolName, input: inputDict, toolUseId: nil, content: nil))
-        }
-        let assistantMsg = AnthropicMessage(role: "assistant", content: .blocks(assistantBlocks))
+        // Echo the response blocks back unchanged rather than rebuilding them from
+        // the parsed text + tool calls. This keeps `thinking` / `redacted_thinking`
+        // blocks (and their signatures) intact, which the API requires on the
+        // assistant turn that precedes tool_result, and preserves tool_use input
+        // types instead of the stringified copies in ToolCall.arguments.
+        let assistantMsg = AnthropicMessage(role: "assistant", content: .blocks(assistantContent))
 
         var resultBlocks: [AnthropicContentBlock] = []
         var summaries: [String] = []

@@ -7,6 +7,9 @@ import Combine
 // MARK: - Anthropic API Request/Response Types
 // These are nonisolated since they're just data containers used in networking
 
+// No `thinking` field: Claude 5-family models run adaptive thinking when the
+// parameter is omitted, which is what we want. Never send `temperature`,
+// `top_p`, `top_k`, or `budget_tokens` — all rejected with 400.
 nonisolated struct AnthropicRequest: Codable, Sendable {
     let model: String
     let maxTokens: Int
@@ -14,17 +17,12 @@ nonisolated struct AnthropicRequest: Codable, Sendable {
     let messages: [AnthropicMessage]
     let tools: [AnthropicTool]?
     var stream: Bool?
-    var thinking: AnthropicThinkingConfig?
 
     enum CodingKeys: String, CodingKey {
         case model
         case maxTokens = "max_tokens"
-        case system, messages, tools, stream, thinking
+        case system, messages, tools, stream
     }
-}
-
-nonisolated struct AnthropicThinkingConfig: Codable, Sendable {
-    let type: String
 }
 
 nonisolated struct AnthropicMessage: Codable, Sendable {
@@ -62,11 +60,22 @@ nonisolated struct AnthropicContentBlock: Codable, Sendable {
     let input: [String: AnyCodable]?
     let toolUseId: String?
     let content: String?
-    
+    // Reasoning blocks. `thinking` blocks carry the reasoning text (empty string
+    // when display is "omitted", the default) plus an opaque `signature`;
+    // `redacted_thinking` blocks carry an opaque `data` payload. All three fields
+    // must round-trip byte-for-byte when the assistant turn is echoed back in a
+    // tool loop — the API rejects tampered or dropped thinking blocks.
+    // Declared `var` so the memberwise initializer defaults them to nil, keeping
+    // existing call sites (which build text/tool_use/tool_result blocks) intact.
+    // Synthesized Codable uses encodeIfPresent, so nil fields are omitted, not null.
+    var thinking: String?
+    var signature: String?
+    var data: String?
+
     enum CodingKeys: String, CodingKey {
         case type, text, id, name, input
         case toolUseId = "tool_use_id"
-        case content
+        case content, thinking, signature, data
     }
 }
 

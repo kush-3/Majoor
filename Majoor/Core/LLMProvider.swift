@@ -6,8 +6,12 @@ import Foundation
 // Nonisolated — LLM calls happen off the main thread
 nonisolated enum LLMResponse: Sendable {
     case text(String)
-    case toolCalls([ToolCall])
-    case mixed(text: String, toolCalls: [ToolCall])
+    /// `rawContent` is the model's response content blocks verbatim. The agent loop
+    /// echoes it back as the assistant turn so `thinking` / `redacted_thinking`
+    /// blocks survive the tool loop — the API 400s a tool-loop continuation whose
+    /// assistant turn is missing or has edited them.
+    case toolCalls([ToolCall], rawContent: [AnthropicContentBlock])
+    case mixed(text: String, toolCalls: [ToolCall], rawContent: [AnthropicContentBlock])
 }
 
 nonisolated struct ToolCall: Identifiable, Sendable {
