@@ -6,7 +6,7 @@ A native macOS AI agent that lives in your menu bar. It runs tasks autonomously,
 
 - **Autonomous Task Execution** — Describe what you need, Majoor figures out the steps and executes them
 - **Streaming Chat** — Interactive conversation mode with real-time streaming responses
-- **34 Built-in Tools** — File management, shell execution, git/GitHub, web search, email (Gmail), calendar (Apple Calendar)
+- **35 Built-in Tools** — File management, shell execution, git/GitHub, web search, email (Gmail), calendar (Apple Calendar)
 - **MCP Integrations** — Connect GitHub, Slack, Notion, and Linear for cross-service workflows
 - **Pipeline Plans** — Complex multi-step tasks are proposed as plans you can review, edit, and approve
 - **Interactive Confirmations** — Every sensitive action (email send, file delete) requires your approval with optional feedback
@@ -78,6 +78,9 @@ Configure tokens in Settings → Integrations, or edit `~/.majoor/mcp.json`.
 git clone https://github.com/kush-3/majoor.git
 cd majoor
 
+# Create your local API config (gitignored — required to compile)
+cp APIConfig.swift.example Majoor/APIConfig.swift
+
 # Build
 xcodebuild -project Majoor.xcodeproj -scheme Majoor -configuration Debug build
 
@@ -85,10 +88,14 @@ xcodebuild -project Majoor.xcodeproj -scheme Majoor -configuration Debug build
 open Majoor.xcodeproj
 ```
 
+> `Majoor/APIConfig.swift` holds app-level Google OAuth credentials and is deliberately
+> excluded from git. The template compiles as-is; Gmail features need your own Google
+> OAuth client ID/secret filled in (see the comments in the template).
+
 ### Requirements
 - Xcode 15.0+
 - Swift 6
-- Only dependency: [GRDB.swift](https://github.com/groue/GRDB.swift) v7.10.0 (SQLite, via SPM)
+- Two dependencies: [GRDB.swift](https://github.com/groue/GRDB.swift) v7.10.0 (SQLite, via SPM) and [Sparkle](https://github.com/sparkle-project/Sparkle) 2 (auto-updates, via SPM)
 
 ## Architecture
 
@@ -105,7 +112,7 @@ Majoor/
 │   ├── MCP/                      # MCP client, server manager, tool bridge
 │   ├── OAuth/                    # Google OAuth 2.0 loopback flow
 │   └── Database/                 # GRDB database manager
-├── Tools/                        # 34 tools: File, Shell, Git, Web, Calendar, Email
+├── Tools/                        # 35 tools: File, Shell, Git, Web, Calendar, Email
 ├── UI/
 │   ├── MainPanelView.swift       # Dropdown panel (tasks, chat, confirmations, pipeline)
 │   ├── ChatView.swift            # Streaming chat with message bubbles
@@ -114,7 +121,7 @@ Majoor/
 │   ├── ToastOverlay.swift        # In-app notification toasts
 │   ├── ConfirmationSheet.swift   # Interactive confirmation with feedback input
 │   └── StatusBarController.swift # Menu bar icon states
-├── Settings/                     # 7-tab preferences window
+├── Settings/                     # 6-tab preferences window
 └── Security/                     # Keychain + command sanitizer
 ```
 

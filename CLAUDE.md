@@ -21,9 +21,9 @@ There are no tests, linter, or CI/CD configured.
 
 - **Swift 6 with `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor`**: All types default to `@MainActor`. Any type that does off-main-thread work must be explicitly marked `nonisolated` (and `@unchecked Sendable` if needed).
 - **PBXFileSystemSynchronizedRootGroup**: Files under `Majoor/` are auto-discovered by Xcode. Do NOT manually add `PBXBuildFile` or `PBXFileReference` entries to `project.pbxproj` — just create the `.swift` file in the right directory.
-- **Single dependency**: GRDB.swift v7.10.0 (SQLite ORM) via Swift Package Manager, linked as a static library.
+- **Two dependencies**: GRDB.swift v7.10.0 (SQLite ORM) and Sparkle 2 (auto-updates), both via Swift Package Manager, linked as static libraries.
 - **Sandbox disabled**: The app needs direct Process/shell/git CLI access.
-- **API keys hardcoded** in `APIConfig.swift` — this is intentional for personal use.
+- **API keys Keychain-backed**: Anthropic and Tavily keys are saved to macOS Keychain at onboarding; `APIConfig.swift` (gitignored, copy from `APIConfig.swift.example`) only carries hardcoded app-level Google OAuth fallbacks.
 
 ## Architecture
 
@@ -32,16 +32,16 @@ There are no tests, linter, or CI/CD configured.
 The central brain. Each user command flows through:
 
 1. **Classify** → `TaskClassifier` scores input against 72+ keywords across 8 categories
-2. **Route** → `ModelRouter` maps category to model (Opus for code/research, Sonnet for general/email)
+2. **Route** → `ModelRouter` hybrid routing: keyword fast path (confidence score ≥ 2) maps category to model (Opus for code/research, Sonnet for general/email); otherwise a Haiku classification call decides the model + MCP tool sets
 3. **Inject memories** → `MemoryRetriever` searches SQLite for relevant past context, adds to system prompt
-4. **LLM loop** (max 25 iterations) → Call Claude API → handle text response or execute tool calls → feed results back
+4. **LLM loop** (max 75 iterations) → Call Claude API → handle text response or execute tool calls (raw content blocks — text/tool_use/thinking/redacted_thinking — round-tripped verbatim on replay) → feed results back
 5. **Persist** → Save task to SQLite, extract memories from conversation
 
 The agent loop is `nonisolated` and runs off the main thread. UI updates go through `MainActor.run`.
 
 ### Tool System (`Tools/`)
 
-34 tools across 6 files, registered via `ToolRegistry.defaultTools()`.
+35 tools across 6 files, registered via `ToolRegistry.defaultTools()`.
 
 All tools conform to `AgentTool` protocol (`ToolProtocol.swift`):
 - `name`, `description`, `parameters` → converted to Anthropic tool schema automatically
@@ -238,11 +238,10 @@ To add files:
 
 ### Dependencies
 
-Single dependency:
+Two dependencies, both static libraries via SPM:
 
-- **GRDB.swift v7.10.0**
-- SQLite ORM
-- Static library via SPM
+- **GRDB.swift v7.10.0** — SQLite ORM
+- **Sparkle 2** — auto-updates
 
 Do NOT introduce new dependencies unless necessary.
 
@@ -264,13 +263,14 @@ Do not enable sandbox.
 
 ### API Keys
 
-Stored in:
+Anthropic and Tavily keys are stored in the macOS Keychain (saved via onboarding). Resolved through:
 
 ```
 APIConfig.swift
 ```
 
-Hardcoded intentionally.
+which is gitignored — copy from `APIConfig.swift.example` to bootstrap it. Only the Google OAuth
+client ID/secret carry hardcoded app-level fallbacks in that file.
 
 Do not refactor unless explicitly requested.
 
@@ -293,7 +293,7 @@ Pipeline:
 1. Classify → TaskClassifier
 2. Route → ModelRouter
 3. Retrieve Memory → MemoryRetriever
-4. LLM Loop (max 25 iterations)
+4. LLM Loop (max 75 iterations)
 5. Persist Results
 
 ---
@@ -317,7 +317,10 @@ Claude must **not break classifier assumptions**.
 ModelRouter
 ```
 
-Routing rules:
+Hybrid routing: a keyword fast path (confidence score ≥ 2) maps category to model directly; below
+that threshold, a Haiku LLM call classifies the task into a model + MCP tool sets instead.
+
+Fast-path rules:
 
 | Category | Model |
 |----------|-------|
@@ -352,13 +355,14 @@ Never remove memory logic.
 Max:
 
 ```
-25 iterations
+75 iterations
 ```
 
 Cycle:
 
 1. Call Claude
-2. Tool call OR text response
+2. Tool call OR text response — content blocks (`text`/`tool_use`/`thinking`/`redacted_thinking`)
+   are round-tripped verbatim when replaying the assistant turn
 3. Execute tool
 4. Feed back
 
@@ -380,7 +384,7 @@ Location:
 Tools/
 ```
 
-34 tools across 6 files.
+35 tools across 6 files.
 
 All tools conform to:
 
@@ -671,8 +675,9 @@ Claude must:
 Core/
 Tools/
 UI/
-Models/
-Services/
+Settings/
+Security/
+Utils/
 ```
 
 Follow existing structure.
