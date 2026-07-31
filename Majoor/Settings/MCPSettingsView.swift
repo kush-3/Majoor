@@ -177,6 +177,7 @@ struct MCPSettingsView: View {
 
         Task {
             if let config = MCPConfig.load()[serverName] {
+                await MCPServerManager.shared.resetRestartCount(for: serverName)
                 await MCPServerManager.shared.startServer(name: serverName, config: config)
             }
             await refresh()
@@ -194,6 +195,7 @@ struct MCPSettingsView: View {
 
         Task {
             if let config = MCPConfig.load()[serverName] {
+                await MCPServerManager.shared.resetRestartCount(for: serverName)
                 await MCPServerManager.shared.startServer(name: serverName, config: config)
             }
             await refresh()

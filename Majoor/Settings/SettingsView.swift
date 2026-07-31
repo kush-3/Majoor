@@ -157,9 +157,14 @@ struct AboutTab: View {
             Text(label)
                 .font(.system(size: 12))
             Spacer()
-            Text(model)
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(.secondary)
+            VStack(alignment: .trailing, spacing: 1) {
+                Text(model)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(.secondary)
+                Text(detail)
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(.tertiary)
+            }
         }
     }
 }

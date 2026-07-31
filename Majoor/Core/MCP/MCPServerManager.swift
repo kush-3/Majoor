@@ -322,6 +322,7 @@ actor MCPServerManager {
     func reload() async {
         await stopAll()
         invalidateCache()
+        restartCounts.removeAll()
         await startAll()
     }
 
@@ -379,13 +380,15 @@ actor MCPServerManager {
 }
 
 // MARK: - Cache Codable Types
+// nonisolated: these are encoded/decoded inside the MCPServerManager actor,
+// so they must not inherit the module's default MainActor isolation.
 
-private struct MCPToolCache: Codable {
+private nonisolated struct MCPToolCache: Codable {
     let configHash: String
     let servers: [String: [CachedToolDef]]
 }
 
-private struct CachedToolDef: Codable {
+private nonisolated struct CachedToolDef: Codable {
     let name: String
     let description: String
     let inputSchema: CachedInputSchema?
@@ -405,7 +408,7 @@ private struct CachedToolDef: Codable {
     }
 }
 
-private struct CachedInputSchema: Codable {
+private nonisolated struct CachedInputSchema: Codable {
     let properties: [String: CachedPropertySchema]
     let required: [String]
 
@@ -422,7 +425,7 @@ private struct CachedInputSchema: Codable {
     }
 }
 
-private struct CachedPropertySchema: Codable {
+private nonisolated struct CachedPropertySchema: Codable {
     let type: String
     let description: String
     let enumValues: [String]?

@@ -1,0 +1,77 @@
+//
+//  APIConfig.swift
+//  Majoor
+//
+//  SETUP: copy this file to Majoor/APIConfig.swift before building:
+//
+//      cp APIConfig.swift.example Majoor/APIConfig.swift
+//
+//  Majoor/APIConfig.swift is gitignored — your credentials never leave your machine.
+//
+//  API key resolution: all user keys stored in Keychain.
+//  Onboarding saves user-provided keys (Anthropic, Tavily) to Keychain.
+//  Google OAuth credentials are app-level (not per-user): create a
+//  "Desktop app" OAuth client at https://console.cloud.google.com/apis/credentials
+//  with the Gmail API enabled, and paste its client ID and secret below.
+//  (Gmail features are optional — everything else works without them.)
+//
+
+import Foundation
+
+struct APIConfig {
+    // MARK: - Keychain Keys
+    static let keychainClaudeKey = "majoor_anthropic_api_key"
+    static let keychainTavilyKey = "majoor_tavily_api_key"
+    static let keychainGoogleClientId = "majoor_google_client_id"
+    static let keychainGoogleClientSecret = "majoor_google_client_secret"
+
+    // MARK: - Google OAuth (app-level credentials, not per-user)
+    private static let appGoogleClientId = "YOUR_GOOGLE_OAUTH_CLIENT_ID.apps.googleusercontent.com"
+    private static let appGoogleClientSecret = "YOUR_GOOGLE_OAUTH_CLIENT_SECRET"
+
+    // MARK: - Resolved Keys (Keychain only, no fallbacks)
+
+    static var claudeAPIKey: String {
+        KeychainManager.shared.retrieve(key: keychainClaudeKey) ?? ""
+    }
+
+    static var tavilyAPIKey: String {
+        KeychainManager.shared.retrieve(key: keychainTavilyKey) ?? ""
+    }
+
+    static var googleClientId: String {
+        KeychainManager.shared.retrieve(key: keychainGoogleClientId) ?? appGoogleClientId
+    }
+
+    static var googleClientSecret: String {
+        KeychainManager.shared.retrieve(key: keychainGoogleClientSecret) ?? appGoogleClientSecret
+    }
+
+    // MARK: - Save Keys to Keychain
+
+    static func saveClaudeKey(_ key: String) {
+        KeychainManager.shared.save(key: keychainClaudeKey, value: key)
+    }
+
+    static func saveTavilyKey(_ key: String) {
+        KeychainManager.shared.save(key: keychainTavilyKey, value: key)
+    }
+
+    static func saveGoogleClientId(_ id: String) {
+        KeychainManager.shared.save(key: keychainGoogleClientId, value: id)
+    }
+
+    static func saveGoogleClientSecret(_ secret: String) {
+        KeychainManager.shared.save(key: keychainGoogleClientSecret, value: secret)
+    }
+
+    // MARK: - Check if user has set a key
+
+    static var hasUserClaudeKey: Bool {
+        KeychainManager.shared.retrieve(key: keychainClaudeKey) != nil
+    }
+
+    static var hasUserTavilyKey: Bool {
+        KeychainManager.shared.retrieve(key: keychainTavilyKey) != nil
+    }
+}

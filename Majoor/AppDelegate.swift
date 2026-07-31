@@ -119,6 +119,16 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         // Initialize database on launch
         _ = DatabaseManager.shared
 
+        // Decay relevance of memories untouched for 90+ days so retrieval
+        // ranking favors fresh context (search orders by relevanceScore).
+        Task.detached(priority: .utility) {
+            do {
+                try MemoryStore.shared.archiveOld()
+            } catch {
+                MajoorLogger.error("Memory decay pass failed: \(error)")
+            }
+        }
+
         let tools = ToolRegistry.defaultTools()
         agentLoop = AgentLoop(tools: tools, taskManager: taskManager)
     }

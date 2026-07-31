@@ -3,7 +3,7 @@
 //
 // Hybrid approach:
 // - Keyword classifier handles obvious cases (instant, free)
-// - Sonnet LLM classifies ambiguous inputs (model + tool sets)
+// - Haiku LLM classifies ambiguous inputs (model + tool sets)
 
 import Foundation
 
@@ -29,7 +29,7 @@ nonisolated struct ModelRouter: Sendable {
         return AnthropicProvider(apiKey: APIConfig.claudeAPIKey, model: model)
     }
 
-    /// Hybrid routing: use keywords if confident, otherwise ask Sonnet.
+    /// Hybrid routing: use keywords if confident, otherwise ask Haiku.
     /// Returns (provider, toolSets) where toolSets determines which MCP tools to include.
     static func routeHybrid(_ input: String) async -> (provider: AnthropicProvider, toolSets: [String]) {
         let (category, score) = TaskClassifier.classifyWithConfidence(input)
@@ -41,8 +41,8 @@ nonisolated struct ModelRouter: Sendable {
             return (provider(for: category), toolSets)
         }
 
-        // Slow path: ask Sonnet to classify
-        MajoorLogger.log("🤔 Ambiguous input (score: \(score)) — asking Sonnet to classify...")
+        // Slow path: ask Haiku to classify
+        MajoorLogger.log("🤔 Ambiguous input (score: \(score)) — asking Haiku to classify...")
         if let result = await classifyWithLLM(input) {
             let model: String
             switch result.modelTier {
@@ -66,7 +66,7 @@ nonisolated struct ModelRouter: Sendable {
 
     // MARK: - LLM Classification
 
-    /// Ask Sonnet to classify the input and decide model + tool sets
+    /// Ask Haiku to classify the input and decide model + tool sets
     private static func classifyWithLLM(_ input: String) async -> ClassificationResult? {
         let classifierPrompt = """
         You are a task classifier. Given the user's input, decide:
