@@ -14,12 +14,17 @@ nonisolated struct AnthropicRequest: Codable, Sendable {
     let messages: [AnthropicMessage]
     let tools: [AnthropicTool]?
     var stream: Bool?
+    var thinking: AnthropicThinkingConfig?
 
     enum CodingKeys: String, CodingKey {
         case model
         case maxTokens = "max_tokens"
-        case system, messages, tools, stream
+        case system, messages, tools, stream, thinking
     }
+}
+
+nonisolated struct AnthropicThinkingConfig: Codable, Sendable {
+    let type: String
 }
 
 nonisolated struct AnthropicMessage: Codable, Sendable {

@@ -54,12 +54,24 @@ final nonisolated class AnthropicProvider: LLMProvider, @unchecked Sendable {
         }
     }
 
-    init(apiKey: String, model: String = "claude-sonnet-4-6") {
+    init(apiKey: String, model: String = ModelRouter.sonnetModel) {
         self._apiKey = apiKey
         self.model = model
         self.name = model.contains("opus") ? "Claude Opus" :
                     model.contains("sonnet") ? "Claude Sonnet" :
                     model.contains("haiku") ? "Claude Haiku" : "Claude"
+    }
+
+    // Claude 5-family models run adaptive thinking when the `thinking` param is
+    // omitted. The agent loop rebuilds assistant turns from parsed text/tool_use
+    // blocks (thinking blocks are dropped), which the API rejects mid-tool-loop
+    // when thinking is on — so keep it explicitly off to match pre-5 behavior.
+    // NOTE: revisit on every model-family bump (a future claude-*-6 won't match).
+    // On claude-opus-5, disabled thinking is only accepted at effort "high" or
+    // lower — if an output_config.effort field is ever added, xhigh/max will 400.
+    private var thinkingOverride: AnthropicThinkingConfig? {
+        let onByDefault = model.hasPrefix("claude-opus-5") || model.hasPrefix("claude-sonnet-5")
+        return onByDefault ? AnthropicThinkingConfig(type: "disabled") : nil
     }
     
     func updateAPIKey(_ newKey: String) {
@@ -75,14 +87,15 @@ final nonisolated class AnthropicProvider: LLMProvider, @unchecked Sendable {
         guard !apiKey.isEmpty else { throw LLMError.invalidAPIKey }
         try checkCircuitBreaker()
 
-        let request = AnthropicRequest(
+        var request = AnthropicRequest(
             model: model,
             maxTokens: maxTokens,
             system: systemPrompt,
             messages: messages,
             tools: tools.isEmpty ? nil : tools
         )
-        
+        request.thinking = thinkingOverride
+
         let encoder = JSONEncoder()
         let requestData = try encoder.encode(request)
         
@@ -248,6 +261,7 @@ final nonisolated class AnthropicProvider: LLMProvider, @unchecked Sendable {
             tools: tools.isEmpty ? nil : tools
         )
         request.stream = true
+        request.thinking = thinkingOverride
         let body = try JSONEncoder().encode(request)
 
         var urlRequest = URLRequest(url: URL(string: baseURL)!)

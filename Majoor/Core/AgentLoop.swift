@@ -54,6 +54,8 @@ final nonisolated class AgentLoop: @unchecked Sendable {
     11. Email safety — NEVER send an email without using the send_email or reply_to_email tools, which trigger user confirmation via notification. Always show the user what you're about to send. If only drafting, use draft_email which saves but doesn't send.
     12. Calendar — when the user asks about their schedule, use read_calendar_events. For creating events, always confirm the date/time before calling create_calendar_event.
     13. Batch operations — when performing repetitive actions on many files (move, rename, copy, delete), prefer using execute_shell or execute_script to handle them in a single command rather than calling individual file tools dozens of times. For example, use a bash loop or a short Python script to move 30 files instead of 30 separate move_file calls.
+    14. You may say a brief sentence before using a tool. Always invoke tools through tool calls — never write a tool invocation as plain text.
+    15. Do not include internal or system XML tags in your response.
 
     PIPELINE BEHAVIOR:
     When the user describes a completed action, decision, or status change that implies work across 3 or more tools/services, DO NOT immediately start executing. Instead:
@@ -210,7 +212,7 @@ final nonisolated class AgentLoop: @unchecked Sendable {
                     task.summary = errorDesc
                     task.completedAt = Date()
                     task.tokensUsed = totalTokens
-                    task.modelUsed = provider.name
+                    task.modelUsed = provider.model
                 }
                 await MainActor.run { taskManager.persistTask(task) }
                 throw error
@@ -224,7 +226,7 @@ final nonisolated class AgentLoop: @unchecked Sendable {
                     task.summary = error.localizedDescription
                     task.completedAt = Date()
                     task.tokensUsed = totalTokens
-                    task.modelUsed = provider.name
+                    task.modelUsed = provider.model
                 }
                 await MainActor.run { taskManager.persistTask(task) }
                 throw error
@@ -327,7 +329,7 @@ final nonisolated class AgentLoop: @unchecked Sendable {
                     task.summary = summarize(text)
                     task.completedAt = Date()
                     task.tokensUsed = totalTokens
-                    task.modelUsed = provider.name
+                    task.modelUsed = provider.model
                     taskManager.clearPipelinePlan()
                 }
 
@@ -440,7 +442,7 @@ final nonisolated class AgentLoop: @unchecked Sendable {
             task.summary = finalText.isEmpty ? "Completed (max iterations)" : summarize(finalText)
             task.completedAt = Date()
             task.tokensUsed = totalTokens
-            task.modelUsed = provider.name
+            task.modelUsed = provider.model
         }
         await MainActor.run { taskManager.persistTask(task) }
 

@@ -9,9 +9,9 @@ import Foundation
 
 nonisolated struct ModelRouter: Sendable {
 
-    static let opusModel = "claude-opus-4-8"
-    static let sonnetModel = "claude-sonnet-4-6"
-    static let haikuModel = "claude-haiku-4-5-20251001"
+    static let opusModel = "claude-opus-5"
+    static let sonnetModel = "claude-sonnet-5"
+    static let haikuModel = "claude-haiku-4-5"
 
     /// Create an LLM provider for the given task category (keyword-based fast path)
     static func provider(for category: TaskCategory) -> AnthropicProvider {

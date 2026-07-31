@@ -465,7 +465,7 @@ struct OnboardingView: View {
         request.timeoutInterval = 15
 
         let body: [String: Any] = [
-            "model": "claude-haiku-4-5-20251001",
+            "model": ModelRouter.haikuModel,
             "max_tokens": 1,
             "messages": [["role": "user", "content": "hi"]]
         ]

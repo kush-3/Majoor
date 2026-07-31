@@ -7,26 +7,14 @@ import GRDB
 // MARK: - Cost Configuration
 
 nonisolated struct CostConfig: Sendable {
-    // Per 1M tokens (input / output)
-    static let opusInput = 15.0
-    static let opusOutput = 75.0
+    // Per 1M tokens (input / output) — Opus 5 $5/$25, Sonnet 5 $3/$15, Haiku 4.5 $1/$5.
+    // Sonnet 5 has introductory pricing ($2/$10) through 2026-08-31; sticker rates used here.
+    static let opusInput = 5.0
+    static let opusOutput = 25.0
     static let sonnetInput = 3.0
     static let sonnetOutput = 15.0
-    static let haikuInput = 0.25
-    static let haikuOutput = 1.25
-
-    static func estimateCost(model: String, tokens: Int) -> Double {
-        // Rough estimate using average of input/output rates
-        let ratePerMillion: Double
-        if model.contains("opus") {
-            ratePerMillion = (opusInput + opusOutput) / 2
-        } else if model.contains("haiku") {
-            ratePerMillion = (haikuInput + haikuOutput) / 2
-        } else {
-            ratePerMillion = (sonnetInput + sonnetOutput) / 2
-        }
-        return Double(tokens) / 1_000_000 * ratePerMillion
-    }
+    static let haikuInput = 1.0
+    static let haikuOutput = 5.0
 
     static func estimateCost(model: String, inputTokens: Int, outputTokens: Int) -> Double {
         let (inputRate, outputRate): (Double, Double)
