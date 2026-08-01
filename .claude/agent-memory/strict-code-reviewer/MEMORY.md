@@ -6,3 +6,4 @@
 - [Fix Session Review](review_fix_session_2026_03_30.md) — New bugs in termination handler race, DateFormatter thread safety, FTS5 delete missing rowid, git add unsanitized
 - [Full Codebase Review](review_full_codebase_2026_03_30.md) — ChatManager cancel spurious error, FTS5 rowid mismatch still present; concurrency model validated correct
 - [Model Refresh Review](review_model_refresh_2026_07_31.md) — build-dmg.sh version grep reads Debug config not Release; thinking override + rules 14/15 validated correct
+- [Freeze Fix Review](review_freeze_fix_2026_08_01.md) — trim branch 1 eats task+plan on pipeline-without-history; read_file FIFO hang; CappedPipeCapture validated
