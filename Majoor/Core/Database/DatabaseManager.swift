@@ -177,6 +177,44 @@ nonisolated final class DatabaseManager: @unchecked Sendable {
             """)
         }
 
+        migrator.registerMigration("v4_fts5_external_content") { db in
+            // v3's contentless design broke search entirely: contentless FTS5
+            // (content='') discards stored column values, so
+            // `SELECT memory_id FROM memories_fts` always returns NULL and the
+            // join in MemoryStore.search matched zero rows. Recreate the index
+            // as external-content (values read from `memories` at query time,
+            // joined on rowid) and rebuild it — the rebuild also repairs
+            // installs whose index drifted under the pre-pinning v3 triggers.
+            try db.execute(sql: "DROP TRIGGER IF EXISTS memories_ai")
+            try db.execute(sql: "DROP TRIGGER IF EXISTS memories_ad")
+            try db.execute(sql: "DROP TRIGGER IF EXISTS memories_au")
+            try db.execute(sql: "DROP TABLE IF EXISTS memories_fts")
+
+            try db.execute(sql: """
+                CREATE VIRTUAL TABLE memories_fts
+                USING fts5(content, content='memories', content_rowid='rowid')
+            """)
+
+            try db.execute(sql: "INSERT INTO memories_fts(memories_fts) VALUES('rebuild')")
+
+            try db.execute(sql: """
+                CREATE TRIGGER memories_ai AFTER INSERT ON memories BEGIN
+                  INSERT INTO memories_fts(rowid, content) VALUES (new.rowid, new.content);
+                END
+            """)
+            try db.execute(sql: """
+                CREATE TRIGGER memories_ad AFTER DELETE ON memories BEGIN
+                  INSERT INTO memories_fts(memories_fts, rowid, content) VALUES('delete', old.rowid, old.content);
+                END
+            """)
+            try db.execute(sql: """
+                CREATE TRIGGER memories_au AFTER UPDATE ON memories BEGIN
+                  INSERT INTO memories_fts(memories_fts, rowid, content) VALUES('delete', old.rowid, old.content);
+                  INSERT INTO memories_fts(rowid, content) VALUES (new.rowid, new.content);
+                END
+            """)
+        }
+
         try migrator.migrate(dbQueue)
     }
 }

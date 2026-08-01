@@ -42,17 +42,21 @@ nonisolated final class MemoryStore: @unchecked Sendable {
             // Use FTS5 full-text search — significantly faster than LIKE '%...%' on large tables.
             // Each word is quoted to prevent FTS5 syntax errors from special characters.
             let ftsQuery = trimmed
-                .components(separatedBy: .whitespaces)
+                .components(separatedBy: .whitespacesAndNewlines)
                 .filter { !$0.isEmpty }
                 .map { "\"\($0.replacingOccurrences(of: "\"", with: "\"\""))\"" }
                 .joined(separator: " OR ")
 
+            // Order by bm25 relevance (FTS5 `rank`: smaller = better match) so
+            // memories matching content words beat those matching only stopwords,
+            // then by stored relevance. accessCount is deliberately not used:
+            // retrieval bumps it, which made past winners permanently sticky.
             let sql = """
                 SELECT m.* FROM memories m
-                WHERE m.id IN (
-                    SELECT memory_id FROM memories_fts WHERE memories_fts MATCH ?
-                )
-                ORDER BY m.relevanceScore DESC, m.accessCount DESC, m.lastAccessedAt DESC
+                JOIN (
+                    SELECT rowid, rank FROM memories_fts WHERE memories_fts MATCH ?
+                ) f ON f.rowid = m.rowid
+                ORDER BY f.rank, m.relevanceScore DESC, m.lastAccessedAt DESC
                 LIMIT ?
             """
             return try Memory.fetchAll(db, sql: sql, arguments: [ftsQuery, limit])
