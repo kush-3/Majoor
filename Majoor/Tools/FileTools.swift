@@ -1,14 +1,15 @@
 // FileTools.swift
 // Majoor — File Management Tools
 //
-// All tools are nonisolated + Sendable for Swift 6 compatibility.
+// All tools are nonisolated + Sendable — under MainActor default isolation an
+// unmarked struct's execute() runs on the main thread and freezes the app.
 // Arguments are [String: String] for Sendable safety.
 
 import Foundation
 
 // MARK: - List Directory
 
-struct ListDirectoryTool: AgentTool {
+nonisolated struct ListDirectoryTool: AgentTool {
     let name = "list_directory"
     let description = "List the contents of a directory. Returns file names, types, and sizes."
     let parameters = [
@@ -17,6 +18,7 @@ struct ListDirectoryTool: AgentTool {
     ]
     let requiredParameters = ["path"]
     let requiresConfirmation = false
+    let isReadOnly = true
     
     func execute(arguments: [String: String]) async throws -> ToolResult {
         guard let path = arguments["path"] else {
@@ -56,7 +58,7 @@ struct ListDirectoryTool: AgentTool {
 
 // MARK: - Read File
 
-struct ReadFileTool: AgentTool {
+nonisolated struct ReadFileTool: AgentTool {
     let name = "read_file"
     let description = "Read the contents of a text file."
     let parameters = [
@@ -65,6 +67,7 @@ struct ReadFileTool: AgentTool {
     ]
     let requiredParameters = ["path"]
     let requiresConfirmation = false
+    let isReadOnly = true
     
     func execute(arguments: [String: String]) async throws -> ToolResult {
         guard let path = arguments["path"] else {
@@ -123,7 +126,7 @@ struct ReadFileTool: AgentTool {
 
 // MARK: - Write File
 
-struct WriteFileTool: AgentTool {
+nonisolated struct WriteFileTool: AgentTool {
     let name = "write_file"
     let description = "Write content to a file. Creates if missing, overwrites if exists."
     let parameters = [
@@ -154,7 +157,7 @@ struct WriteFileTool: AgentTool {
 
 // MARK: - Move File
 
-struct MoveFileTool: AgentTool {
+nonisolated struct MoveFileTool: AgentTool {
     let name = "move_file"
     let description = "Move or rename a file/directory."
     let parameters = [
@@ -189,7 +192,7 @@ struct MoveFileTool: AgentTool {
 
 // MARK: - Copy File
 
-struct CopyFileTool: AgentTool {
+nonisolated struct CopyFileTool: AgentTool {
     let name = "copy_file"
     let description = "Copy a file or directory."
     let parameters = [
@@ -224,7 +227,7 @@ struct CopyFileTool: AgentTool {
 
 // MARK: - Delete File (Trash)
 
-struct DeleteFileTool: AgentTool {
+nonisolated struct DeleteFileTool: AgentTool {
     let name = "delete_file"
     let description = "Delete a file by moving it to Trash (recoverable)."
     let parameters = [
@@ -252,7 +255,7 @@ struct DeleteFileTool: AgentTool {
 
 // MARK: - Search Files
 
-struct SearchFilesTool: AgentTool {
+nonisolated struct SearchFilesTool: AgentTool {
     let name = "search_files"
     let description = "Search for files by name within a directory. Supports wildcards (*.pdf)."
     let parameters = [
@@ -262,6 +265,7 @@ struct SearchFilesTool: AgentTool {
     ]
     let requiredParameters = ["directory", "query"]
     let requiresConfirmation = false
+    let isReadOnly = true
     
     func execute(arguments: [String: String]) async throws -> ToolResult {
         guard let directory = arguments["directory"], let query = arguments["query"] else {
@@ -274,24 +278,57 @@ struct SearchFilesTool: AgentTool {
         guard fm.fileExists(atPath: expanded) else {
             return ToolResult(success: false, output: "Error: Directory not found: \(directory)")
         }
+
+        // Bounded, cloud-safe walk. The old path-based enumerator recursed into
+        // ~/Library, .git, node_modules, and — fatally — iCloud/Dropbox
+        // file-provider mounts, where enumeration blocks on the provider
+        // daemon: a query with few matches scanned the entire home tree,
+        // ballooning memory and hanging the tool.
+        let skipNames: Set<String> = ["node_modules", ".git", "DerivedData", "Pods", ".build",
+                                      "__pycache__", "venv", ".venv", ".Trash", "Library"]
+        let rootURL = URL(fileURLWithPath: expanded)
+        let cloudRoots = [
+            fm.homeDirectoryForCurrentUser.appendingPathComponent("Library/Mobile Documents").path,
+            fm.homeDirectoryForCurrentUser.appendingPathComponent("Library/CloudStorage").path,
+        ]
+        let maxEntriesScanned = 200_000
+        var scanned = 0
+        var hitScanCap = false
         var matches: [(path: String, size: Int64, date: Date?)] = []
-        if let enumerator = fm.enumerator(atPath: expanded) {
-            while let file = enumerator.nextObject() as? String {
+
+        let keys: [URLResourceKey] = [.isDirectoryKey, .fileSizeKey, .contentModificationDateKey]
+        if let enumerator = fm.enumerator(at: rootURL, includingPropertiesForKeys: keys,
+                                          options: [.skipsHiddenFiles, .skipsPackageDescendants]) {
+            while let url = enumerator.nextObject() as? URL {
+                scanned += 1
+                if scanned > maxEntriesScanned { hitScanCap = true; break }
                 guard matches.count < maxResults else { break }
-                let fileName = (file as NSString).lastPathComponent
-                if matchesQuery(fileName: fileName, query: query) {
-                    let fullPath = (expanded as NSString).appendingPathComponent(file)
-                    let attrs = try? fm.attributesOfItem(atPath: fullPath)
-                    matches.append((file, attrs?[.size] as? Int64 ?? 0, attrs?[.modificationDate] as? Date))
+
+                let values = try? url.resourceValues(forKeys: Set(keys))
+                if values?.isDirectory == true {
+                    let name = url.lastPathComponent
+                    if skipNames.contains(name) || cloudRoots.contains(where: { url.path.hasPrefix($0) }) {
+                        enumerator.skipDescendants()
+                    }
+                    continue
+                }
+                if matchesQuery(fileName: url.lastPathComponent, query: query) {
+                    let relative = String(url.path.dropFirst(expanded.count).drop(while: { $0 == "/" }))
+                    matches.append((relative, Int64(values?.fileSize ?? 0), values?.contentModificationDate))
                 }
             }
         }
+
         if matches.isEmpty {
-            return ToolResult(success: true, output: "No files matching '\(query)' in \(directory)")
+            let note = hitScanCap ? " (stopped after scanning \(maxEntriesScanned) entries — try a more specific directory)" : ""
+            return ToolResult(success: true, output: "No files matching '\(query)' in \(directory)\(note)")
         }
         var output = "Found \(matches.count) file(s) matching '\(query)':\n\n"
         for m in matches {
             output += "\(fileIcon(for: m.path)) \(m.path)  [\(formatBytes(m.size))]  \(m.date.map { formatDate($0) } ?? "")\n"
+        }
+        if hitScanCap {
+            output += "\n(Search stopped after \(maxEntriesScanned) entries — results may be incomplete; try a more specific directory.)"
         }
         return ToolResult(success: true, output: output)
     }
@@ -309,7 +346,7 @@ struct SearchFilesTool: AgentTool {
 
 // MARK: - Get File Info
 
-struct GetFileInfoTool: AgentTool {
+nonisolated struct GetFileInfoTool: AgentTool {
     let name = "get_file_info"
     let description = "Get detailed info about a file: size, dates, type."
     let parameters = [
@@ -317,6 +354,7 @@ struct GetFileInfoTool: AgentTool {
     ]
     let requiredParameters = ["path"]
     let requiresConfirmation = false
+    let isReadOnly = true
     
     func execute(arguments: [String: String]) async throws -> ToolResult {
         guard let path = arguments["path"] else {
@@ -348,7 +386,7 @@ struct GetFileInfoTool: AgentTool {
 
 // MARK: - Create Directory
 
-struct CreateDirectoryTool: AgentTool {
+nonisolated struct CreateDirectoryTool: AgentTool {
     let name = "create_directory"
     let description = "Create a new directory. Creates intermediate directories if needed."
     let parameters = [
@@ -437,7 +475,7 @@ nonisolated func formatDate(_ date: Date) -> String {
 
 import PDFKit
 
-struct ReadPDFTool: AgentTool {
+nonisolated struct ReadPDFTool: AgentTool {
     let name = "read_pdf"
     let description = "Extract text content from a PDF file. Use this instead of read_file for .pdf files."
     let parameters = [
@@ -447,6 +485,7 @@ struct ReadPDFTool: AgentTool {
     ]
     let requiredParameters = ["path"]
     let requiresConfirmation = false
+    let isReadOnly = true
 
     func execute(arguments: [String: String]) async throws -> ToolResult {
         guard let path = arguments["path"] else {
