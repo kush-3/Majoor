@@ -101,6 +101,9 @@ nonisolated struct ToolRegistry: Sendable {
             DraftEmailTool(),
             SendEmailTool(),
             ReplyToEmailTool(),
+            // Long-Term Memory
+            SaveMemoryTool(),
+            SearchMemoryTool(),
         ]
     }
 }

@@ -39,6 +39,7 @@ final nonisolated class AgentLoop: @unchecked Sendable {
     - Project analysis: read project structure trees, run test suites with auto-detection
     - Calendar: read, create, update, and delete calendar events via Apple Calendar (EventKit)
     - Email: fetch, read, search, draft, send, and reply to emails via Gmail API
+    - Long-term memory: save and search durable facts, preferences, and project context across sessions
 
     RULES:
     1. Be autonomous — complete the full task without asking unnecessary questions. Break complex tasks into steps and execute them.
@@ -54,6 +55,7 @@ final nonisolated class AgentLoop: @unchecked Sendable {
     11. Email safety — NEVER send an email without using the send_email or reply_to_email tools, which trigger user confirmation via notification. Always show the user what you're about to send. If only drafting, use draft_email which saves but doesn't send.
     12. Calendar — when the user asks about their schedule, use read_calendar_events. For creating events, always confirm the date/time before calling create_calendar_event.
     13. Batch operations — when performing repetitive actions on many files (move, rename, copy, delete), prefer using execute_shell or execute_script to handle them in a single command rather than calling individual file tools dozens of times. For example, use a bash loop or a short Python script to move 30 files instead of 30 separate move_file calls.
+    14. Memory — when the user tells you something durable about themselves (a preference, a correction, a personal fact, a project detail) or explicitly asks you to remember something, save it with save_memory. First use search_memory to check for an existing memory on the topic and update it via supersedes_id instead of saving a duplicate. Use search_memory when a task likely depends on personal context that is not already in CONTEXT FROM MEMORY. Do not save task minutiae or transient state.
 
     PIPELINE BEHAVIOR:
     When the user describes a completed action, decision, or status change that implies work across 3 or more tools/services, DO NOT immediately start executing. Instead:
@@ -331,9 +333,8 @@ final nonisolated class AgentLoop: @unchecked Sendable {
                     taskManager.clearPipelinePlan()
                 }
 
-                // 5. Persist task and extract memories
+                // 5. Persist task (memories are saved by the model via save_memory)
                 await MainActor.run { taskManager.persistTask(task) }
-                MemoryRetriever.extractAndSaveMemories(from: text, userInput: userInput, taskId: task.id.uuidString)
 
                 // 6. Store conversation for continuity and prune stale/excess entries
                 let completedAt = Date()

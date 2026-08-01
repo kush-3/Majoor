@@ -35,13 +35,13 @@ The central brain. Each user command flows through:
 2. **Route** → `ModelRouter` hybrid routing: keyword fast path (confidence score ≥ 2) maps category to model (Opus for code/research, Sonnet for general/email); otherwise a Haiku classification call decides the model + MCP tool sets
 3. **Inject memories** → `MemoryRetriever` searches SQLite for relevant past context, adds to system prompt
 4. **LLM loop** (max 75 iterations) → Call Claude API → handle text response or execute tool calls (raw content blocks — text/tool_use/thinking/redacted_thinking — round-tripped verbatim on replay) → feed results back
-5. **Persist** → Save task to SQLite, extract memories from conversation
+5. **Persist** → Save task to SQLite (memories are saved by the model itself via the save_memory tool)
 
 The agent loop is `nonisolated` and runs off the main thread. UI updates go through `MainActor.run`.
 
 ### Tool System (`Tools/`)
 
-35 tools across 6 files, registered via `ToolRegistry.defaultTools()`.
+37 tools across 7 files, registered via `ToolRegistry.defaultTools()`.
 
 All tools conform to `AgentTool` protocol (`ToolProtocol.swift`):
 - `name`, `description`, `parameters` → converted to Anthropic tool schema automatically
@@ -384,7 +384,7 @@ Location:
 Tools/
 ```
 
-35 tools across 6 files.
+37 tools across 7 files.
 
 All tools conform to:
 

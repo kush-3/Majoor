@@ -63,6 +63,12 @@ nonisolated final class MemoryStore: @unchecked Sendable {
         }
     }
 
+    func memory(id: String) throws -> Memory? {
+        try db.read { db in
+            try Memory.fetchOne(db, key: id)
+        }
+    }
+
     func memoryCount() throws -> Int {
         try db.read { db in
             try Memory.fetchCount(db)
