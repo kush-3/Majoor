@@ -235,6 +235,118 @@ nonisolated struct RunTestsTool: AgentTool {
 
 // MARK: - Shared Shell Runner
 
+/// Streams a pipe into capped head + rolling-tail buffers (512 KB each) via
+/// readabilityHandler — its own GCD queue, not the cooperative pool. The pipe is
+/// always drained so the child never blocks on a full buffer, and only the
+/// middle of oversized output is discarded: the tail is kept because that's
+/// where build/test failure summaries print. A runaway command previously
+/// ballooned the app to gigabytes by buffering its entire output. EOF is exposed
+/// as a DispatchGroup so callers can wait with a deadline — a background
+/// grandchild that inherited the pipe and never exits must not hang the agent loop.
+private nonisolated final class CappedPipeCapture: @unchecked Sendable {
+    private let lock = NSLock()
+    private var head = Data()
+    private var tail = Data()
+    private var totalBytes = 0
+    private var finished = false
+    private let headCap: Int
+    private let tailCap: Int
+    private let handle: FileHandle
+    let eofGroup = DispatchGroup()
+
+    init(pipe: Pipe, headCap: Int = 512_000, tailCap: Int = 512_000) {
+        self.headCap = headCap
+        self.tailCap = tailCap
+        self.handle = pipe.fileHandleForReading
+        eofGroup.enter()
+        handle.readabilityHandler = { [weak self] h in
+            guard let self else { return }
+            let chunk = h.availableData
+            if chunk.isEmpty {
+                self.finishReading(keepDraining: false)
+            } else {
+                self.append(chunk)
+            }
+        }
+    }
+
+    private func append(_ chunk: Data) {
+        lock.lock()
+        defer { lock.unlock() }
+        totalBytes += chunk.count
+        let headRoom = headCap - head.count
+        if headRoom >= chunk.count {
+            head.append(chunk)
+            return
+        }
+        if headRoom > 0 { head.append(chunk.prefix(headRoom)) }
+        tail.append(chunk.dropFirst(max(0, headRoom)))
+        // Evict lazily at 2× cap to amortize the copy. Data(…) forces a real
+        // copy — a bare .suffix() slice would share (and keep growing) the old
+        // backing store, silently retaining the entire stream.
+        if tail.count > tailCap * 2 {
+            tail = Data(tail.suffix(tailCap))
+        }
+    }
+
+    /// EOF removes the handler. The deadline path (keepDraining) instead swaps
+    /// in a discard-only handler that holds the pipe open until the writer
+    /// exits — otherwise a deliberately backgrounded child (`npm run dev &`)
+    /// would be SIGPIPE-killed on its next write when the read end closes.
+    private func finishReading(keepDraining: Bool) {
+        lock.lock()
+        let alreadyFinished = finished
+        finished = true
+        lock.unlock()
+        guard !alreadyFinished else { return }
+        if keepDraining {
+            let handle = self.handle
+            handle.readabilityHandler = { _ in
+                if handle.availableData.isEmpty {
+                    handle.readabilityHandler = nil
+                }
+            }
+        } else {
+            handle.readabilityHandler = nil
+        }
+        eofGroup.leave()
+    }
+
+    /// Stop capturing (idempotent) and return the captured text plus how many
+    /// middle bytes were discarded. Pass abandon=true only when the process
+    /// never launched (there is no writer to keep the pipe open for).
+    func settle(abandon: Bool = false) -> (text: String, droppedBytes: Int) {
+        finishReading(keepDraining: !abandon)
+        lock.lock()
+        defer { lock.unlock() }
+        if tail.count > tailCap { tail = Data(tail.suffix(tailCap)) }
+        let dropped = totalBytes - head.count - tail.count
+        var data = head
+        if !tail.isEmpty {
+            // dropped == 0 means head and tail are contiguous — no marker
+            if dropped > 0 {
+                data.append(Data("\n[... middle of output omitted ...]\n".utf8))
+            }
+            data.append(tail)
+        }
+        let text = String(data: data, encoding: .utf8) ?? String(decoding: data, as: UTF8.self)
+        return (text, dropped)
+    }
+}
+
+/// Resume-once guard for continuations raced between multiple completion paths.
+private nonisolated final class OnceFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var taken = false
+    func tryTake() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        if taken { return false }
+        taken = true
+        return true
+    }
+}
+
 nonisolated func runShellCommand(_ command: String, workingDirectory: String, timeout: TimeInterval) async -> ToolResult {
     MajoorLogger.log("🐚 Shell: \(command) (in \(workingDirectory))")
 
@@ -255,28 +367,29 @@ nonisolated func runShellCommand(_ command: String, workingDirectory: String, ti
     process.standardOutput = stdoutPipe
     process.standardError = stderrPipe
 
+    // Install capture before launch so no early output is missed
+    let stdoutCapture = CappedPipeCapture(pipe: stdoutPipe)
+    let stderrCapture = CappedPipeCapture(pipe: stderrPipe)
+
     do {
         try process.run()
     } catch {
+        _ = stdoutCapture.settle(abandon: true)
+        _ = stderrCapture.settle(abandon: true)
         return ToolResult(success: false, output: "Failed to start process: \(error.localizedDescription)")
     }
 
-    // Timeout handling
+    // Timeout: SIGTERM the zsh wrapper, then SIGKILL if it ignores the request
     let timeoutTask = Task {
         try await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
         if process.isRunning {
             process.terminate()
         }
+        try await Task.sleep(nanoseconds: 5_000_000_000)
+        if process.isRunning {
+            kill(process.processIdentifier, SIGKILL)
+        }
     }
-
-    // Read pipes concurrently on non-cooperative threads to avoid >64KB deadlock
-    async let stdoutRead: Data = Task.detached {
-        stdoutPipe.fileHandleForReading.readDataToEndOfFile()
-    }.value
-    async let stderrRead: Data = Task.detached {
-        stderrPipe.fileHandleForReading.readDataToEndOfFile()
-    }.value
-    let (stdoutData, stderrData) = await (stdoutRead, stderrRead)
 
     // Wait for process exit without blocking a cooperative thread.
     // Set terminationHandler unconditionally — Foundation calls it retroactively
@@ -286,8 +399,26 @@ nonisolated func runShellCommand(_ command: String, workingDirectory: String, ti
     }
     timeoutTask.cancel()
 
-    let stdout = String(data: stdoutData, encoding: .utf8) ?? ""
-    let stderr = String(data: stderrData, encoding: .utf8) ?? ""
+    // Wait for both streams to reach EOF, but only briefly now that the process
+    // has exited — a grandchild that inherited the pipe (e.g. `something &`)
+    // would otherwise hold the read open indefinitely.
+    await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+        let once = OnceFlag()
+        let bothStreams = DispatchGroup()
+        bothStreams.enter()
+        stdoutCapture.eofGroup.notify(queue: .global()) { bothStreams.leave() }
+        bothStreams.enter()
+        stderrCapture.eofGroup.notify(queue: .global()) { bothStreams.leave() }
+        bothStreams.notify(queue: .global()) {
+            if once.tryTake() { continuation.resume() }
+        }
+        DispatchQueue.global().asyncAfter(deadline: .now() + 2.0) {
+            if once.tryTake() { continuation.resume() }
+        }
+    }
+
+    let (stdout, stdoutDropped) = stdoutCapture.settle()
+    let (stderr, stderrDropped) = stderrCapture.settle()
 
     let exitCode = process.terminationStatus
     let success = exitCode == 0
@@ -298,6 +429,10 @@ nonisolated func runShellCommand(_ command: String, workingDirectory: String, ti
     }
     if !stderr.isEmpty {
         output += output.isEmpty ? stderr : "\n--- stderr ---\n\(stderr)"
+    }
+    let dropped = stdoutDropped + stderrDropped
+    if dropped > 0 {
+        output += "\n[... output exceeded the 1 MB capture limit; \(dropped) additional bytes were discarded ...]"
     }
     if output.isEmpty {
         output = success ? "(no output)" : "Process exited with code \(exitCode)"

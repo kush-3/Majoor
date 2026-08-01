@@ -81,15 +81,40 @@ struct ReadFileTool: AgentTool {
         if expanded.lowercased().hasSuffix(".pdf") {
             return ToolResult(success: false, output: "This is a PDF file. Use the read_pdf tool instead of read_file.")
         }
-        
+
+        // Refuse huge or special files before loading: String(contentsOfFile:)
+        // buffers the whole file (and the line split duplicates it), so a big
+        // log would balloon the app by gigabytes — and a FIFO reports size 0
+        // then blocks open() forever, hanging the agent loop. Resolve symlinks
+        // first: attributesOfItem does not traverse them, and a rotation
+        // symlink to a huge log would otherwise report the link's own
+        // few-byte size and bypass this guard.
+        let resolved = (expanded as NSString).resolvingSymlinksInPath
+        let attrs = try? FileManager.default.attributesOfItem(atPath: resolved)
+        if let type = attrs?[.type] as? FileAttributeType, type != .typeRegular {
+            return ToolResult(success: false, output: "Error: Not a regular file (\(type.rawValue)) — refusing to read.")
+        }
+        if let size = attrs?[.size] as? Int, size > 5_000_000 {
+            return ToolResult(success: false, output: "Error: File is \(size / 1_000_000) MB — too large to read directly. Use execute_shell with head/tail/grep to extract the part you need.")
+        }
+
         do {
             let content = try String(contentsOfFile: expanded, encoding: .utf8)
             let lines = content.components(separatedBy: .newlines)
+            var output: String
             if lines.count > maxLines {
                 let truncated = lines.prefix(maxLines).joined(separator: "\n")
-                return ToolResult(success: true, output: "File: \(path) (\(lines.count) lines, showing \(maxLines)):\n\n\(truncated)\n\n... [\(lines.count - maxLines) more]")
+                output = "File: \(path) (\(lines.count) lines, showing \(maxLines)):\n\n\(truncated)\n\n... [\(lines.count - maxLines) more]"
+            } else {
+                output = "File: \(path) (\(lines.count) lines):\n\n\(content)"
             }
-            return ToolResult(success: true, output: "File: \(path) (\(lines.count) lines):\n\n\(content)")
+            // Line caps don't bound single-line files (minified JS, JSONL) — cap
+            // characters too, just under the agent loop's 30k tool-result clamp
+            // so exactly one truncation ever applies.
+            if output.count > 25_000 {
+                output = String(output.prefix(25_000)) + "\n... [truncated at 25k characters — file has very long lines; use execute_shell with grep/cut to extract specifics] ..."
+            }
+            return ToolResult(success: true, output: output)
         } catch {
             return ToolResult(success: false, output: "Error reading file: \(error.localizedDescription)")
         }

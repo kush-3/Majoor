@@ -12,6 +12,8 @@ final nonisolated class AgentLoop: @unchecked Sendable {
     private let tools: [any AgentTool]
     private let taskManager: TaskManager
     private let maxIterations = 75
+    /// Cap on any single tool result entering the conversation (chars, ≈7.5k tokens)
+    private let maxToolResultChars = 30_000
     private let conversationTimeoutSeconds: TimeInterval = 600 // 10 minutes
     private let maxConversationEntries = 5
     private let maxResponseTextLength = 1000
@@ -157,6 +159,10 @@ final nonisolated class AgentLoop: @unchecked Sendable {
             }
         }
         messages.append(AnthropicMessage(role: "user", content: .string(userInput)))
+        // Overflow recovery may drop seeded history pairs from the front, but
+        // only as many as were actually seeded — string pairs further in (a
+        // pipeline plan + approval) contain the task and must survive.
+        var seededHistoryPairs = recentConversations.count
 
         var totalInputTokens = 0
         var totalOutputTokens = 0
@@ -186,7 +192,7 @@ final nonisolated class AgentLoop: @unchecked Sendable {
                 // Context overflow: try to recover by trimming history
                 if case .contextOverflow = error {
                     MajoorLogger.log("⚠️ Context overflow — attempting recovery by trimming history")
-                    let trimmed = trimConversationForRecovery(&messages)
+                    let trimmed = trimConversationForRecovery(&messages, seededHistoryPairs: &seededHistoryPairs)
                     if trimmed {
                         let recoveryStep = TaskStep(timestamp: Date(), type: .thinking, description: "Context too large — trimming history and retrying...", detail: nil)
                         await MainActor.run { task.steps.append(recoveryStep) }
@@ -487,7 +493,7 @@ final nonisolated class AgentLoop: @unchecked Sendable {
 
         for call in toolCalls {
             MajoorLogger.log("🔧 Tool: \(call.toolName)")
-            let callStep = TaskStep(timestamp: Date(), type: .toolCall, description: "Calling \(call.toolName)", detail: call.arguments.map { "\($0.key): \($0.value)" }.joined(separator: ", "))
+            let callStep = TaskStep(timestamp: Date(), type: .toolCall, description: "Calling \(call.toolName)", detail: String(call.arguments.map { "\($0.key): \($0.value)" }.joined(separator: ", ").prefix(1000)))
             await MainActor.run {
                 task.steps.append(callStep)
                 // Update pipeline step tracking if executing a pipeline
@@ -552,6 +558,17 @@ final nonisolated class AgentLoop: @unchecked Sendable {
                 output = "Error: Tool '\(call.toolName)' not found"
             }
 
+            // Defense-in-depth: no single tool result may balloon the conversation.
+            // MCP servers and some tools return unbounded payloads, and every
+            // character kept here is re-sent to the API on every remaining iteration.
+            var boundedOutput = output
+            if boundedOutput.count > maxToolResultChars {
+                let head = String(boundedOutput.prefix(maxToolResultChars * 3 / 4))
+                let tail = String(boundedOutput.suffix(maxToolResultChars / 4))
+                boundedOutput = "\(head)\n\n... [tool output truncated: \(output.count - maxToolResultChars) of \(output.count) characters omitted] ...\n\n\(tail)"
+                MajoorLogger.log("✂️ \(call.toolName) output capped at \(maxToolResultChars) chars (was \(output.count))")
+            }
+
             // Collect brief summary for conversation continuity
             let argsPreview = call.arguments.map { "\($0.key): \($0.value)" }.joined(separator: ", ")
             summaries.append("• \(call.toolName)(\(String(argsPreview.prefix(100)))) → \(String(output.prefix(150)))")
@@ -572,7 +589,7 @@ final nonisolated class AgentLoop: @unchecked Sendable {
             }
 
             // Append user's confirmation feedback to the tool result so the LLM can adapt
-            var finalOutput = output
+            var finalOutput = boundedOutput
             if let feedback = confirmFeedback {
                 finalOutput += "\n[User note: \(feedback)]"
             }
@@ -713,28 +730,34 @@ final nonisolated class AgentLoop: @unchecked Sendable {
 
     // MARK: - Context Overflow Recovery
 
+    private static let recoveryTruncationMarker = "\n[... truncated for context recovery ...]"
+
     /// Attempts to reduce conversation size when context overflows.
-    /// Returns true if messages were trimmed (caller should retry), false if no further trimming possible.
-    private func trimConversationForRecovery(_ messages: inout [AnthropicMessage]) -> Bool {
-        // Strategy 1: Remove oldest conversation history pairs (keep at least the latest user message)
+    /// Returns true only if the conversation actually shrank (caller should retry),
+    /// false if no further trimming is possible.
+    private func trimConversationForRecovery(_ messages: inout [AnthropicMessage], seededHistoryPairs: inout Int) -> Bool {
         guard messages.count > 1 else { return false }
 
-        // Find tool_result blocks and truncate their content to 500 chars
-        var didTruncate = false
+        // Strategy 1: truncate large tool_result blocks to 500 chars. Only blocks
+        // that actually shrink count as progress: an already-truncated block is
+        // 500 chars + marker, and re-"truncating" it to the identical string must
+        // not report success, or recovery livelocks — retrying an unchanged
+        // payload until the iteration budget is gone.
+        var didShrink = false
         for i in 0..<messages.count {
             if case .blocks(var blocks) = messages[i].content {
                 var modified = false
                 for j in 0..<blocks.count {
                     if blocks[j].type == "tool_result",
                        let content = blocks[j].content,
-                       content.count > 500 {
+                       content.count > 500 + Self.recoveryTruncationMarker.count {
                         blocks[j] = AnthropicContentBlock(
                             type: "tool_result", text: nil, id: nil, name: nil,
                             input: nil, toolUseId: blocks[j].toolUseId,
-                            content: String(content.prefix(500)) + "\n[... truncated ...]"
+                            content: String(content.prefix(500)) + Self.recoveryTruncationMarker
                         )
                         modified = true
-                        didTruncate = true
+                        didShrink = true
                     }
                 }
                 if modified {
@@ -742,18 +765,48 @@ final nonisolated class AgentLoop: @unchecked Sendable {
                 }
             }
         }
-        if didTruncate {
+        if didShrink {
             MajoorLogger.log("✂️ Truncated tool results to 500 chars")
             return true
         }
 
-        // Strategy 2: Remove the oldest pair of messages (user + assistant) if there are conversation history pairs
-        if messages.count > 3 {
-            messages.removeFirst(2) // Remove oldest user+assistant pair
-            MajoorLogger.log("✂️ Removed oldest conversation pair, \(messages.count) messages remain")
-            return true
+        // Strategy 2: drop the oldest exchange without losing the task goal or
+        // orphaning a tool_result. The loop maintains strict user/assistant
+        // alternation; string turns are seeded history / plan-approval text,
+        // while .blocks turns are tool_use/tool_result exchanges.
+        guard messages.count > 3 else { return false }
+        if seededHistoryPairs > 0, isStringContent(messages[0]), isStringContent(messages[1]),
+           lastStringUserIndex(messages) >= 2 {
+            // Front pair is genuinely seeded conversation history (the counter
+            // distinguishes it from a structurally identical task + pipeline
+            // plan/approval string pair, which must survive) and a later string
+            // user turn still anchors the goal — drop the oldest history pair.
+            messages.removeFirst(2)
+            seededHistoryPairs -= 1
+        } else if messages[1].role == "assistant", messages[2].role == "user" {
+            // Otherwise remove the exchange at [1, 2], preserving messages[0]
+            // (the goal). An adjacent assistant+user pair is self-contained
+            // (a tool_use turn plus its tool_result answer), so removing it
+            // keeps both alternation and tool pairing intact. The old code
+            // removed [0, 1] instead, which lost the task statement AND left a
+            // leading orphaned tool_result the API rejects with a 400.
+            messages.removeSubrange(1...2)
+        } else {
+            return false
         }
+        MajoorLogger.log("✂️ Removed oldest exchange, \(messages.count) messages remain")
+        return true
+    }
 
+    private func isStringContent(_ message: AnthropicMessage) -> Bool {
+        if case .string = message.content { return true }
         return false
+    }
+
+    private func lastStringUserIndex(_ messages: [AnthropicMessage]) -> Int {
+        for i in stride(from: messages.count - 1, through: 0, by: -1) {
+            if messages[i].role == "user" && isStringContent(messages[i]) { return i }
+        }
+        return -1
     }
 }

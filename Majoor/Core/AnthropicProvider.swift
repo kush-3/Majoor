@@ -211,7 +211,8 @@ final nonisolated class AnthropicProvider: LLMProvider, @unchecked Sendable {
                 if let err = try? JSONDecoder().decode(AnthropicError.self, from: data) {
                     let msg = err.error.message.lowercased()
                     if msg.contains("too many tokens") || msg.contains("token") && msg.contains("limit")
-                        || msg.contains("context length") || msg.contains("max tokens") {
+                        || msg.contains("context length") || msg.contains("max tokens")
+                        || msg.contains("prompt is too long") {
                         throw LLMError.contextOverflow
                     }
                     throw LLMError.apiError(err.error.message)
