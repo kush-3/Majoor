@@ -42,10 +42,12 @@ Click the menu bar icon to open the panel. Two tabs:
 - **Chat** — Streaming conversation interface
 
 ### Confirmations
-Sensitive actions (sending emails, deleting files/events) trigger an in-app confirmation with:
+Sensitive actions (sending emails, deleting files/events, pushes, scripts) trigger an in-app confirmation with:
 - Full context of what will happen
 - Text input for feedback ("send but change the subject to X")
 - Approve / Deny buttons
+
+A permission mode in Settings → General controls how much Majoor asks: **Manual** (every state-changing action), **Standard** (sensitive actions only — the default), or **Auto** (only sensitive actions your task didn't explicitly ask for).
 
 ### Pipelines
 Complex tasks spanning 3+ tools are proposed as numbered plans. You can:

@@ -8,7 +8,10 @@ nonisolated struct ToolResult: Sendable {
     let output: String
 }
 
-struct ToolParameter: Sendable {
+// nonisolated: constructed off-main (MCPToolBridge builds these on the MCP
+// actor's executor when bridging discovered tools) — without this the init is
+// MainActor-isolated under default isolation and traps runtime isolation checks
+nonisolated struct ToolParameter: Sendable {
     let name: String
     let type: String
     let description: String
@@ -29,8 +32,20 @@ protocol AgentTool: Sendable {
     var parameters: [ToolParameter] { get }
     var requiredParameters: [String] { get }
     var requiresConfirmation: Bool { get }
-    
+    /// True for tools that cannot change any state — they never prompt, even
+    /// in Manual permission mode. Defaults to false (see extension below).
+    var isReadOnly: Bool { get }
+
     func execute(arguments: [String: String]) async throws -> ToolResult
+}
+
+extension AgentTool {
+    var isReadOnly: Bool { false }
+
+    /// Optional human-readable preview for confirmation prompts — used when a
+    /// raw argument dump would be meaningless to the user (e.g. an opaque
+    /// event_id). Return nil to use the default arguments summary.
+    func confirmationPreview(arguments: [String: String]) async -> String? { nil }
 }
 
 extension AgentTool {

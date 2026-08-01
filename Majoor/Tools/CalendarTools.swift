@@ -133,6 +133,7 @@ nonisolated struct ReadCalendarEventsTool: AgentTool {
     ]
     let requiredParameters: [String] = []
     let requiresConfirmation = false
+    let isReadOnly = true
 
     func execute(arguments: [String: String]) async throws -> ToolResult {
         try await ensureCalendarAccess()
@@ -296,21 +297,13 @@ nonisolated struct DeleteCalendarEventTool: AgentTool {
         }
 
         let title = event.title ?? "Untitled"
-        let df = DateFormatter()
-        df.dateStyle = .medium
-        df.timeStyle = .short
 
-        // Request user confirmation
-        let confirmResult = await ConfirmationManager.shared.requestConfirmation(
-            title: "Delete Calendar Event?",
-            body: "\(title)\n\(df.string(from: event.startDate)) – \(df.string(from: event.endDate))",
-            category: NotificationManager.confirmDeleteCategory
-        )
-
-        guard confirmResult.approved else {
-            let feedbackNote = confirmResult.feedback.map { " Feedback: \($0)" } ?? ""
-            return ToolResult(success: false, output: "User declined to delete event '\(title)'.\(feedbackNote)")
-        }
+        // Confirmation is handled by the agent loop's ConfirmationPolicy
+        // (requiresConfirmation + permission mode) — a second, tool-internal
+        // prompt here would double-ask in Manual/Standard and, in Auto, fire a
+        // notification-only prompt with no in-app sheet and no timeout.
+        // confirmationPreview(arguments:) below supplies the human-readable
+        // event context that prompt shows.
 
         do {
             try sharedEventStore.remove(event, span: .thisEvent)
@@ -318,5 +311,14 @@ nonisolated struct DeleteCalendarEventTool: AgentTool {
         } catch {
             return ToolResult(success: false, output: "Failed to delete event: \(error.localizedDescription)")
         }
+    }
+
+    func confirmationPreview(arguments: [String: String]) async -> String? {
+        guard let eventId = arguments["event_id"],
+              let event = sharedEventStore.event(withIdentifier: eventId) else { return nil }
+        let df = DateFormatter()
+        df.dateStyle = .medium
+        df.timeStyle = .short
+        return "Delete event '\(event.title ?? "Untitled")'\n\(df.string(from: event.startDate)) – \(df.string(from: event.endDate))"
     }
 }

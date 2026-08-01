@@ -64,6 +64,7 @@ nonisolated struct SearchMemoryTool: AgentTool {
     ]
     let requiredParameters = ["query"]
     let requiresConfirmation = false
+    let isReadOnly = true
 
     func execute(arguments: [String: String]) async throws -> ToolResult {
         guard let query = arguments["query"]?.trimmingCharacters(in: .whitespacesAndNewlines),

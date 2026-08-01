@@ -50,8 +50,11 @@ struct ConfirmationSheet: View {
                             .fixedSize(horizontal: false, vertical: true)
                     }
 
-                    // Pipeline steps
-                    if taskManager.pendingPipelinePlan != nil {
+                    // Pipeline steps — only while the plan is awaiting approval.
+                    // Mid-execution sensitive confirmations must not show live
+                    // toggles: the skip list was already sent to the model and
+                    // flipping enabled here would only corrupt step tracking.
+                    if taskManager.pendingPipelinePlan != nil && !taskManager.pipelineExecuting {
                         Rectangle()
                             .fill(Color.primary.opacity(0.06))
                             .frame(height: 0.5)
@@ -103,7 +106,7 @@ struct ConfirmationSheet: View {
 
                 // Action buttons — Apple style: secondary left, primary right
                 HStack(spacing: DT.Spacing.sm) {
-                    if taskManager.pendingPipelinePlan != nil {
+                    if taskManager.pendingPipelinePlan != nil && !taskManager.pipelineExecuting {
                         let enabled = taskManager.pipelineSteps.filter(\.enabled).count
                         let total = taskManager.pipelineSteps.count
                         Text("\(enabled)/\(total) steps")

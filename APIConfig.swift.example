@@ -20,10 +20,10 @@ import Foundation
 
 struct APIConfig {
     // MARK: - Keychain Keys
-    static let keychainClaudeKey = "majoor_anthropic_api_key"
-    static let keychainTavilyKey = "majoor_tavily_api_key"
-    static let keychainGoogleClientId = "majoor_google_client_id"
-    static let keychainGoogleClientSecret = "majoor_google_client_secret"
+    nonisolated static let keychainClaudeKey = "majoor_anthropic_api_key"
+    nonisolated static let keychainTavilyKey = "majoor_tavily_api_key"
+    nonisolated static let keychainGoogleClientId = "majoor_google_client_id"
+    nonisolated static let keychainGoogleClientSecret = "majoor_google_client_secret"
 
     // MARK: - Google OAuth (app-level credentials, not per-user)
     private static let appGoogleClientId = "YOUR_GOOGLE_OAUTH_CLIENT_ID.apps.googleusercontent.com"

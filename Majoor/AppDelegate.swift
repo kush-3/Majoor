@@ -213,6 +213,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     func stopRunningTask() {
         runningTaskHandle?.cancel()
         runningTaskHandle = nil
+        // Resolve any pending confirmation as denied — a stopped task must not
+        // leave its continuation suspended, and a stale prompt approved later
+        // must not execute a tool for a dead task.
+        Task { await ConfirmationManager.shared.denyAll() }
+        taskManager.clearConfirmation()
         taskManager.isTaskRunning = false
         statusBarController?.setState(.idle)
         // Mark the running task as failed

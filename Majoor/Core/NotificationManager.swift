@@ -12,13 +12,15 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate, @un
     static let shared = NotificationManager()
 
     // MARK: - Category IDs
-    static let taskCompleteCategory = "TASK_COMPLETE"
-    static let taskFailedCategory   = "TASK_FAILED"
-    static let confirmEmailCategory = "CONFIRM_EMAIL"
-    static let confirmDeleteCategory = "CONFIRM_DELETE"
-    static let confirmGenericCategory = "CONFIRM_GENERIC"
-    static let pipelineConfirmCategory = "PIPELINE_CONFIRM"
-    static let authErrorCategory       = "AUTH_ERROR"
+    // nonisolated: these immutable identifiers are read from the nonisolated
+    // agent loop when picking confirmation categories
+    nonisolated static let taskCompleteCategory = "TASK_COMPLETE"
+    nonisolated static let taskFailedCategory   = "TASK_FAILED"
+    nonisolated static let confirmEmailCategory = "CONFIRM_EMAIL"
+    nonisolated static let confirmDeleteCategory = "CONFIRM_DELETE"
+    nonisolated static let confirmGenericCategory = "CONFIRM_GENERIC"
+    nonisolated static let pipelineConfirmCategory = "PIPELINE_CONFIRM"
+    nonisolated static let authErrorCategory       = "AUTH_ERROR"
 
     // MARK: - Action IDs
     static let actionView         = "ACTION_VIEW"
@@ -60,8 +62,11 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate, @un
         let keepAction = UNNotificationAction(identifier: Self.actionKeep, title: "Keep", options: [])
         let confirmDelete = UNNotificationCategory(identifier: Self.confirmDeleteCategory, actions: [deleteAction, keepAction], intentIdentifiers: [])
 
-        // Confirm generic: "Approve" + "Deny"
-        let confirmGeneric = UNNotificationCategory(identifier: Self.confirmGenericCategory, actions: [approve, deny], intentIdentifiers: [])
+        // Confirm generic: "Approve" + "Deny" — its own actions, not the email
+        // ones, so a calendar delete never shows a "Send" button
+        let genericApprove = UNNotificationAction(identifier: Self.actionApprove, title: "Approve", options: .foreground)
+        let genericDeny = UNNotificationAction(identifier: Self.actionDeny, title: "Deny", options: .destructive)
+        let confirmGeneric = UNNotificationCategory(identifier: Self.confirmGenericCategory, actions: [genericApprove, genericDeny], intentIdentifiers: [])
 
         // Pipeline confirm: "Go ahead" + "Cancel"
         let pipelineApprove = UNNotificationAction(identifier: Self.actionApprove, title: "Go ahead", options: .foreground)

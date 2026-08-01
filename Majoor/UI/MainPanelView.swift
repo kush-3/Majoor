@@ -26,17 +26,12 @@ struct MainPanelView: View {
                         ))
 
                 } else if let confirmation = taskManager.activeConfirmation {
-                    if taskManager.pendingPipelinePlan != nil && taskManager.pipelineExecuting {
-                        let taskId = taskManager.pendingPipelineTaskId
-                        let title = taskId.flatMap { id in taskManager.tasks.first(where: { $0.id == id })?.userInput } ?? "Pipeline"
-                        PipelineProgressView(title: String(title.prefix(50)))
-                            .environmentObject(taskManager)
-                            .transition(.opacity.combined(with: .scale(scale: 0.98)))
-                    } else {
-                        ConfirmationSheet(confirmation: confirmation)
-                            .environmentObject(taskManager)
-                            .transition(.opacity.combined(with: .scale(scale: 0.98)))
-                    }
+                    // A confirmation always wins over the pipeline progress view:
+                    // sensitive steps prompt even mid-pipeline, and the approve/
+                    // deny UI must never be covered.
+                    ConfirmationSheet(confirmation: confirmation)
+                        .environmentObject(taskManager)
+                        .transition(.opacity.combined(with: .scale(scale: 0.98)))
 
                 } else if taskManager.pipelineExecuting, let taskId = taskManager.pendingPipelineTaskId {
                     let title = taskManager.tasks.first(where: { $0.id == taskId })?.userInput ?? "Pipeline"

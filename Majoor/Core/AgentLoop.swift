@@ -54,10 +54,11 @@ final nonisolated class AgentLoop: @unchecked Sendable {
     8. Web research — when searching, synthesize results into a useful answer. Don't just dump raw search results. Fetch specific pages when you need deeper detail.
     9. Code changes — read the existing code first before modifying. Make minimal, focused changes. Run tests if a test command is available.
     10. File paths — support ~ for home directory. When the user mentions a relative path, assume it's relative to their home directory.
-    11. Email safety — NEVER send an email without using the send_email or reply_to_email tools, which trigger user confirmation via notification. Always show the user what you're about to send. If only drafting, use draft_email which saves but doesn't send.
+    11. Email safety — to send or reply, call send_email/reply_to_email directly with the complete final draft. The app itself shows the user a confirmation containing what will be sent, and they can approve, deny, or attach corrections. NEVER pause to ask permission in a text response and never end your turn waiting for a "yes" — call the tool and let the app ask. If the user only wants a draft, use draft_email which saves without sending. Write emails in the user's own voice with their natural sign-off — never sign as an assistant or add "on behalf of" phrasing unless asked.
     12. Calendar — when the user asks about their schedule, use read_calendar_events. For creating events, always confirm the date/time before calling create_calendar_event.
     13. Batch operations — when performing repetitive actions on many files (move, rename, copy, delete), prefer using execute_shell or execute_script to handle them in a single command rather than calling individual file tools dozens of times. For example, use a bash loop or a short Python script to move 30 files instead of 30 separate move_file calls.
     14. Memory — when the user tells you something durable about themselves (a preference, a correction, a personal fact, a project detail) or explicitly asks you to remember something, save it with save_memory. First use search_memory to check for an existing memory on the topic and update it via supersedes_id instead of saving a duplicate. Use search_memory when a task likely depends on personal context that is not already in CONTEXT FROM MEMORY. Do not save task minutiae or transient state.
+    15. Confirmations — sensitive tools (sending email, deleting files or events, git push/PR, running scripts) automatically show the user an approve/deny prompt when their settings require it. Never ask for permission in a text response before calling a tool: call it, and the app will ask the user if needed. If the user denies, the tool result says so (often with feedback) — adapt and continue rather than retrying the same call.
 
     PIPELINE BEHAVIOR:
     When the user describes a completed action, decision, or status change that implies work across 3 or more tools/services, DO NOT immediately start executing. Instead:
@@ -65,7 +66,7 @@ final nonisolated class AgentLoop: @unchecked Sendable {
     2. Present a specific, numbered plan based on real data — not generic placeholders
     3. End with: "Want me to go ahead? %%PIPELINE_CONFIRM%%"
     4. WAIT for the user to respond before executing anything
-    5. Once approved, execute ALL steps without per-step confirmations
+    5. Once approved, execute ALL steps. Sensitive actions (sending email, deletions, pushes) may still ask the user directly — that is expected, continue after they respond
     6. Report a summary when complete
     For simple single-tool or two-tool tasks, just execute normally without the pipeline flow.
 
@@ -169,7 +170,6 @@ final nonisolated class AgentLoop: @unchecked Sendable {
         var iteration = 0
         var finalText = ""
         var toolSummaries: [String] = []
-        var pipelineApproved = false
 
         // 5. Agent loop
         while iteration < maxIterations {
@@ -288,7 +288,6 @@ final nonisolated class AgentLoop: @unchecked Sendable {
                     }
 
                     if confirmResult.approved {
-                        pipelineApproved = true
                         // Build approval message including which steps are disabled and user feedback
                         let skippedSteps = await MainActor.run { taskManager.pipelineSteps.enumerated().filter { !$0.element.enabled }.map { $0.offset + 1 } }
                         var approvalMsg = "User approved. Execute all steps now."
@@ -311,7 +310,6 @@ final nonisolated class AgentLoop: @unchecked Sendable {
                         MajoorLogger.log("✅ Pipeline approved — executing")
                         continue
                     } else {
-                        pipelineApproved = false
                         var denialMsg = "User declined."
                         if let feedback = confirmResult.feedback {
                             denialMsg += " User feedback: \(feedback)"
@@ -361,7 +359,7 @@ final nonisolated class AgentLoop: @unchecked Sendable {
                 return TaskResult(summary: summarize(text), steps: task.steps, tokensUsed: totalTokens)
 
             case .toolCalls(let calls, let rawContent):
-                let (aMsg, rMsg, summaries) = try await handleToolCalls(calls, task: task, assistantContent: rawContent, activeTools: activeTools, pipelineApproved: pipelineApproved)
+                let (aMsg, rMsg, summaries) = try await handleToolCalls(calls, task: task, assistantContent: rawContent, activeTools: activeTools, userInput: userInput)
                 messages.append(aMsg)
                 messages.append(rMsg)
                 toolSummaries.append(contentsOf: summaries)
@@ -399,7 +397,6 @@ final nonisolated class AgentLoop: @unchecked Sendable {
                     }
 
                     if confirmResult.approved {
-                        pipelineApproved = true
                         let skippedSteps = await MainActor.run { taskManager.pipelineSteps.enumerated().filter { !$0.element.enabled }.map { $0.offset + 1 } }
                         var approvalMsg = "User approved. Execute all steps now."
                         if !skippedSteps.isEmpty {
@@ -418,7 +415,6 @@ final nonisolated class AgentLoop: @unchecked Sendable {
                         messages.append(AnthropicMessage(role: "user", content: .string(approvalMsg)))
                         continue
                     } else {
-                        pipelineApproved = false
                         var denialMsg = "User declined."
                         if let feedback = confirmResult.feedback {
                             denialMsg += " User feedback: \(feedback)"
@@ -433,7 +429,7 @@ final nonisolated class AgentLoop: @unchecked Sendable {
                 }
 
                 MajoorLogger.log("📝 \(text.prefix(100))...")
-                let (aMsg, rMsg, summaries) = try await handleToolCalls(calls, task: task, assistantContent: rawContent, activeTools: activeTools, pipelineApproved: pipelineApproved)
+                let (aMsg, rMsg, summaries) = try await handleToolCalls(calls, task: task, assistantContent: rawContent, activeTools: activeTools, userInput: userInput)
                 messages.append(aMsg)
                 messages.append(rMsg)
                 toolSummaries.append(contentsOf: summaries)
@@ -478,7 +474,7 @@ final nonisolated class AgentLoop: @unchecked Sendable {
         task: AgentTask,
         assistantContent: [AnthropicContentBlock],
         activeTools: [any AgentTool],
-        pipelineApproved: Bool = false
+        userInput: String
     ) async throws -> (assistant: AnthropicMessage, result: AnthropicMessage, toolSummaries: [String]) {
 
         // Echo the response blocks back unchanged rather than rebuilding them from
@@ -492,6 +488,10 @@ final nonisolated class AgentLoop: @unchecked Sendable {
         var summaries: [String] = []
 
         for call in toolCalls {
+            // A stopped task must not execute the remaining tools in a batch —
+            // a denied mid-batch confirmation would otherwise fall through to
+            // the next (uncancellable, synchronous) tool call.
+            try Task.checkCancellation()
             MajoorLogger.log("🔧 Tool: \(call.toolName)")
             let callStep = TaskStep(timestamp: Date(), type: .toolCall, description: "Calling \(call.toolName)", detail: String(call.arguments.map { "\($0.key): \($0.value)" }.joined(separator: ", ").prefix(1000)))
             await MainActor.run {
@@ -507,17 +507,70 @@ final nonisolated class AgentLoop: @unchecked Sendable {
             let output: String
             var confirmFeedback: String? = nil  // User feedback from confirmation (if any)
             if let tool = activeTools.first(where: { $0.name == call.toolName }) {
-                // Skip per-tool confirmation if pipeline is approved
-                if tool.requiresConfirmation && !pipelineApproved {
+                // Normalize aliases BEFORE the policy gate — the model emits
+                // keys like "cmd" for "command", and gating on raw keys would
+                // let an aliased interpreter invocation dodge the prompt.
+                let normalizedArgs: [String: String]
+                if tool is MCPToolBridge {
+                    normalizedArgs = call.arguments
+                } else {
+                    normalizedArgs = normalizeArguments(call.arguments, for: tool)
+                    if normalizedArgs != call.arguments {
+                        MajoorLogger.log("🔄 Normalized args for \(call.toolName): \(call.arguments.keys.sorted()) → \(normalizedArgs.keys.sorted())")
+                    }
+                }
+
+                // Permission-mode policy. Sensitive actions prompt even inside
+                // an approved pipeline — one approval must not blanket-authorize
+                // outbound email or deletions.
+                if await ConfirmationPolicy.shouldConfirm(
+                    mode: PermissionMode.current,
+                    toolName: call.toolName,
+                    requiresConfirmation: tool.requiresConfirmation,
+                    isReadOnly: tool.isReadOnly,
+                    arguments: normalizedArgs,
+                    userInput: userInput
+                ) {
                     let confirmTitle = "Majoor — Confirm Action"
-                    let confirmBody = "\(call.toolName): \(call.arguments.map { "\($0.key)=\($0.value)" }.joined(separator: ", "))"
+                    // Deterministic body: identity-bearing keys first, values
+                    // capped individually — a long email body must never crowd
+                    // the recipient out of the approval prompt.
+                    let priorityKeys = ["to", "subject", "recipient", "path", "source", "destination", "event_id", "language", "command", "branch", "title", "query", "message"]
+                    // Identity-bearing values (who/where the action lands) get a
+                    // generous cap — a truncated recipient list would mean the
+                    // user approves an email without seeing all its recipients
+                    let identityKeys: Set<String> = ["to", "recipient", "cc", "bcc", "path", "source", "destination", "event_id"]
+                    let orderedArgs = normalizedArgs.sorted { a, b in
+                        let ia = priorityKeys.firstIndex(of: a.key) ?? Int.max
+                        let ib = priorityKeys.firstIndex(of: b.key) ?? Int.max
+                        return ia == ib ? a.key < b.key : ia < ib
+                    }
+                    // Content keys get a mid-size cap: the user is approving an
+                    // email/message partly on its body, so 160 chars is too blind
+                    let contentKeys: Set<String> = ["body", "subject", "message", "code"]
+                    let argsSummary = orderedArgs
+                        .map { arg -> String in
+                            let cap = identityKeys.contains(arg.key) ? 500 : (contentKeys.contains(arg.key) ? 400 : 160)
+                            return "\(arg.key)=\(String(arg.value.prefix(cap)))\(arg.value.count > cap ? "…" : "")"
+                        }
+                        .joined(separator: ", ")
+                    let preview = await tool.confirmationPreview(arguments: normalizedArgs)
+                    let confirmBody = preview ?? "\(call.toolName): \(String(argsSummary.prefix(1200)))\(argsSummary.count > 1200 ? " …" : "")"
+                    let confirmCategory: String
+                    if call.toolName.hasPrefix("delete_") {
+                        confirmCategory = NotificationManager.confirmDeleteCategory
+                    } else if call.toolName == "send_email" || call.toolName == "reply_to_email" {
+                        confirmCategory = NotificationManager.confirmEmailCategory
+                    } else {
+                        confirmCategory = NotificationManager.confirmGenericCategory
+                    }
                     let confirmResult = await ConfirmationManager.shared.requestConfirmation(
                         title: confirmTitle,
                         body: confirmBody,
-                        category: NotificationManager.confirmGenericCategory,
+                        category: confirmCategory,
                         onPending: { [taskManager] confirmId in
                             Task { @MainActor in
-                                taskManager.showConfirmation(id: confirmId, title: confirmTitle, body: confirmBody, category: NotificationManager.confirmGenericCategory)
+                                taskManager.showConfirmation(id: confirmId, title: confirmTitle, body: confirmBody, category: confirmCategory)
                                 NotificationCenter.default.post(name: .majoorOpenPanel, object: nil)
                             }
                         }
@@ -527,7 +580,15 @@ final nonisolated class AgentLoop: @unchecked Sendable {
                         let feedbackNote = confirmResult.feedback.map { " User feedback: \($0)" } ?? ""
                         output = "User declined to execute \(call.toolName).\(feedbackNote)"
                         let resultStep = TaskStep(timestamp: Date(), type: .toolResult, description: "Declined: \(call.toolName)", detail: confirmResult.feedback)
-                        await MainActor.run { task.steps.append(resultStep) }
+                        await MainActor.run {
+                            task.steps.append(resultStep)
+                            // Don't leave a matched pipeline step spinning at
+                            // .running forever after a mid-pipeline decline
+                            let pipelineSteps = taskManager.pipelineSteps
+                            if let matchedIndex = matchToolToPipelineStep(call.toolName, arguments: call.arguments, steps: pipelineSteps) {
+                                taskManager.updatePipelineStep(at: matchedIndex, status: .skipped)
+                            }
+                        }
                         resultBlocks.append(AnthropicContentBlock(type: "tool_result", text: nil, id: nil, name: nil, input: nil, toolUseId: call.id, content: output))
                         summaries.append("• \(call.toolName) → declined by user\(feedbackNote)")
                         continue
@@ -537,20 +598,22 @@ final nonisolated class AgentLoop: @unchecked Sendable {
                     confirmFeedback = confirmResult.feedback
                 }
 
+                // An approval that resumed after the task was stopped must not
+                // execute — the tools themselves are synchronous and ignore
+                // cancellation.
+                try Task.checkCancellation()
+
                 do {
                     if let mcpTool = tool as? MCPToolBridge {
                         // MCP tools: pass raw JSON to preserve complex types, skip arg normalization
                         let result = try await mcpTool.executeWithRawJSON(call.rawInputJSON, stringArgs: call.arguments)
                         output = result.output
                     } else {
-                        // Native tools: normalize argument aliases
-                        let normalizedArgs = normalizeArguments(call.arguments, for: tool)
-                        if normalizedArgs != call.arguments {
-                            MajoorLogger.log("🔄 Normalized args for \(call.toolName): \(call.arguments.keys.sorted()) → \(normalizedArgs.keys.sorted())")
-                        }
                         let result = try await tool.execute(arguments: normalizedArgs)
                         output = result.output
                     }
+                } catch is CancellationError {
+                    throw CancellationError()
                 } catch {
                     output = "Error: \(error.localizedDescription)"
                 }

@@ -39,6 +39,16 @@ actor ConfirmationManager {
     ) async -> ConfirmationResult {
         let id = UUID().uuidString
 
+        // A task stopped while we were deciding (e.g. during Auto mode's
+        // consent check) must not show a prompt that denyAll has already
+        // drained past. No suspension point between this check and the
+        // registration below, and denyAll is actor-serialized, so the race is
+        // closed: either we see isCancelled here before any UI appears, or
+        // denyAll runs after registration and resumes us as denied.
+        if Task.isCancelled {
+            return ConfirmationResult(approved: false, feedback: "Task was stopped by the user")
+        }
+
         // Notify caller of the ID (for in-app UI display)
         onPending?(id)
 
@@ -57,6 +67,17 @@ actor ConfirmationManager {
             MajoorLogger.log("💬 User feedback: \(feedback)")
         }
         return result
+    }
+
+    /// Deny every pending confirmation — called when the running task is
+    /// stopped, so no continuation is left suspended forever and no stale
+    /// prompt can later execute a tool for a dead task.
+    func denyAll() {
+        for (id, continuation) in pendingConfirmations {
+            MajoorLogger.log("🚫 Denying stale confirmation \(id) — task stopped")
+            continuation.resume(returning: ConfirmationResult(approved: false, feedback: "Task was stopped by the user"))
+        }
+        pendingConfirmations.removeAll()
     }
 
     /// Called by in-app UI or NotificationManager when user responds.

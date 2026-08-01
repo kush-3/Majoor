@@ -15,6 +15,19 @@ nonisolated struct MCPToolBridge: AgentTool, Sendable {
     let requiresConfirmation = false
     let serverName: String
 
+    /// MCP servers don't expose reliable read-only annotations through this
+    /// client, so use the tool-name convention as a heuristic — otherwise
+    /// Manual mode would prompt for every get/list/search call. Server-style
+    /// prefixes (slack_get_..., API-retrieve-...) are stripped first. A miss
+    /// only causes an extra prompt, the safe direction.
+    var isReadOnly: Bool {
+        var n = originalName.lowercased()
+        for prefix in ["slack_", "api-"] where n.hasPrefix(prefix) {
+            n = String(n.dropFirst(prefix.count))
+        }
+        return ["get", "list", "search", "read", "fetch", "query", "retrieve"].contains { n.hasPrefix($0) }
+    }
+
     init(serverName: String, tool: MCPToolDefinition) {
         self.name = "\(serverName)__\(tool.name)"
         self.originalName = tool.name

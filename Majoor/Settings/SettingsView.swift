@@ -30,6 +30,7 @@ struct SettingsView: View {
 struct GeneralSettingsTab: View {
     @AppStorage("launchAtLogin") private var launchAtLogin = false
     @AppStorage("showNotifications") private var showNotifications = true
+    @AppStorage(PermissionMode.defaultsKey) private var permissionMode = PermissionMode.standard.rawValue
     @State private var autoCheckUpdates: Bool = true
 
     private var updateManager: UpdateManager? {
@@ -38,6 +39,20 @@ struct GeneralSettingsTab: View {
 
     var body: some View {
         Form {
+            Section {
+                Picker("Permission mode", selection: $permissionMode) {
+                    ForEach(PermissionMode.allCases, id: \.rawValue) { mode in
+                        Text(mode.displayName).tag(mode.rawValue)
+                    }
+                }
+                .pickerStyle(.segmented)
+                Text((PermissionMode(rawValue: permissionMode) ?? .standard).blurb)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } header: {
+                Text("Permissions")
+            }
+
             Section {
                 Toggle("Launch Majoor at login", isOn: $launchAtLogin)
                 Toggle("Show notifications when tasks complete", isOn: $showNotifications)

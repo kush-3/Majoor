@@ -14,7 +14,7 @@ nonisolated struct CommandSanitizer: Sendable {
     private static let blockedCommands: [String] = [
         "rm -rf /", "rm -rf /*", "rm -rf ~", "rm -rf ~/*",
         "sudo", "doas",
-        "mkfs", "dd if=", "format",
+        "mkfs", "dd if=",
         "chmod -R 777 /", "chmod -R 777 ~",
         "chown -R", "> /dev/sda",
         ":(){ :|:& };:",  // fork bomb
@@ -30,6 +30,7 @@ nonisolated struct CommandSanitizer: Sendable {
     // Patterns matched via regex
     private static let blockedPatterns: [String] = [
         #"rm\s+-[a-zA-Z]*[rR][a-zA-Z]*[fF].*\s+/"#,   // rm -rf /...
+        #"(?i)diskutil\s+(\S+\s+)?(erase\w*|secureerase|zerodisk|partition\w*|reformat|deletecontainer)"#,  // disk wipes incl. apfs subcommands (replaces the old bare "format" substring, which false-positived on git --format etc.)
         #">\s*/etc/"#,                                     // overwrite system config
         #">\s*/System/"#,
         #"chmod\s+777\s+/"#,

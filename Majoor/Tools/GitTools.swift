@@ -25,6 +25,7 @@ nonisolated struct GitStatusTool: AgentTool {
     ]
     let requiredParameters = ["repo_path"]
     let requiresConfirmation = false
+    let isReadOnly = true
 
     func execute(arguments: [String: String]) async throws -> ToolResult {
         guard let path = arguments["repo_path"] else {
@@ -47,6 +48,7 @@ nonisolated struct GitDiffTool: AgentTool {
     ]
     let requiredParameters = ["repo_path"]
     let requiresConfirmation = false
+    let isReadOnly = true
 
     func execute(arguments: [String: String]) async throws -> ToolResult {
         guard let path = arguments["repo_path"] else {
@@ -71,6 +73,7 @@ nonisolated struct GitLogTool: AgentTool {
     ]
     let requiredParameters = ["repo_path"]
     let requiresConfirmation = false
+    let isReadOnly = true
 
     func execute(arguments: [String: String]) async throws -> ToolResult {
         guard let path = arguments["repo_path"] else {

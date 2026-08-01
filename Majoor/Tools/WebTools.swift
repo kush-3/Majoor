@@ -16,6 +16,7 @@ nonisolated struct WebSearchTool: AgentTool {
     ]
     let requiredParameters = ["query"]
     let requiresConfirmation = false
+    let isReadOnly = true
 
     func execute(arguments: [String: String]) async throws -> ToolResult {
         guard let query = arguments["query"] else {
@@ -98,6 +99,7 @@ nonisolated struct FetchWebpageTool: AgentTool {
     ]
     let requiredParameters = ["url"]
     let requiresConfirmation = false
+    let isReadOnly = true
 
     func execute(arguments: [String: String]) async throws -> ToolResult {
         guard let urlStr = arguments["url"] else {
@@ -185,6 +187,7 @@ nonisolated struct FetchMultipleURLsTool: AgentTool {
     ]
     let requiredParameters = ["urls"]
     let requiresConfirmation = false
+    let isReadOnly = true
 
     func execute(arguments: [String: String]) async throws -> ToolResult {
         guard let urlsStr = arguments["urls"] else {

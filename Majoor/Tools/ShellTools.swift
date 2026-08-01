@@ -73,6 +73,18 @@ nonisolated struct ExecuteScriptTool: AgentTool {
             return ToolResult(success: false, output: "Error: Unsupported language '\(language)'. Use: python, node, ruby, bash")
         }
 
+        // Bash scripts are shell command sequences — run them through the same
+        // sanitizer as execute_shell, so a blocked command can't simply be
+        // wrapped in a script. Interpreted languages are gated by the
+        // confirmation policy instead (substring-scanning arbitrary code would
+        // be both bypassable and false-positive-prone).
+        if language.lowercased() == "bash" {
+            let validation = CommandSanitizer.validate(command: code)
+            guard validation.isAllowed else {
+                return ToolResult(success: false, output: "⛔ Script blocked: \(validation.reason ?? "security policy")")
+            }
+        }
+
         // Write script to temp file
         let tempDir = NSTemporaryDirectory()
         let scriptPath = (tempDir as NSString).appendingPathComponent("majoor_script_\(UUID().uuidString).\(interpreter.ext)")
@@ -108,6 +120,7 @@ nonisolated struct ReadProjectStructureTool: AgentTool {
     ]
     let requiredParameters = ["path"]
     let requiresConfirmation = false
+    let isReadOnly = true
 
     func execute(arguments: [String: String]) async throws -> ToolResult {
         guard let path = arguments["path"] else {

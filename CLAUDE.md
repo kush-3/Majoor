@@ -52,7 +52,12 @@ AgentLoop normalizes LLM argument aliases (e.g., "file_path" → "path") before 
 
 ### Confirmation Flow
 
-Tools like `send_email` and `delete_calendar_event` require user approval:
+A permission mode (Settings → General; `Core/PermissionMode.swift`, stored in UserDefaults) decides which tool calls prompt via `ConfirmationPolicy`:
+- **Manual** — every non-read-only tool prompts (tools declare `isReadOnly`; MCP tools use a get_/list_/search_ name heuristic)
+- **Standard** (default) — sensitive tools prompt: email send/reply, file/event deletion, git push/PR, non-bash scripts, and shell commands that invoke an interpreter on a script file (closing the write_file + `python3 x.py` bypass). Sensitive prompts survive pipeline approval. MCP write tools do NOT prompt in Standard (known carve-out).
+- **Auto** — sensitive tools prompt only when a fail-closed Haiku consent check judges that the user's own task wording didn't request that specific action (it sees the concrete arguments, so injected recipient/target swaps still prompt). Exception: send_email/reply_to_email ALWAYS prompt, in every mode — outbound email is irreversible
+
+Bash scripts always pass through `CommandSanitizer` (interpreted-language scripts are confirmation-gated instead). Tools can supply a human-readable `confirmationPreview` (e.g. delete_calendar_event shows the event title/date instead of an opaque id). Stopping a task denies any pending confirmation (`ConfirmationManager.denyAll`). The prompt flow:
 1. `ConfirmationManager` sends actionable notification (approve/deny)
 2. Agent loop suspends via `CheckedContinuation`
 3. User taps notification action → continuation resumes
@@ -410,11 +415,19 @@ Tool Interface:
 
 # Confirmation Flow
 
-Used for:
+Gated by a permission mode (`Core/PermissionMode.swift`; Settings → General):
 
-- send_email
-- delete_calendar_event
-- destructive actions
+| Mode | Prompts for |
+|------|-------------|
+| Manual | every non-read-only tool |
+| Standard (default) | sensitive tools, even mid-pipeline |
+| Auto | sensitive tools the task didn't explicitly request (Haiku consent check, fail-closed) |
+
+Sensitive = send_email, reply_to_email, delete_file, delete_calendar_event,
+git_push, git_create_pr, execute_script for non-bash languages (bash scripts
+go through CommandSanitizer in every mode), and execute_shell/run_tests
+commands that run an interpreter on a script file. MCP write tools are a
+known carve-out: they never prompt in Standard/Auto.
 
 Flow:
 
