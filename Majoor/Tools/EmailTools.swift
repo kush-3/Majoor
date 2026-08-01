@@ -174,14 +174,32 @@ private struct GmailAPI {
     }
 
     /// Build RFC 2822 email and base64url-encode it for Gmail API
+    /// Strip CR/LF so model-supplied values can't inject additional headers
+    private static func sanitizeHeaderValue(_ value: String) -> String {
+        value.replacingOccurrences(of: "\r", with: " ")
+             .replacingOccurrences(of: "\n", with: " ")
+    }
+
+    /// RFC 2047 encoded-word for non-ASCII header text — headers are
+    /// ASCII-only, and raw UTF-8 in Subject renders as mojibake ("Ã¢Â€Â")
+    /// at the recipient
+    private static func encodeHeaderText(_ value: String) -> String {
+        let cleaned = sanitizeHeaderValue(value)
+        guard !cleaned.allSatisfy({ $0.isASCII }) else { return cleaned }
+        return "=?UTF-8?B?\(Data(cleaned.utf8).base64EncodedString())?="
+    }
+
     static func buildRawEmail(to: String, subject: String, body: String, threadId: String? = nil, inReplyTo: String? = nil) -> String {
-        var message = "To: \(to)\r\n"
-        message += "Subject: \(subject)\r\n"
+        var message = "To: \(sanitizeHeaderValue(to))\r\n"
+        message += "Subject: \(encodeHeaderText(subject))\r\n"
         if let inReplyTo {
-            message += "In-Reply-To: \(inReplyTo)\r\n"
-            message += "References: \(inReplyTo)\r\n"
+            let cleanedRef = sanitizeHeaderValue(inReplyTo)
+            message += "In-Reply-To: \(cleanedRef)\r\n"
+            message += "References: \(cleanedRef)\r\n"
         }
+        message += "MIME-Version: 1.0\r\n"
         message += "Content-Type: text/plain; charset=utf-8\r\n"
+        message += "Content-Transfer-Encoding: 8bit\r\n"
         message += "\r\n"
         message += body
 
@@ -210,6 +228,7 @@ nonisolated struct FetchEmailsTool: AgentTool {
     ]
     let requiredParameters: [String] = []
     let requiresConfirmation = false
+    let isReadOnly = true
 
     func execute(arguments: [String: String]) async throws -> ToolResult {
         guard GoogleOAuthManager.shared.isAuthenticated else {
@@ -272,6 +291,7 @@ nonisolated struct ReadEmailTool: AgentTool {
     ]
     let requiredParameters = ["email_id"]
     let requiresConfirmation = false
+    let isReadOnly = true
 
     func execute(arguments: [String: String]) async throws -> ToolResult {
         guard GoogleOAuthManager.shared.isAuthenticated else {
@@ -307,6 +327,7 @@ nonisolated struct SearchEmailsTool: AgentTool {
     ]
     let requiredParameters = ["query"]
     let requiresConfirmation = false
+    let isReadOnly = true
 
     func execute(arguments: [String: String]) async throws -> ToolResult {
         // Delegate to FetchEmailsTool — same underlying API
