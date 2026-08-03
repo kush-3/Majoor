@@ -8,3 +8,4 @@
 - [Model Refresh Review](review_model_refresh_2026_07_31.md) — build-dmg.sh version grep reads Debug config not Release; thinking override + rules 14/15 validated correct
 - [Freeze Fix Review](review_freeze_fix_2026_08_01.md) — trim branch 1 eats task+plan on pipeline-without-history; read_file FIFO hang; CappedPipeCapture validated
 - [Permission Modes Review](review_permission_modes_2026_08_01.md) — denyAll vs continuation-registration race, pre-normalization policy args, extensionless interpreter bypass, await-covered isolation warnings, MCP prefix heuristic dead for Slack/Notion
+- [Truthful Completion Design Review](review_truthful_completion_design_2026_08_03.md) — tool_use/tool_result 400 trap, stop-race, cancellation misclassified as network error; verified Swift DI + memberwise-init facts
