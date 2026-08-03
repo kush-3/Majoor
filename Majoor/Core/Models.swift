@@ -71,11 +71,16 @@ nonisolated struct AnthropicContentBlock: Codable, Sendable {
     var thinking: String?
     var signature: String?
     var data: String?
+    /// On a `tool_result`, marks the call as failed so the model is told outright
+    /// rather than having to infer it from the output prose. Declared last so the
+    /// memberwise initializer's argument order stays stable for existing call sites.
+    var isError: Bool?
 
     enum CodingKeys: String, CodingKey {
         case type, text, id, name, input
         case toolUseId = "tool_use_id"
         case content, thinking, signature, data
+        case isError = "is_error"
     }
 }
 
@@ -114,12 +119,25 @@ nonisolated struct AnthropicResponse: Codable, Sendable {
     let content: [AnthropicContentBlock]
     let stopReason: String?
     let usage: AnthropicUsage?
-    
+    /// Populated *only* when `stopReason == "refusal"`, and null for every other
+    /// stop reason — branch on `stopReason`, never probe this directly.
+    let stopDetails: AnthropicStopDetails?
+
     enum CodingKeys: String, CodingKey {
         case id, type, role, content
         case stopReason = "stop_reason"
         case usage
+        case stopDetails = "stop_details"
     }
+}
+
+/// Refusal detail. Every field is optional: `category` is one of cyber / bio /
+/// frontier_llm / reasoning_extraction / general_harms **or null**, and a null
+/// there is a normal permanent value rather than a placeholder.
+nonisolated struct AnthropicStopDetails: Codable, Sendable {
+    let type: String?
+    let category: String?
+    let explanation: String?
 }
 
 nonisolated struct AnthropicUsage: Codable, Sendable {

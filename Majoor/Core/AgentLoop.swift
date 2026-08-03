@@ -12,6 +12,9 @@ final nonisolated class AgentLoop: @unchecked Sendable {
     private let tools: [any AgentTool]
     private let taskManager: TaskManager
     private let maxIterations = 75
+    /// How many times one run may recover from an output-limit cut before giving up
+    /// honestly. Bounded because each attempt costs a full turn.
+    private let maxTruncationRecoveries = 3
     /// Cap on any single tool result entering the conversation (chars, ≈7.5k tokens)
     private let maxToolResultChars = 30_000
     private let conversationTimeoutSeconds: TimeInterval = 600 // 10 minutes
@@ -168,8 +171,13 @@ final nonisolated class AgentLoop: @unchecked Sendable {
         var totalInputTokens = 0
         var totalOutputTokens = 0
         var iteration = 0
-        var finalText = ""
         var toolSummaries: [String] = []
+        var truncationRecoveries = 0
+        /// Text salvaged from turns cut off at the output limit, prepended to the
+        /// eventual answer. Consumed exactly once and cleared whenever the model
+        /// moves on to something else — a stale prefix would otherwise be glued
+        /// onto an unrelated later answer and become that task's summary.
+        var truncatedPrefix = ""
 
         // 5. Agent loop
         while iteration < maxIterations {
@@ -194,6 +202,11 @@ final nonisolated class AgentLoop: @unchecked Sendable {
                     MajoorLogger.log("⚠️ Context overflow — attempting recovery by trimming history")
                     let trimmed = trimConversationForRecovery(&messages, seededHistoryPairs: &seededHistoryPairs)
                     if trimmed {
+                        // Trimming can drop the assistant turn a salvaged partial came
+                        // from, which voids the continuation contract — the model no
+                        // longer has any record of having written it. Discard rather
+                        // than risk gluing an abandoned draft onto a later answer.
+                        truncatedPrefix = ""
                         let recoveryStep = TaskStep(timestamp: Date(), type: .thinking, description: "Context too large — trimming history and retrying...", detail: nil)
                         await MainActor.run { task.steps.append(recoveryStep) }
                         continue // Retry with trimmed messages
@@ -222,6 +235,16 @@ final nonisolated class AgentLoop: @unchecked Sendable {
                 }
                 await MainActor.run { taskManager.persistTask(task) }
                 throw error
+            } catch is CancellationError {
+                // URLSession surfaces Stop as URLError(.cancelled), which the provider
+                // now maps to CancellationError. That is not an LLMError, so without
+                // this arm it fell through to the generic catch below and persisted
+                // "The operation couldn't be completed. (Swift.CancellationError
+                // error 1.)" as the user-visible summary. Rethrow the original so
+                // AppDelegate's `catch is CancellationError` still shows "Task
+                // Stopped" rather than the incomplete-run treatment.
+                _ = await fail(task, .cancelled)
+                throw CancellationError()
             } catch {
                 MajoorLogger.error("❌ Unexpected error: \(error.localizedDescription)")
                 let errorStep = TaskStep(timestamp: Date(), type: .error, description: error.localizedDescription, detail: nil)
@@ -251,12 +274,25 @@ final nonisolated class AgentLoop: @unchecked Sendable {
             }
 
             let totalTokens = totalInputTokens + totalOutputTokens
+            // Keep attribution current every iteration rather than only on the success
+            // path. Every exit through fail() used to persist tokensUsed = 0 and
+            // modelUsed = "", so a run that burned three Opus recovery turns was filed
+            // at zero cost with no model recorded.
+            await MainActor.run {
+                task.tokensUsed = totalTokens
+                task.modelUsed = provider.model
+            }
 
             switch response {
-            case .text(let text):
-                // Check for pipeline confirmation marker
-                if text.contains("%%PIPELINE_CONFIRM%%") {
-                    let planText = text.replacingOccurrences(of: "%%PIPELINE_CONFIRM%%", with: "").trimmingCharacters(in: .whitespacesAndNewlines)
+            case .text(let rawText):
+                // Check for pipeline confirmation marker. Tested against the raw turn,
+                // not the salvaged-prefix concatenation: a plan is a fresh proposal
+                // rather than the continuation of an interrupted answer, so any
+                // partial is dropped here instead of being glued onto the plan the
+                // user is shown and asked to approve.
+                if rawText.contains("%%PIPELINE_CONFIRM%%") {
+                    truncatedPrefix = ""
+                    let planText = rawText.replacingOccurrences(of: "%%PIPELINE_CONFIRM%%", with: "").trimmingCharacters(in: .whitespacesAndNewlines)
                     MajoorLogger.log("🔄 Pipeline plan proposed, waiting for approval...")
 
                     // Parse numbered steps from plan text
@@ -324,21 +360,58 @@ final nonisolated class AgentLoop: @unchecked Sendable {
                     }
                 }
 
+                // A turn with no text is not an answer — thinking may have eaten the
+                // whole budget, or the content was entirely block types parseResponse
+                // skips. Completing here is how a blank "Task Complete" got shipped.
+                //
+                // Tested against THIS turn's text, not the salvaged concatenation: a
+                // prefix left over from an earlier cut would otherwise stand in for an
+                // answer that never arrived, and the run would complete on a fragment.
+                guard !rawText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                    if !truncatedPrefix.isEmpty {
+                        let salvage = TaskStep(timestamp: Date(), type: .response,
+                                               description: truncatedPrefix,
+                                               detail: "Partial answer — cut off at the output limit")
+                        await MainActor.run { task.steps.append(salvage) }
+                    }
+                    throw await fail(task, .emptyResponse)
+                }
+
+                // This turn is the answer, so fold in anything salvaged from an earlier
+                // output-limit cut and clear it — the prefix belongs to exactly one
+                // answer, and a stale one would end up as an unrelated task's summary.
+                let text = truncatedPrefix + rawText
+                truncatedPrefix = ""
+
                 MajoorLogger.log("✅ Done after \(iteration) iterations")
-                finalText = text
                 let step = TaskStep(timestamp: Date(), type: .response, description: text, detail: nil)
-                await MainActor.run {
+                let summary = summarize(text)
+                // The liveness check has to happen inside the same hop as the write.
+                // Stop runs on the main queue, so a check made before `await
+                // MainActor.run` can pass and then lose the race to stopRunningTask,
+                // and the success path would overwrite the cancellation and persist it.
+                let wroteCompletion = await MainActor.run { () -> Bool in
+                    guard !Task.isCancelled, task.status == .running else { return false }
                     task.steps.append(step)
                     task.status = .completed
-                    task.summary = summarize(text)
+                    task.summary = summary
                     task.completedAt = Date()
                     task.tokensUsed = totalTokens
                     task.modelUsed = provider.model
                     taskManager.clearPipelinePlan()
+                    // 5. Persist in the same hop (memories are saved by the model
+                    // via save_memory) — a second hop would leave a window where the
+                    // task reads completed in the UI but isn't in SQLite yet.
+                    taskManager.persistTask(task)
+                    return true
                 }
-
-                // 5. Persist task (memories are saved by the model via save_memory)
-                await MainActor.run { taskManager.persistTask(task) }
+                // Rethrow as CancellationError, not the .incomplete error: this only
+                // happens because the task was stopped, and AppDelegate has a
+                // dedicated arm that shows "Task Stopped" for it.
+                guard wroteCompletion else {
+                    _ = await fail(task, .cancelled)
+                    throw CancellationError()
+                }
 
                 // 6. Store conversation for continuity and prune stale/excess entries
                 let completedAt = Date()
@@ -358,13 +431,81 @@ final nonisolated class AgentLoop: @unchecked Sendable {
 
                 return TaskResult(summary: summarize(text), steps: task.steps, tokensUsed: totalTokens)
 
+            case .truncated(let partialText, let calls, let rawContent):
+                guard truncationRecoveries < maxTruncationRecoveries else {
+                    // Don't throw away what was already paid for: the accumulator may
+                    // hold several full turns of real output, and the frame is about
+                    // to unwind. Put it in the trail so it survives into SQLite.
+                    if !truncatedPrefix.isEmpty {
+                        let salvage = TaskStep(timestamp: Date(), type: .response,
+                                               description: truncatedPrefix,
+                                               detail: "Partial answer — cut off at the output limit")
+                        await MainActor.run { task.steps.append(salvage) }
+                    }
+                    throw await fail(task, .truncated)
+                }
+                truncationRecoveries += 1
+                MajoorLogger.log("✂️ Output limit hit — recovery \(truncationRecoveries)/\(maxTruncationRecoveries)")
+
+                if calls.isEmpty {
+                    // Text-only cut. Echo *only* completed text blocks: a turn severed
+                    // mid-thinking carries a thinking block whose signature was never
+                    // emitted, and the API rejects those; max_tokens can also return an
+                    // empty content array, which is rejected outright. Dropping
+                    // reasoning blocks is safe here precisely because this branch sends
+                    // a plain user turn rather than a tool_result continuation.
+                    let echo = rawContent.filter { $0.type == "text" && !($0.text ?? "").isEmpty }
+                    guard !echo.isEmpty else {
+                        // The cut landed before any visible text — usually inside
+                        // thinking, which is the *common* shape because `display`
+                        // defaults to "omitted". There is nothing legal to echo (an
+                        // unsigned thinking block is rejected, an empty content array
+                        // outright), so don't append an assistant turn at all. A user
+                        // nudge still changes the prompt, so the retry isn't a
+                        // byte-identical resend and the run keeps making progress
+                        // instead of burning the whole recovery budget on nothing.
+                        let step = TaskStep(timestamp: Date(), type: .thinking,
+                                            description: "Output limit reached before any answer — retrying more concisely", detail: nil)
+                        await MainActor.run { task.steps.append(step) }
+                        messages.append(AnthropicMessage(role: "user", content: .string(
+                            "Your previous attempt hit the output limit before producing any answer. Be more concise and answer directly.")))
+                        continue
+                    }
+                    truncatedPrefix += partialText
+                    let step = TaskStep(timestamp: Date(), type: .thinking,
+                                        description: "Response hit the output limit — asking Claude to continue", detail: nil)
+                    await MainActor.run { task.steps.append(step) }
+                    messages.append(AnthropicMessage(role: "assistant", content: .blocks(echo)))
+                    messages.append(AnthropicMessage(role: "user", content: .string(
+                        "Your previous message was cut off at the output limit. Continue exactly where it stopped — do not repeat any text you already wrote and do not start over.")))
+                    continue
+                }
+
+                // Truncated tool_use: the input JSON may be severed mid-object, so
+                // nothing here is executed — the calls are only answered.
+                guard let turn = unexecutedTurn(rawContent: rawContent, note:
+                    "Your response hit the output limit before this tool call was complete, so it was NOT executed. Split the work into smaller steps and call again with smaller arguments.")
+                else { throw await fail(task, .truncated) }
+
+                let cutStep = TaskStep(timestamp: Date(), type: .error,
+                                       description: "Response truncated — \(calls.count) tool call(s) not executed",
+                                       detail: partialText.isEmpty ? nil : String(partialText.prefix(500)))
+                await MainActor.run { task.steps.append(cutStep) }
+                messages.append(turn.assistant)
+                messages.append(turn.reply)
+                continue
+
             case .toolCalls(let calls, let rawContent):
+                // The model moved on to tool work, so any salvaged partial belongs to
+                // an abandoned draft — dropping it keeps it out of the final summary.
+                truncatedPrefix = ""
                 let (aMsg, rMsg, summaries) = try await handleToolCalls(calls, task: task, assistantContent: rawContent, activeTools: activeTools, userInput: userInput)
                 messages.append(aMsg)
                 messages.append(rMsg)
                 toolSummaries.append(contentsOf: summaries)
 
             case .mixed(let text, let calls, let rawContent):
+                truncatedPrefix = ""
                 // Check for pipeline confirmation in mixed responses too
                 if text.contains("%%PIPELINE_CONFIRM%%") {
                     let planText = text.replacingOccurrences(of: "%%PIPELINE_CONFIRM%%", with: "").trimmingCharacters(in: .whitespacesAndNewlines)
@@ -436,24 +577,20 @@ final nonisolated class AgentLoop: @unchecked Sendable {
             }
         }
 
-        let totalTokens = totalInputTokens + totalOutputTokens
+        // Running out of iterations is not success. This used to write `.completed`
+        // with "Completed (max iterations)", which meant the hardest tasks — exactly
+        // the ones that exhaust the budget — were the ones most likely to be filed
+        // as wins. Attribution is already current from the per-iteration write above.
         MajoorLogger.log("⚠️ Max iterations reached")
-        await MainActor.run {
-            task.status = .completed
-            task.summary = finalText.isEmpty ? "Completed (max iterations)" : summarize(finalText)
-            task.completedAt = Date()
-            task.tokensUsed = totalTokens
-            task.modelUsed = provider.model
-        }
-        await MainActor.run { taskManager.persistTask(task) }
 
-        // Store conversation for continuity and prune stale/excess entries
+        // Keep the history entry so a follow-up task still has the tool context, but
+        // tell the truth in it — a false "completed" here trains the next task on a lie.
         let completedAt = Date()
         historyLock.withLock {
             conversationHistory.removeAll { completedAt.timeIntervalSince($0.timestamp) >= conversationTimeoutSeconds }
             conversationHistory.append(ConversationContext(
                 userInput: userInput,
-                responseText: finalText.isEmpty ? "Completed (max iterations)" : String(finalText.prefix(maxResponseTextLength)),
+                responseText: "(the previous task was stopped after \(maxIterations) iterations without finishing)",
                 toolSummaries: Array(toolSummaries.suffix(10)),
                 toolSets: toolSets,
                 timestamp: completedAt
@@ -463,13 +600,84 @@ final nonisolated class AgentLoop: @unchecked Sendable {
             }
         }
 
-        return TaskResult(summary: task.summary, steps: task.steps, tokensUsed: totalTokens)
+        throw await fail(task, .iterationLimit)
     }
 
     // MARK: - Tool Execution
 
-    /// `assistantContent` is the model's response content blocks verbatim.
+    /// The one place a run becomes `.failed` for a non-transport reason. Status and
+    /// persistence happen in a single MainActor hop so SwiftUI can never render a
+    /// half-written task, and the returned error is thrown by the caller so
+    /// `AppDelegate` sees a failure instead of a successful return it would paint
+    /// as a green "Task Complete".
+    private func fail(_ task: AgentTask, _ reason: IncompleteReason) async -> LLMError {
+        MajoorLogger.error("❌ \(reason.userFacing)")
+        let step = TaskStep(timestamp: Date(), type: .error, description: reason.userFacing, detail: nil)
+        await MainActor.run {
+            task.steps.append(step)
+            task.status = .failed
+            task.summary = reason.userFacing
+            task.completedAt = Date()
+            // Only tear down a plan this task owns — clearing unconditionally would
+            // wipe a plan another task is mid-approval on.
+            if taskManager.pendingPipelineTaskId == task.id {
+                taskManager.clearPipelinePlan()
+            }
+            taskManager.persistTask(task)
+        }
+        return LLMError.incomplete(reason: reason)
+    }
+
+    /// Builds an API-legal assistant echo plus paired `tool_result` answers for a turn
+    /// whose tool calls must NOT run. Drops `tool_use` blocks that arrived without an
+    /// id: `parseResponse` skips those when building `ToolCall`s, so echoing the raw
+    /// content while answering only the parsed calls would leave a `tool_use` with no
+    /// `tool_result` — an immediate 400 on the very request meant to recover. Returns
+    /// nil when nothing answerable survives.
+    private func unexecutedTurn(rawContent: [AnthropicContentBlock], note: String)
+        -> (assistant: AnthropicMessage, reply: AnthropicMessage)? {
+        // Mirror exactly what parseResponse accepts (it requires BOTH id and name), and
+        // drop empty text blocks, which the API also rejects in an assistant turn. A
+        // looser filter here would 400 the very request that exists to recover.
+        let echo = rawContent.filter {
+            switch $0.type {
+            case "tool_use": return $0.id != nil && $0.name != nil
+            case "text":     return !($0.text ?? "").isEmpty
+            default:         return true
+            }
+        }
+        let ids = echo.compactMap { $0.type == "tool_use" ? $0.id : nil }
+        guard !echo.isEmpty, !ids.isEmpty else { return nil }
+        let blocks = ids.map {
+            AnthropicContentBlock(type: "tool_result", text: nil, id: nil, name: nil,
+                                  input: nil, toolUseId: $0, content: note, isError: true)
+        }
+        return (AnthropicMessage(role: "assistant", content: .blocks(echo)),
+                AnthropicMessage(role: "user", content: .blocks(blocks)))
+    }
+
+    /// Wraps the tool phase so a throw from inside it cannot strand the task in
+    /// `.running`. `performToolCalls` throws on cancellation, and that unwinds past
+    /// `execute()`'s do/catch — which covers only `provider.complete` — so without
+    /// this the row is never persisted and a stopped task simply vanishes on restart.
     private func handleToolCalls(
+        _ toolCalls: [ToolCall],
+        task: AgentTask,
+        assistantContent: [AnthropicContentBlock],
+        activeTools: [any AgentTool],
+        userInput: String
+    ) async throws -> (assistant: AnthropicMessage, result: AnthropicMessage, toolSummaries: [String]) {
+        do {
+            return try await performToolCalls(toolCalls, task: task, assistantContent: assistantContent,
+                                              activeTools: activeTools, userInput: userInput)
+        } catch {
+            _ = await fail(task, error is CancellationError ? .cancelled : .toolPhaseFailure)
+            throw error
+        }
+    }
+
+    /// `assistantContent` is the model's response content blocks verbatim.
+    private func performToolCalls(
         _ toolCalls: [ToolCall],
         task: AgentTask,
         assistantContent: [AnthropicContentBlock],

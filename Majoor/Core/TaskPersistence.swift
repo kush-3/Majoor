@@ -116,7 +116,11 @@ nonisolated final class TaskPersistence: @unchecked Sendable {
             id: id,
             userInput: record.userInput,
             createdAt: record.createdAt,
-            status: TaskStatus(rawValue: record.status) ?? .completed,
+            // Fall back to .failed, never .completed: an unrecognized status token —
+            // a corrupt row, or one written by a newer build — must not be resurrected
+            // on restart as a green checkmark. That default was the same optimism the
+            // loop used to have, baked into the restore path.
+            status: TaskStatus(rawValue: record.status) ?? .failed,
             summary: record.summary ?? "",
             completedAt: record.completedAt,
             tokensUsed: record.tokensUsed,

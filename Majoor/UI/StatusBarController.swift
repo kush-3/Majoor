@@ -143,10 +143,15 @@ class StatusBarController {
             }
 
         case .attention:
-            button.image = NSImage(systemSymbolName: "hammer.circle", accessibilityDescription: "Needs Input")
-            button.image?.isTemplate = true
-            button.contentTintColor = nil
-            button.toolTip = "Majoor -- Waiting for input"
+            // Tinted and non-template so an unfinished run is distinguishable from
+            // idle at a glance — as a plain template hammer it was near-invisible,
+            // and the toast that announces it is gone after 8 seconds. The caller's
+            // message is used rather than discarded: the old hardcoded "Waiting for
+            // input" described the opposite of what actually happened.
+            button.image = NSImage(systemSymbolName: "exclamationmark.circle", accessibilityDescription: "Needs Attention")
+            button.image?.isTemplate = false
+            button.contentTintColor = .systemOrange
+            button.toolTip = message != nil ? "Majoor -- \(message!)" : "Majoor -- Waiting for input"
 
         case .error:
             button.image = NSImage(systemSymbolName: "exclamationmark.triangle.fill", accessibilityDescription: "Error")

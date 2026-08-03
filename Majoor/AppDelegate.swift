@@ -223,12 +223,29 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         // Mark the running task as failed
         if let runningTask = taskManager.tasks.first(where: { $0.status == .running }) {
             runningTask.status = .failed
-            runningTask.summary = "Cancelled by user"
+            // Same string the loop's own cancellation path writes, so one event can't
+            // produce two different summaries depending on which writer lands last.
+            runningTask.summary = IncompleteReason.cancelled.userFacing
             runningTask.completedAt = Date()
+            // Persist it. Without this the row was only ever updated in memory, so a
+            // stopped task didn't exist at all after a restart. The loop now also
+            // writes on its own cancellation path; both agree on .failed and the save
+            // is an upsert on the UUID, so whichever lands last is correct.
+            taskManager.persistTask(runningTask)
         }
     }
 
     private func handleLLMError(_ error: LLMError) {
+        // A run that stopped without finishing is not the same as one that failed —
+        // rendering "Stopped after hitting the step limit" identically to an invalid
+        // API key trains you to ignore both.
+        if case .incomplete(let reason) = error {
+            statusBarController?.setState(.attention, message: reason.userFacing)
+            taskManager.showToast(type: .warning, title: "Task Incomplete",
+                                  body: reason.userFacing, autoDismiss: 8.0)
+            showPanel()
+            return
+        }
         let errorDesc = error.errorDescription ?? "Unknown error"
         statusBarController?.setState(.error, message: errorDesc)
         taskManager.showToast(type: .error, title: "Task Failed", body: errorDesc)
