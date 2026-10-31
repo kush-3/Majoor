@@ -43,7 +43,7 @@ The central brain. Each user command flows through:
 4. **LLM loop** (max 75 iterations) → Call Claude API → handle text response or execute tool calls (raw content blocks — text/tool_use/thinking/redacted_thinking — round-tripped verbatim on replay) → feed results back
 5. **Persist** → Save task to SQLite (memories are saved by the model itself via the save_memory tool)
 
-The agent loop is `nonisolated` and runs off the main thread. UI updates go through `MainActor.run`.
+The agent loop is `nonisolated` and runs off the main thread inside an `AgentSession` (`Core/Runtime/`). It never touches UI: it records through `TaskRecorder` and publishes `SessionEvent`s on the `EventBus`; `SessionEventPump` mirrors them into `TaskManager` on the main actor. `SessionManager` runs up to 3 sessions concurrently and queues the rest.
 
 ### Tool System (`Tools/`)
 
@@ -65,11 +65,11 @@ A permission mode (Settings → General; `Core/PermissionMode.swift`, stored in 
 - **Standard** (default) — sensitive tools prompt: email send/reply, file/event deletion, git push/PR, non-bash scripts, and any shell command (execute_shell, run_tests, bash execute_script) that `Security/ShellCommandClassifier.swift` maps to one of those: interpreters and script files, rm/git clean/git reset --hard, git push, gh writes, ssh, package publishing, curl/wget, Keychain access, launchd/cron, mail. Shell `git push` also gets git_push's protected-branch guard. Sensitive prompts survive pipeline approval. MCP write tools do NOT prompt in Standard (known carve-out).
 - **Auto** — sensitive tools prompt only when a fail-closed Haiku consent check judges that the user's own task wording didn't request that specific action (it sees the concrete arguments, so injected recipient/target swaps still prompt). Exception: send_email/reply_to_email ALWAYS prompt, in every mode — outbound email is irreversible
 
-Bash scripts always pass through `CommandSanitizer` (interpreted-language scripts are confirmation-gated instead). Tools can supply a human-readable `confirmationPreview` (e.g. delete_calendar_event shows the event title/date instead of an opaque id). Stopping a task denies any pending confirmation (`ConfirmationManager.denyAll`). The prompt flow:
-1. `ConfirmationManager` sends actionable notification (approve/deny)
-2. Agent loop suspends via `CheckedContinuation`
-3. User taps notification action → continuation resumes
-4. The entire agent loop blocks during confirmation (no concurrent task queue)
+Bash scripts always pass through `CommandSanitizer` (interpreted-language scripts are confirmation-gated instead). Tools can supply a human-readable `confirmationPreview` (e.g. delete_calendar_event shows the event title/date instead of an opaque id). Stopping (the Stop button, or the exact message `stop`) cancels every session and denies every pending approval (`SessionManager.stopAll`). The prompt flow:
+1. The loop asks its session: `host.requestApproval(ApprovalDraft)` (`Core/Runtime/AgentSession.swift`)
+2. The session mints an id, a 4-character nonce and a 10-minute expiry, writes the `approvals` row, publishes `.approvalRequested`, and sends the actionable notification
+3. The panel (`SessionEventPump` → `TaskManager.apply`) or the notification answers through `SessionManager.answerApproval(id:nonce:decision:byChannel:)`; in-process UI passes `nonce: nil`, remote channels must repeat the nonce
+4. Only that session suspends; other sessions keep running (3 concurrently by default, the rest queue)
 
 ### Google OAuth (`Core/OAuth/GoogleOAuthManager.swift`)
 
@@ -103,12 +103,12 @@ Complex tasks (3+ tools) trigger plan-then-execute flow:
 ### Chat vs Task Modes
 
 Two separate execution paths:
-- **Task mode**: Uses `AgentLoop` (classify → route → tools → persist). Fire-and-forget, runs in background.
+- **Task mode**: `SessionManager.handleInbound` (which recognizes the exact commands `stop`, `/status`, `/stop N`) or `submit` creates an `AgentSession` that runs `AgentLoop.run(userInput:host:)` in the background.
 - **Chat mode**: Uses `ChatManager` with Sonnet + SSE streaming. Interactive, no tool execution.
 
 ### Conversation Continuity
 
-AgentLoop maintains a `conversationHistory` of the last 10 minutes, auto-injected as context for subsequent tasks. Stale entries are pruned automatically.
+`SessionManager.history` (`Core/Runtime/ThreadHistory.swift`) keeps the last 10 minutes of completed turns per thread (the panel is one thread; an iMessage handle or a remote client is another), injected as context for the next task in that thread. Stale entries are pruned automatically.
 
 # CLAUDE.md — Majoor
 
@@ -379,13 +379,7 @@ Cycle:
 3. Execute tool
 4. Feed back
 
-This loop is **nonisolated**.
-
-UI updates must use:
-
-```
-MainActor.run
-```
+This loop is **nonisolated** and talks only to its `AgentLoopHost` (the session): recorder, thread history, events, approvals, budget. UI state is derived from `SessionEvent`s; never reach into `TaskManager` from the loop.
 
 ---
 
@@ -441,26 +435,19 @@ write tools are a known carve-out: they never prompt in Standard/Auto.
 
 Flow:
 
-1. Notification
-2. Suspend loop
-3. Await response
-4. Resume continuation
+1. Loop → `host.requestApproval(ApprovalDraft)`
+2. `AgentSession` registers one continuation per session (nonce, expiry, `approvals` row), publishes `.approvalRequested`
+3. Panel or notification → `SessionManager.answerApproval`
+4. That session resumes; the others never stopped
 
 Managed by:
 
 ```
-ConfirmationManager
+Core/Runtime/AgentSession.swift
+Core/Runtime/SessionManager.swift
 ```
 
-Uses:
-
-```
-CheckedContinuation
-```
-
-The agent loop **blocks intentionally**.
-
-Do not introduce concurrency here.
+STOP (`SessionManager.stopAll`) denies every pending approval and cancels every session; a session's recorder finishes exactly once, so a stop can never be followed by a success.
 
 ---
 
@@ -663,19 +650,7 @@ ChatManager
 
 # Conversation Continuity
 
-AgentLoop stores:
-
-```
-conversationHistory
-```
-
-Retention:
-
-```
-10 minutes
-```
-
-Auto pruning.
+`ThreadHistory` (per thread, owned by `SessionManager`) stores the last 10 minutes, 5 entries, 1000-char responses, auto-pruned.
 
 ---
 
