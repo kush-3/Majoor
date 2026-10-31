@@ -143,6 +143,8 @@ The loop stops knowing about `TaskManager`, `AgentTask`, `ConfirmationManager`, 
 
 ### 2a. Event model, recorder, snapshot persistence
 
+> **Status: done 2026-10-31** (commit "feat: Session runtime foundations (Phase 1 step 2a)"). Files under `Core/Runtime/`; migration `v5_sessions_approvals`; 20 tests in `MajoorTests/SessionRuntimeTests.swift`. Deviation: `TaskPersistence` keeps `saveTask(AgentTask)` and `loadRecentTasks` as main-actor wrappers around the snapshot API until 2e removes the last callers.
+
 **New files (all `nonisolated`, `Codable`, `Sendable` unless noted):**
 - `Core/Runtime/SessionTypes.swift`: `typealias SessionID = UUID`; `enum SessionKind { concierge, task, job }`; `enum SessionState { queued, running, waitingApproval, completed, failed, stopped }`; `struct SessionInfo { id, shortId: Int, kind, state, input, origin: ChannelRef, threadKey, createdAt, endedAt?, summary?, tokensIn, tokensOut, costUSD }`; `struct StepDTO` (mirror of `TaskStep`: timestamp, type string, description, detail); `struct PipelineStepDTO`; `enum RiskClass: String { r0, r1, r2, r3 }`; `struct ApprovalRequest { id, sessionId, title, body, category, riskClass, nonce, expiresAt, isPipelinePlan, pipelineSteps }`; `struct ApprovalDecision { approved, feedback, skippedStepIndices }` (supersedes `ConfirmationResult`, surprise 2); `struct ChannelRef { channelId: String, threadKey: String }`.
 - `Core/Runtime/SessionEvent.swift`: `enum SessionEvent` with cases `created(SessionInfo)`, `state(id, SessionState)`, `step(id, StepDTO)`, `pipelinePlan(id, text, [PipelineStepDTO])`, `pipelineStep(id, index, status, result?, error?)`, `approvalRequested(ApprovalRequest)`, `approvalResolved(approvalId, approved, byChannel)`, `cost(id, tokensIn, tokensOut, sessionUSD, dayUSD)`, `finished(id, SessionState, summary)`. Custom `Codable` with a `"type"` discriminator so step 4 can ship it as JSON unchanged.
@@ -166,6 +168,8 @@ The loop stops knowing about `TaskManager`, `AgentTask`, `ConfirmationManager`, 
 
 ### 2b. Thread history and token budget
 
+> **Status: done 2026-10-31** (commit "feat: Thread-keyed conversation history and token budget (Phase 1 step 2b)"). `ConversationEntry` replaces the loop's private `ConversationContext`; wiring into the loop is 2c.
+
 **New:**
 - `Core/Runtime/ThreadHistory.swift`: `nonisolated final class ThreadHistory: @unchecked Sendable` (an `NSLock`, same pattern as `AgentLoop.historyLock`). Moves `ConversationContext` out of `AgentLoop` and keeps the same constants (10-minute timeout, 5 entries, 1000-char response cap). API: `snapshot(thread:)`, `append(thread:, entry:)`, `pruned`. Keyed `[String: [ConversationContext]]`.
 - `Core/Runtime/TokenBudget.swift`: `nonisolated struct TokenBudget: Sendable { var maxTotalTokens: Int }` plus `static func dailyCapExceeded() -> Bool` using `UsageStore.shared.todayUsage().totalCost` against a setting. Placeholder defaults: 2,000,000 tokens per session, $25/day (see open questions; the loop does not use prompt caching, so long sessions re-send the whole context every iteration and tokens grow quickly).
@@ -175,6 +179,8 @@ The loop stops knowing about `TaskManager`, `AgentTask`, `ConfirmationManager`, 
 **Verify:** unit test that two sessions in the same thread see each other's completed entries and that entries older than 10 minutes are pruned.
 
 ### 2c. Surgery on `AgentLoop` (the risky one)
+
+> **Status: 2c, 2d and 2e done 2026-10-31** (commit "feat: Session runtime: concurrent sessions with per-session approvals"). Deviations from the text below: the loop talks to an `AgentLoopHost` protocol (`Core/Runtime/LoopHost.swift`) rather than to `AgentSession` directly, so tests host it too; `ModelRouter.routeHybrid` was left untouched and wrapped by `AgentLoop.defaultRouter`; pipeline state lives in a locked `PipelineState` class shared with the tool phase; the UI mirror is the minimal version (`TaskManager.apply` + `SessionEventPump`; no "1 of N" badge yet; the command bar shows the running row above the input instead of a "N running · Stop" row). 2f (killing child processes on STOP) remains deferred. Real concierge sessions remain deferred to Phase 2.
 
 **File:** `Core/AgentLoop.swift`. Goal: identical model-visible behavior (system prompt, iteration logic, truncation recovery, overflow recovery, tool dispatch, memory injection, aliases, pipeline parsing) with different plumbing.
 
