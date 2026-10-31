@@ -25,6 +25,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     // MARK: - Lifecycle
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        NSAppleEventManager.shared().setEventHandler(
+            self, andSelector: #selector(handleGetURLEvent(_:withReply:)),
+            forEventClass: AEEventClass(kInternetEventClass), andEventID: AEEventID(kAEGetURL))
         MajoorLogger.log("Majoor is starting up...")
         MajoorLogger.log(Bundle.main.bundleIdentifier!)
 
@@ -131,6 +134,37 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
 
         let tools = ToolRegistry.defaultTools()
         agentLoop = AgentLoop(tools: tools, taskManager: taskManager)
+    }
+
+    // MARK: - URL Scheme (local automation hook)
+
+    /// `majoor://task?text=…&token=…` submits a task exactly as the command bar
+    /// would. Any local process or web link can open a URL scheme, so the hook
+    /// is inert unless the app was launched with MAJOOR_AUTOMATION_TOKEN in its
+    /// environment (`open --env …`) and the URL carries the same value. Used by
+    /// QA harnesses; the 2.0 control API supersedes it.
+    @objc private func handleGetURLEvent(_ event: NSAppleEventDescriptor, withReply reply: NSAppleEventDescriptor) {
+        guard let string = event.paramDescriptor(forKeyword: AEKeyword(keyDirectObject))?.stringValue,
+              let url = URL(string: string) else { return }
+        handleIncomingURL(url)
+    }
+
+    private func handleIncomingURL(_ url: URL) {
+        guard url.scheme?.lowercased() == "majoor", url.host?.lowercased() == "task",
+              let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems,
+              let text = items.first(where: { $0.name == "text" })?.value?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !text.isEmpty else {
+            MajoorLogger.log("⛔ Ignored URL: \(url.absoluteString.prefix(120))")
+            return
+        }
+        let expected = ProcessInfo.processInfo.environment["MAJOOR_AUTOMATION_TOKEN"] ?? ""
+        let given = items.first(where: { $0.name == "token" })?.value ?? ""
+        guard !expected.isEmpty, given == expected else {
+            MajoorLogger.log("⛔ majoor://task ignored: automation token missing or wrong")
+            return
+        }
+        MajoorLogger.log("🔗 majoor://task accepted (\(text.count) chars)")
+        handleCommand(text)
     }
 
     // MARK: - Command Handling
