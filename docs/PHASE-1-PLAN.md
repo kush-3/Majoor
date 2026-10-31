@@ -69,6 +69,8 @@ What the suite covers (tests are added step by step, listed per step): session s
 
 ## Step 1. Swift 6 language mode flip (D7)
 
+> **Status: done 2026-10-31** on branch `phase-1-swift6` (commits "build: Flip to Swift 6 language mode" and "chore: Clear every Swift 6 warning"). Zero errors, zero Swift warnings in Debug and Release; smoke-tested through the `majoor://task` automation hook. The test target (§0.5) is still to be created in Xcode.
+
 **Size:** ~60 changed lines in 14 files, 2–3 h, plus 1–2 h for the test target. **Depends on:** Phase 0 committed.
 
 ### 1a. What breaks (measured, not guessed)

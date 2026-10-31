@@ -19,7 +19,7 @@ There are no tests, linter, or CI/CD configured.
 
 ## Key Constraints
 
-- **Swift 6 with `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor`**: All types default to `@MainActor`. Any type that does off-main-thread work must be explicitly marked `nonisolated` (and `@unchecked Sendable` if needed).
+- **Swift 6 language mode with `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor`** (flipped 2026-10-31; isolation violations are compile errors): All types default to `@MainActor`. Any type that does off-main-thread work must be explicitly marked `nonisolated` (and `@unchecked Sendable` if needed). `AgentTool` is a `nonisolated protocol`, so tools are nonisolated by conformance. Main-thread AppKit callbacks typed `@Sendable` (observers on `queue: .main`, animation completions, timers) use `MainActor.assumeIsolated`.
 - **PBXFileSystemSynchronizedRootGroup**: Files under `Majoor/` are auto-discovered by Xcode. Do NOT manually add `PBXBuildFile` or `PBXFileReference` entries to `project.pbxproj` — just create the `.swift` file in the right directory.
 - **Two dependencies**: GRDB.swift v7.10.0 (SQLite ORM) and Sparkle 2 (auto-updates), both via Swift Package Manager, linked as static libraries.
 - **Sandbox disabled**: The app needs direct Process/shell/git CLI access.
