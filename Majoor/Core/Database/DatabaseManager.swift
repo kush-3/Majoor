@@ -62,7 +62,8 @@ nonisolated final class DatabaseManager: @unchecked Sendable {
     }
 
     /// Open a DatabaseQueue with WAL journal mode enabled, then run all migrations.
-    private static func openAndMigrate(path: String) throws -> DatabaseQueue {
+    /// Internal so tests can migrate a temporary database.
+    static func openAndMigrate(path: String) throws -> DatabaseQueue {
         var config = Configuration()
         config.prepareDatabase { db in
             try db.execute(sql: "PRAGMA journal_mode = WAL")
@@ -223,6 +224,44 @@ nonisolated final class DatabaseManager: @unchecked Sendable {
                   INSERT INTO memories_fts(rowid, content) VALUES (new.rowid, new.content);
                 END
             """)
+        }
+
+        // Phase 1 session runtime (PRD section 7): sessions link to tasks by
+        // id; approvals log every decision with nonce, risk class and the
+        // normalized action signature the Phase 2 trust ledger keys on.
+        migrator.registerMigration("v5_sessions_approvals") { db in
+            try db.create(table: "sessions", ifNotExists: true) { t in
+                t.primaryKey("id", .text)
+                t.column("shortId", .integer).notNull()
+                t.column("kind", .text).notNull()
+                t.column("originChannel", .text).notNull()
+                t.column("threadKey", .text).notNull()
+                t.column("state", .text).notNull()
+                t.column("input", .text).notNull()
+                t.column("taskId", .text)
+                t.column("createdAt", .text).notNull()
+                t.column("endedAt", .text)
+                t.column("tokensIn", .integer).defaults(to: 0)
+                t.column("tokensOut", .integer).defaults(to: 0)
+                t.column("costUSD", .double).defaults(to: 0.0)
+                t.column("summary", .text)
+            }
+            try db.create(indexOn: "sessions", columns: ["createdAt"], options: [.ifNotExists])
+
+            try db.create(table: "approvals", ifNotExists: true) { t in
+                t.primaryKey("id", .text)
+                t.column("sessionId", .text).notNull()
+                t.column("nonce", .text).notNull()
+                t.column("actionSignature", .text).notNull()
+                t.column("riskClass", .text).notNull()
+                t.column("requestedAt", .text).notNull()
+                t.column("expiresAt", .text).notNull()
+                t.column("decision", .text)
+                t.column("decidedByChannel", .text)
+                t.column("decidedAt", .text)
+                t.column("feedback", .text)
+            }
+            try db.create(indexOn: "approvals", columns: ["sessionId"], options: [.ifNotExists])
         }
 
         try migrator.migrate(dbQueue)

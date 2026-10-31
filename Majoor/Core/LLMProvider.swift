@@ -26,7 +26,7 @@ nonisolated enum LLMResponse: Sendable {
 /// Why a run ended without producing an answer. Every one of these used to be
 /// reported as a completed task.
 nonisolated enum IncompleteReason: String, Sendable {
-    case truncated, emptyResponse, iterationLimit, cancelled, toolPhaseFailure
+    case truncated, emptyResponse, iterationLimit, cancelled, toolPhaseFailure, budgetExceeded
 
     var userFacing: String {
         switch self {
@@ -35,6 +35,7 @@ nonisolated enum IncompleteReason: String, Sendable {
         case .iterationLimit:   return "Stopped after hitting the step limit without finishing."
         case .cancelled:        return "Stopped by user."
         case .toolPhaseFailure: return "Stopped while running tools."
+        case .budgetExceeded:   return "Stopped: the session token budget was reached."
         }
     }
 }

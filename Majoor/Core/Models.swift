@@ -201,21 +201,21 @@ class AgentTask: ObservableObject, Identifiable {
     }
 }
 
-enum TaskStatus: String, Sendable {
+nonisolated enum TaskStatus: String, Sendable {
     case running = "Running"
     case completed = "Completed"
     case failed = "Failed"
     case waiting = "Waiting for Input"
 }
 
-struct TaskStep: Identifiable, Sendable {
+nonisolated struct TaskStep: Identifiable, Sendable {
     let id = UUID()
     let timestamp: Date
     let type: StepType
     let description: String
     let detail: String?
     
-    enum StepType: Sendable {
+    nonisolated enum StepType: Sendable {
         case thinking, toolCall, toolResult, response, error
     }
 }
