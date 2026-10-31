@@ -26,7 +26,7 @@ nonisolated struct ToolParameter: Sendable {
 }
 
 // Protocol for all tools — nonisolated since tools do file/network I/O
-protocol AgentTool: Sendable {
+nonisolated protocol AgentTool: Sendable {
     var name: String { get }
     var description: String { get }
     var parameters: [ToolParameter] { get }
@@ -40,12 +40,12 @@ protocol AgentTool: Sendable {
 }
 
 extension AgentTool {
-    var isReadOnly: Bool { false }
+    nonisolated var isReadOnly: Bool { false }
 
     /// Optional human-readable preview for confirmation prompts — used when a
     /// raw argument dump would be meaningless to the user (e.g. an opaque
     /// event_id). Return nil to use the default arguments summary.
-    func confirmationPreview(arguments: [String: String]) async -> String? { nil }
+    nonisolated func confirmationPreview(arguments: [String: String]) async -> String? { nil }
 }
 
 extension AgentTool {
@@ -116,9 +116,12 @@ nonisolated struct ToolRegistry: Sendable {
             DraftEmailTool(),
             SendEmailTool(),
             ReplyToEmailTool(),
-            // Long-Term Memory
+            // Memory and reminders
             SaveMemoryTool(),
             SearchMemoryTool(),
+            CreateReminderTool(),
+            ListRemindersTool(),
+            CancelReminderTool(),
         ]
     }
 }

@@ -7,6 +7,7 @@
 
 import Foundation
 import AppKit
+import CryptoKit
 
 nonisolated final class GoogleOAuthManager: NSObject, @unchecked Sendable {
 
@@ -44,7 +45,14 @@ nonisolated final class GoogleOAuthManager: NSObject, @unchecked Sendable {
         let (serverSocket, port) = try createLoopbackServer()
         let redirectURI = "http://127.0.0.1:\(port)"
 
-        // 2. Build authorization URL
+        // 2. Build authorization URL. `state` ties the callback to this attempt
+        //    (anything else that hits the loopback port is ignored), and PKCE
+        //    makes an intercepted code useless without the verifier that never
+        //    leaves this process.
+        let state = Self.randomURLSafeToken(bytes: 24)
+        let codeVerifier = Self.randomURLSafeToken(bytes: 48)
+        let codeChallenge = Self.base64URL(Data(SHA256.hash(data: Data(codeVerifier.utf8))))
+
         var components = URLComponents(string: authURL)!
         components.queryItems = [
             URLQueryItem(name: "client_id", value: APIConfig.googleClientId),
@@ -53,22 +61,25 @@ nonisolated final class GoogleOAuthManager: NSObject, @unchecked Sendable {
             URLQueryItem(name: "scope", value: scopes),
             URLQueryItem(name: "access_type", value: "offline"),
             URLQueryItem(name: "prompt", value: "consent"),
+            URLQueryItem(name: "state", value: state),
+            URLQueryItem(name: "code_challenge", value: codeChallenge),
+            URLQueryItem(name: "code_challenge_method", value: "S256"),
         ]
 
         let authorizationURL = components.url!
 
         // 3. Open in default browser
-        await MainActor.run {
+        _ = await MainActor.run {
             NSWorkspace.shared.open(authorizationURL)
         }
 
         MajoorLogger.log("OAuth: opened browser, waiting for callback on port \(port)")
 
         // 4. Wait for the authorization code
-        let code = try await waitForOAuthCode(port: port, serverSocket: serverSocket)
+        let code = try await waitForOAuthCode(port: port, serverSocket: serverSocket, expectedState: state)
 
         // 5. Exchange code for tokens
-        let tokens = try await exchangeCodeForTokens(code, redirectURI: redirectURI)
+        let tokens = try await exchangeCodeForTokens(code, redirectURI: redirectURI, codeVerifier: codeVerifier)
 
         // 6. Fetch user email
         let email = try await fetchUserEmail(accessToken: tokens.accessToken)
@@ -116,58 +127,102 @@ nonisolated final class GoogleOAuthManager: NSObject, @unchecked Sendable {
         MajoorLogger.log("Google account disconnected")
     }
 
+    // MARK: - State & PKCE
+
+    /// Cryptographically random bytes as base64url (RFC 7636 unreserved set).
+    private static func randomURLSafeToken(bytes count: Int) -> String {
+        var generator = SystemRandomNumberGenerator()
+        let bytes = (0..<count).map { _ in UInt8.random(in: .min ... .max, using: &generator) }
+        return base64URL(Data(bytes))
+    }
+
+    private static func base64URL(_ data: Data) -> String {
+        data.base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "=", with: "")
+    }
+
+    /// application/x-www-form-urlencoded: everything outside the unreserved set
+    /// is percent-encoded. `.urlQueryAllowed` leaves `+ & =` alone, which would
+    /// corrupt a value containing them.
+    private static let formAllowed: CharacterSet = {
+        var set = CharacterSet.alphanumerics
+        set.insert(charactersIn: "-._~")
+        return set
+    }()
+
+    private static func formEncode(_ value: String) -> String {
+        value.addingPercentEncoding(withAllowedCharacters: formAllowed) ?? value
+    }
+
+    private static func formBody(_ fields: [String: String]) -> Data? {
+        fields.map { "\(formEncode($0.key))=\(formEncode($0.value))" }
+            .joined(separator: "&")
+            .data(using: .utf8)
+    }
+
     // MARK: - Loopback HTTP Server
 
-    /// Waits for the OAuth callback on a loopback HTTP server.
-    /// Returns the authorization code.
-    private func waitForOAuthCode(port: UInt16, serverSocket: Int32) async throws -> String {
+    /// Waits for the OAuth callback on a loopback HTTP server and returns the
+    /// authorization code. Only a request carrying this attempt's `state`
+    /// counts: the browser's stray connections (preconnect, favicon) get a 404,
+    /// a callback with the wrong state gets a 400, and neither aborts the
+    /// sign-in. The server gives up after a bounded number of requests.
+    private func waitForOAuthCode(port: UInt16, serverSocket: Int32, expectedState: String) async throws -> String {
         try await withCheckedThrowingContinuation { continuation in
             DispatchQueue.global(qos: .userInitiated).async {
-                let clientSocket = accept(serverSocket, nil, nil)
-                defer {
-                    close(clientSocket)
-                    close(serverSocket)
-                }
-
-                guard clientSocket >= 0 else {
-                    continuation.resume(throwing: OAuthError.loopbackServerFailed("accept() failed"))
+                defer { close(serverSocket) }
+                var sawMismatch = false
+                for _ in 0..<10 {
+                    let clientSocket = accept(serverSocket, nil, nil)
+                    guard clientSocket >= 0 else {
+                        continuation.resume(throwing: OAuthError.loopbackServerFailed("accept() failed"))
+                        return
+                    }
+                    var buffer = [UInt8](repeating: 0, count: 4096)
+                    let bytesRead = recv(clientSocket, &buffer, buffer.count, 0)
+                    let requestString = bytesRead > 0 ? (String(bytes: buffer[0..<bytesRead], encoding: .utf8) ?? "") : ""
+                    guard let firstLine = requestString.components(separatedBy: "\r\n").first,
+                          let urlPart = firstLine.split(separator: " ").dropFirst().first,
+                          let urlComponents = URLComponents(string: String(urlPart)) else {
+                        Self.respond(clientSocket, status: "400 Bad Request", title: "Bad request", body: "")
+                        continue
+                    }
+                    let items = urlComponents.queryItems ?? []
+                    let code = items.first(where: { $0.name == "code" })?.value
+                    let error = items.first(where: { $0.name == "error" })?.value
+                    guard code != nil || error != nil else {
+                        Self.respond(clientSocket, status: "404 Not Found", title: "Not found", body: "")
+                        continue
+                    }
+                    guard items.first(where: { $0.name == "state" })?.value == expectedState else {
+                        sawMismatch = true
+                        Self.respond(clientSocket, status: "400 Bad Request", title: "Sign-in attempt did not match", body: "Please start the connection again from Majoor.")
+                        continue
+                    }
+                    if let error {
+                        Self.respond(clientSocket, status: "200 OK", title: "Authorization Failed", body: "\(error). You can close this tab.")
+                        continuation.resume(throwing: OAuthError.userDenied(error))
+                        return
+                    }
+                    Self.respond(clientSocket, status: "200 OK", title: "Connected to Majoor", body: "You can close this tab and return to the app.")
+                    continuation.resume(returning: code ?? "")
                     return
                 }
-
-                var buffer = [UInt8](repeating: 0, count: 4096)
-                let bytesRead = recv(clientSocket, &buffer, buffer.count, 0)
-                guard bytesRead > 0 else {
-                    continuation.resume(throwing: OAuthError.loopbackServerFailed("recv() failed"))
-                    return
-                }
-
-                let requestString = String(bytes: buffer[0..<bytesRead], encoding: .utf8) ?? ""
-
-                guard let firstLine = requestString.components(separatedBy: "\r\n").first,
-                      let urlPart = firstLine.split(separator: " ").dropFirst().first,
-                      let urlComponents = URLComponents(string: String(urlPart)) else {
-                    continuation.resume(throwing: OAuthError.noCodeReturned)
-                    return
-                }
-
-                if let error = urlComponents.queryItems?.first(where: { $0.name == "error" })?.value {
-                    let htmlResponse = "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nConnection: close\r\n\r\n<html><body style=\"font-family:system-ui;text-align:center;padding-top:60px;\"><h2>Authorization Failed</h2><p>\(error)</p><p style=\"color:#666;\">You can close this tab.</p></body></html>"
-                    _ = htmlResponse.withCString { send(clientSocket, $0, strlen($0), 0) }
-                    continuation.resume(throwing: OAuthError.userDenied(error))
-                    return
-                }
-
-                guard let code = urlComponents.queryItems?.first(where: { $0.name == "code" })?.value else {
-                    continuation.resume(throwing: OAuthError.noCodeReturned)
-                    return
-                }
-
-                let htmlResponse = "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nConnection: close\r\n\r\n<html><body style=\"font-family:system-ui;text-align:center;padding-top:60px;\"><h2>Connected to Majoor</h2><p>You can close this tab and return to the app.</p></body></html>"
-                _ = htmlResponse.withCString { send(clientSocket, $0, strlen($0), 0) }
-
-                continuation.resume(returning: code)
+                continuation.resume(throwing: sawMismatch ? OAuthError.stateMismatch : OAuthError.noCodeReturned)
             }
         }
+    }
+
+    /// Minimal HTML response on the loopback socket; closes the socket.
+    private static func respond(_ socket: Int32, status: String, title: String, body: String) {
+        func escape(_ s: String) -> String {
+            s.replacingOccurrences(of: "&", with: "&amp;").replacingOccurrences(of: "<", with: "&lt;").replacingOccurrences(of: ">", with: "&gt;")
+        }
+        let html = "HTTP/1.1 \(status)\r\nContent-Type: text/html; charset=utf-8\r\nConnection: close\r\n\r\n<html><body style=\"font-family:system-ui;text-align:center;padding-top:60px;\"><h2>\(escape(title))</h2><p>\(escape(body))</p></body></html>"
+        _ = html.withCString { send(socket, $0, strlen($0), 0) }
+        close(socket)
     }
 
     /// Creates a loopback TCP server socket bound to 127.0.0.1 on a random port.
@@ -227,20 +282,19 @@ nonisolated final class GoogleOAuthManager: NSObject, @unchecked Sendable {
         let expiresIn: Int
     }
 
-    private func exchangeCodeForTokens(_ code: String, redirectURI: String) async throws -> Tokens {
+    private func exchangeCodeForTokens(_ code: String, redirectURI: String, codeVerifier: String) async throws -> Tokens {
         var request = URLRequest(url: URL(string: tokenURL)!)
         request.httpMethod = "POST"
         request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
 
-        let body = [
+        request.httpBody = Self.formBody([
             "code": code,
             "client_id": APIConfig.googleClientId,
             "client_secret": APIConfig.googleClientSecret,
             "redirect_uri": redirectURI,
             "grant_type": "authorization_code",
-        ]
-        request.httpBody = body.map { "\($0.key)=\($0.value.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? $0.value)" }
-            .joined(separator: "&").data(using: .utf8)
+            "code_verifier": codeVerifier,
+        ])
 
         let (data, response) = try await URLSession.shared.data(for: request)
         guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
@@ -261,14 +315,12 @@ nonisolated final class GoogleOAuthManager: NSObject, @unchecked Sendable {
         request.httpMethod = "POST"
         request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
 
-        let body = [
+        request.httpBody = Self.formBody([
             "refresh_token": refreshToken,
             "client_id": APIConfig.googleClientId,
             "client_secret": APIConfig.googleClientSecret,
             "grant_type": "refresh_token",
-        ]
-        request.httpBody = body.map { "\($0.key)=\($0.value.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? $0.value)" }
-            .joined(separator: "&").data(using: .utf8)
+        ])
 
         let maxAttempts = 2
         for attempt in 1...maxAttempts {
@@ -357,10 +409,12 @@ enum OAuthError: LocalizedError {
     case noEmailReturned
     case loopbackServerFailed(String)
     case userDenied(String)
+    case stateMismatch
 
     var errorDescription: String? {
         switch self {
         case .noCodeReturned: return "No authorization code returned from Google."
+        case .stateMismatch: return "The sign-in callback did not match this attempt. Start the connection again."
         case .tokenExchangeFailed(let d): return "Token exchange failed: \(d)"
         case .refreshFailed(let d): return "Token refresh failed: \(d)"
         case .notAuthenticated: return "Not authenticated with Google. Connect your account in Settings > Accounts."

@@ -89,6 +89,7 @@ struct ActivityFeedView: View {
 
 struct TaskCardView: View {
     @ObservedObject var task: AgentTask
+    @ObservedObject private var connection = RuntimeConnectionModel.shared
     @State private var isExpanded = false
     @State private var isHovered = false
     var onViewResponse: ((AgentTask) -> Void)? = nil
@@ -116,9 +117,20 @@ struct TaskCardView: View {
 
                 Spacer(minLength: DT.Spacing.sm)
 
-                Text(task.createdAt.timeAgo())
-                    .font(DT.Font.micro)
-                    .foregroundStyle(.tertiary)
+                VStack(alignment: .trailing, spacing: 3) {
+                    Text(task.createdAt.timeAgo())
+                        .font(DT.Font.micro)
+                        .foregroundStyle(.tertiary)
+                    // Client mode: which Mac did the work.
+                    if connection.isClientMode {
+                        Text(task.source == TaskManager.remoteSource ? "Mac mini" : "This Mac")
+                            .font(.system(size: 8, weight: .medium))
+                            .foregroundStyle(.tertiary)
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 1)
+                            .background(Capsule(style: .continuous).fill(Color.primary.opacity(0.05)))
+                    }
+                }
             }
 
             // Expanded detail

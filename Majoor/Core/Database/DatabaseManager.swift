@@ -13,13 +13,23 @@ nonisolated final class DatabaseManager: @unchecked Sendable {
 
     let dbQueue: DatabaseQueue
 
+    /// MAJOOR_DB_PATH overrides the database file (tests point it at a temp
+    /// file so they never touch the real one).
+    private static var overridePath: String? {
+        let value = ProcessInfo.processInfo.environment["MAJOOR_DB_PATH"] ?? ""
+        return value.isEmpty ? nil : value
+    }
+
     private static var dbDirectory: URL {
+        if let overridePath {
+            return URL(fileURLWithPath: overridePath).deletingLastPathComponent()
+        }
         let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
         return appSupport.appendingPathComponent("ai.majoor.agent", isDirectory: true)
     }
 
     private static var dbPath: String {
-        dbDirectory.appendingPathComponent("majoor.sqlite").path
+        overridePath ?? dbDirectory.appendingPathComponent("majoor.sqlite").path
     }
 
     private init() {
@@ -52,7 +62,8 @@ nonisolated final class DatabaseManager: @unchecked Sendable {
     }
 
     /// Open a DatabaseQueue with WAL journal mode enabled, then run all migrations.
-    private static func openAndMigrate(path: String) throws -> DatabaseQueue {
+    /// Internal so tests can migrate a temporary database.
+    static func openAndMigrate(path: String) throws -> DatabaseQueue {
         var config = Configuration()
         config.prepareDatabase { db in
             try db.execute(sql: "PRAGMA journal_mode = WAL")
@@ -213,6 +224,94 @@ nonisolated final class DatabaseManager: @unchecked Sendable {
                   INSERT INTO memories_fts(rowid, content) VALUES (new.rowid, new.content);
                 END
             """)
+        }
+
+        // Phase 1 session runtime (PRD section 7): sessions link to tasks by
+        // id; approvals log every decision with nonce, risk class and the
+        // normalized action signature the Phase 2 trust ledger keys on.
+        migrator.registerMigration("v5_sessions_approvals") { db in
+            try db.create(table: "sessions", ifNotExists: true) { t in
+                t.primaryKey("id", .text)
+                t.column("shortId", .integer).notNull()
+                t.column("kind", .text).notNull()
+                t.column("originChannel", .text).notNull()
+                t.column("threadKey", .text).notNull()
+                t.column("state", .text).notNull()
+                t.column("input", .text).notNull()
+                t.column("taskId", .text)
+                t.column("createdAt", .text).notNull()
+                t.column("endedAt", .text)
+                t.column("tokensIn", .integer).defaults(to: 0)
+                t.column("tokensOut", .integer).defaults(to: 0)
+                t.column("costUSD", .double).defaults(to: 0.0)
+                t.column("summary", .text)
+            }
+            try db.create(indexOn: "sessions", columns: ["createdAt"], options: [.ifNotExists])
+
+            try db.create(table: "approvals", ifNotExists: true) { t in
+                t.primaryKey("id", .text)
+                t.column("sessionId", .text).notNull()
+                t.column("nonce", .text).notNull()
+                t.column("actionSignature", .text).notNull()
+                t.column("riskClass", .text).notNull()
+                t.column("requestedAt", .text).notNull()
+                t.column("expiresAt", .text).notNull()
+                t.column("decision", .text)
+                t.column("decidedByChannel", .text)
+                t.column("decidedAt", .text)
+                t.column("feedback", .text)
+            }
+            try db.create(indexOn: "approvals", columns: ["sessionId"], options: [.ifNotExists])
+        }
+
+        // Phase 1 channels and control API: who may give instructions, and
+        // which devices are paired. Only token hashes are stored.
+        migrator.registerMigration("v6_control_clients_contacts") { db in
+            try db.create(table: "contacts_policy", ifNotExists: true) { t in
+                t.primaryKey("handle", .text)
+                t.column("trust", .text).notNull()
+                t.column("isVIP", .boolean).notNull().defaults(to: false)
+                t.column("createdAt", .text).notNull()
+            }
+            try db.create(table: "paired_clients", ifNotExists: true) { t in
+                t.primaryKey("clientId", .text)
+                t.column("name", .text).notNull()
+                t.column("tokenHash", .blob).notNull()
+                t.column("createdAt", .text).notNull()
+                t.column("lastSeenAt", .text)
+                t.column("revokedAt", .text)
+            }
+        }
+
+        // Phase 1 step 6: the full PRD §5.3 automation shape. Phase 1 writes
+        // only one-shot reminders; cron, activeHours, inputSources, tier and
+        // the ceilings stay null until Phase 2's scheduled jobs.
+        migrator.registerMigration("v7_automations") { db in
+            try db.create(table: "automations", ifNotExists: true) { t in
+                t.primaryKey("id", .text)
+                t.column("name", .text).notNull()
+                t.column("kind", .text).notNull()
+                t.column("scheduleKind", .text).notNull()
+                t.column("runAt", .datetime)
+                t.column("cron", .text)
+                t.column("activeHours", .text)
+                t.column("inputSources", .text)
+                t.column("prompt", .text).notNull()
+                t.column("scratch", .text)
+                t.column("tier", .text)
+                t.column("deliveryChannel", .text).notNull()
+                t.column("deliveryThread", .text).notNull()
+                t.column("urgencyCeiling", .integer)
+                t.column("riskCeiling", .text)
+                t.column("enabled", .boolean).notNull().defaults(to: true)
+                t.column("nextRunAt", .datetime)
+                t.column("claimedAt", .datetime)
+                t.column("createdAt", .datetime).notNull()
+                t.column("createdBySession", .text)
+                t.column("lastRunAt", .datetime)
+                t.column("lastResult", .text)
+            }
+            try db.create(index: "automations_due", on: "automations", columns: ["enabled", "nextRunAt"], options: [.ifNotExists])
         }
 
         try migrator.migrate(dbQueue)

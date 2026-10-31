@@ -128,7 +128,7 @@ struct ChatView: View {
                 .disabled(chatManager.isStreaming)
                 .opacity(chatManager.isStreaming ? 0.4 : 1)
 
-                Button(action: chatManager.isStreaming ? stopStreaming : sendMessage) {
+                Button(action: { if chatManager.isStreaming { stopStreaming() } else { sendMessage() } }) {
                     Image(systemName: chatManager.isStreaming
                           ? "stop.circle.fill"
                           : "arrow.up.circle.fill")

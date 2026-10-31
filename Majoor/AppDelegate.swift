@@ -19,13 +19,43 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     let taskManager = TaskManager()
     let chatManager = ChatManager()
     let updateManager = UpdateManager()
-    private var agentLoop: AgentLoop?
-    private var runningTaskHandle: Task<Void, Never>?
+    private var eventPump: SessionEventPump?
+    private var panelChannel: PanelChannel?
+    private var remoteClient: RemoteRuntimeClient?
+    private var remoteGateway: RemoteSessionGateway?
+    private var localRuntimeConfigured = false
+
+    /// Client mode: when set, the command bar runs tasks on this Mac instead
+    /// of the paired runtime. Explicit, persisted, never flipped automatically.
+    static let runHereKey = "runHere"
+    static var runHere: Bool { UserDefaults.standard.bool(forKey: runHereKey) }
+
+    private var appVersion: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0"
+    }
 
     // MARK: - Lifecycle
 
+    /// True when the process is a unit-test host. The MajoorTests bundle is
+    /// loaded into this app, so launch must not start MCP servers, register
+    /// the global hotkey, open the database or show onboarding.
+    static var isRunningTests: Bool {
+        let env = ProcessInfo.processInfo.environment
+        return env["XCTestConfigurationFilePath"] != nil
+            || env["XCTestBundlePath"] != nil
+            || NSClassFromString("XCTestCase") != nil
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
-        MajoorLogger.log("Majoor is starting up...")
+        if Self.isRunningTests {
+            MajoorLogger.log("Test host: skipping startup side effects")
+            return
+        }
+        let mode = AppMode.current
+        NSAppleEventManager.shared().setEventHandler(
+            self, andSelector: #selector(handleGetURLEvent(_:withReply:)),
+            forEventClass: AEEventClass(kInternetEventClass), andEventID: AEEventID(kAEGetURL))
+        MajoorLogger.log("Majoor is starting up in \(mode.rawValue) mode...")
         MajoorLogger.log(Bundle.main.bundleIdentifier!)
 
         // Configure notification system with categories and delegate (fallback)
@@ -37,41 +67,64 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         statusBarController = StatusBarController(
             onLeftClick: { [weak self] in self?.togglePanel() },
             onSettingsClick: { [weak self] in self?.openSettings() },
+            onStopAllClick: { [weak self] in self?.stopRunningTask() },
             onQuitClick: { NSApplication.shared.terminate(nil) }
         )
 
         registerLocalShortcuts()
         registerGlobalHotKey()
-        setupAgentLoop()
+        setupAgentLoop(mode: mode)
 
-        // Start MCP servers in the background
-        Task { await MCPServerManager.shared.startAll() }
-
-        // Power state awareness: stop MCP servers before sleep, restart on wake
-        NSWorkspace.shared.notificationCenter.addObserver(
-            forName: NSWorkspace.willSleepNotification, object: nil, queue: nil
-        ) { _ in
-            MajoorLogger.log("System sleeping — stopping MCP servers")
-            Task { await MCPServerManager.shared.stopAll() }
-        }
-        NSWorkspace.shared.notificationCenter.addObserver(
-            forName: NSWorkspace.didWakeNotification, object: nil, queue: nil
-        ) { _ in
-            MajoorLogger.log("System woke — restarting MCP servers")
+        if mode != .client {
+            // Start MCP servers in the background
             Task { await MCPServerManager.shared.startAll() }
         }
 
+        // Power state awareness: stop MCP servers and the control API before
+        // sleep, restart on wake; a client probes its connection on wake.
+        NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.willSleepNotification, object: nil, queue: nil
+        ) { _ in
+            MajoorLogger.log("System sleeping")
+            if mode != .client {
+                Task { await MCPServerManager.shared.stopAll() }
+                Task { await ControlServer.shared.stop() }
+            }
+        }
+        NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                MajoorLogger.log("System woke")
+                if mode != .client {
+                    Task { await MCPServerManager.shared.startAll() }
+                    Task { await ControlServer.shared.restartIfEnabled() }
+                }
+                if let client = self?.remoteClient { Task { await client.wake() } }
+            }
+        }
+
         // Listen for "Open Settings" from notification actions
+        // Observers on `queue: .main` run on the main thread, but the closure
+        // type is @Sendable, so the compiler cannot see that; assumeIsolated
+        // asserts it at runtime instead of hopping.
         NotificationCenter.default.addObserver(forName: .majoorOpenSettings, object: nil, queue: .main) { [weak self] _ in
-            self?.openSettings()
+            MainActor.assumeIsolated { self?.openSettings() }
         }
 
         // Listen for "Open Panel" (e.g., when a confirmation is needed)
         NotificationCenter.default.addObserver(forName: .majoorOpenPanel, object: nil, queue: .main) { [weak self] _ in
-            guard let self else { return }
-            if self.panelWindow == nil || self.panelWindow?.isVisible == false {
-                self.showPanel()
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                if self.panelWindow == nil || self.panelWindow?.isVisible == false {
+                    self.showPanel()
+                }
             }
+        }
+
+        // STOP from the panel toolbar
+        NotificationCenter.default.addObserver(forName: .majoorStopAll, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.stopRunningTask() }
         }
 
         commandBarWindow = CommandBarWindow(
@@ -106,14 +159,18 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         }
         if let ref = hotKeyRef { UnregisterEventHotKey(ref) }
 
-        // Stop MCP servers
-        Task { await MCPServerManager.shared.stopAll() }
+        if AppMode.current != .client {
+            Task { await MCPServerManager.shared.stopAll() }
+            Task { await ControlServer.shared.stop() }
+            IMessageModel.shared.stopChannel()
+        }
+        if let client = remoteClient { Task { await client.stop() } }
     }
 
     // MARK: - Agent
 
-    private func setupAgentLoop() {
-        if APIConfig.claudeAPIKey.isEmpty {
+    private func setupAgentLoop(mode: AppMode) {
+        if APIConfig.claudeAPIKey.isEmpty, mode != .client {
             MajoorLogger.log("No API key configured in APIConfig.swift")
         }
         // Initialize database on launch
@@ -129,8 +186,213 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             }
         }
 
-        let tools = ToolRegistry.defaultTools()
-        agentLoop = AgentLoop(tools: tools, taskManager: taskManager)
+        // The panel is a channel in every mode: in client mode it carries
+        // "Run here" tasks to the local runtime, which is configured lazily
+        // so launching as a client does no runtime work.
+        let channel = PanelChannel(taskManager: taskManager)
+        panelChannel = channel
+        Task {
+            await ChannelRouter.shared.configure(manager: SessionManager.shared, owners: { ContactPolicyStore.shared.owners() })
+            await ChannelRouter.shared.register(channel)
+        }
+        eventPump = SessionEventPump(
+            taskManager: taskManager,
+            setState: { [weak self] state, message in self?.statusBarController?.setState(state, message: message) },
+            showPanel: { [weak self] in self?.showPanel() })
+        eventPump?.start()
+
+        switch mode {
+        case .local, .runtime:
+            ensureLocalRuntime()
+            startScheduler()
+            if mode == .runtime { setupIMessage() }
+            Task {
+                await ControlServer.shared.configure(
+                    gateway: LocalSessionGateway(manager: SessionManager.shared, channelId: "control", trust: .authenticatedClient, tasks: TaskPersistence.shared),
+                    pairing: PairingManager(store: ClientStore.shared),
+                    bus: SessionManager.shared.bus,
+                    runtime: ControlRuntimeInfo(runtimeId: ControlServer.runtimeId, serverVersion: appVersion, mode: mode.rawValue))
+                if ControlServer.isEnabled { await ControlServer.shared.start() }
+            }
+        case .client:
+            setupClient()
+        }
+    }
+
+    /// Configures the local SessionManager once. Local and runtime modes do
+    /// it at launch; client mode on the first "Run here".
+    private func ensureLocalRuntime() {
+        guard !localRuntimeConfigured else { return }
+        localRuntimeConfigured = true
+        let loop = AgentLoop(tools: ToolRegistry.defaultTools())
+        Task {
+            await SessionManager.shared.configure(
+                loop: loop,
+                store: SessionStore.shared,
+                persistTask: { TaskPersistence.shared.save($0) },
+                notify: { request in
+                    NotificationManager.shared.sendActionable(id: request.id, title: request.title, body: request.body, category: request.category)
+                })
+        }
+    }
+
+    /// Reminders fire in local and runtime modes, never in client mode (the
+    /// runtime owns them). Delivery goes to the channel the reminder came
+    /// from when that channel can carry it (iMessage); the panel is
+    /// ephemeral, so panel and control-client reminders also post a local
+    /// notification, and the job session's events reach any connected client.
+    private func startScheduler() {
+        Task {
+            await AutomationScheduler.shared.configure(
+                store: AutomationStore.shared,
+                recordJob: { input, origin, summary in
+                    await SessionManager.shared.recordJob(input: input, origin: origin, summary: summary)
+                },
+                deliver: { record, message in
+                    if record.deliveryChannel == "imessage" {
+                        try await ChannelRouter.shared.send(to: record.delivery, text: message)
+                    } else {
+                        NotificationManager.shared.sendSimple(title: "Reminder", body: message)
+                        await ChannelRouter.shared.deliver(to: record.delivery, text: "⏰ " + message)
+                    }
+                },
+                onDeliveryFailed: { record, _ in
+                    NotificationManager.shared.sendSimple(title: "Reminder could not be delivered", body: record.prompt)
+                })
+            await AutomationScheduler.shared.start()
+        }
+        NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: nil) { _ in
+            Task { await AutomationScheduler.shared.wake() }
+        }
+        NotificationCenter.default.addObserver(forName: .NSSystemClockDidChange, object: nil, queue: nil) { _ in
+            Task { await AutomationScheduler.shared.wake() }
+        }
+    }
+
+    /// Runtime mode: the owner's iMessage thread is a channel. The model
+    /// owns the live channel so Settings can turn it on and off.
+    private func setupIMessage() {
+        let version = appVersion
+        IMessageModel.shared.configure {
+            var config = IMessageChannel.Config(owners: { ContactPolicyStore.shared.owners() })
+            config.staleAfter = IMessageModel.staleAfter
+            config.appVersion = version
+            config.loadCursor = { UserDefaults.standard.integer(forKey: IMessageChannel.lastRowIdKey) }
+            config.saveCursor = { UserDefaults.standard.set($0, forKey: IMessageChannel.lastRowIdKey) }
+            config.notifyLocally = { title, body in NotificationManager.shared.sendSimple(title: title, body: body) }
+            return IMessageChannel(transport: JSONRPCLineClient(command: "imsg", arguments: ["rpc"], label: "imsg"), config: config)
+        }
+    }
+
+    private func setupClient() {
+        let client = RemoteRuntimeClient(appVersion: appVersion)
+        remoteClient = client
+        remoteGateway = RemoteSessionGateway(client: client)
+        RuntimeConnectionModel.shared.attach(client: client)
+        eventPump?.startRemote(client: client)
+        taskManager.approvalRouter = { [weak self] id, decision, channel in
+            await self?.routeApproval(id: id, decision: decision, byChannel: channel)
+        }
+        NotificationManager.approvalHandler.withValue { handler in
+            handler = { id, decision, channel in
+                await MainActor.run {
+                    (NSApp.delegate as? AppDelegate)?.taskManager.answerApproval(id: id, decision: decision, byChannel: channel)
+                }
+            }
+        }
+        if let credentials = ClientCredentialsStore.load() {
+            Task {
+                await client.configure(credentials)
+                await client.start()
+                RuntimeConnectionModel.shared.refreshPairing()
+            }
+        } else {
+            MajoorLogger.log("Client mode: not paired yet. Open Settings ▸ Mac mini to pair.")
+        }
+    }
+
+    /// Answers go to whichever runtime asked: the remote one (with the nonce
+    /// the approval carried) or the local SessionManager.
+    private func routeApproval(id: String, decision: ApprovalDecision, byChannel: String) async {
+        if let gateway = remoteGateway, taskManager.isRemoteApproval(id: id),
+           let request = taskManager.pendingApprovals.first(where: { $0.id == id }) {
+            let result = await gateway.answerApproval(id: id, nonce: request.nonce, decision: decision)
+            if result != .ok {
+                taskManager.showToast(type: .error, title: "Approval not accepted", body: "The runtime answered: \(result)", autoDismiss: 6.0)
+            }
+            return
+        }
+        _ = await SessionManager.shared.answerApproval(id: id, nonce: nil, decision: decision, byChannel: byChannel)
+    }
+
+    // MARK: - URL Scheme (local automation hook)
+
+    /// `majoor://task?text=…&token=…` submits a task exactly as the command bar
+    /// would. Any local process or web link can open a URL scheme, so the hook
+    /// is inert unless the app was launched with MAJOOR_AUTOMATION_TOKEN in its
+    /// environment (`open --env …`) and the URL carries the same value. Used by
+    /// QA harnesses; the 2.0 control API supersedes it.
+    @objc private func handleGetURLEvent(_ event: NSAppleEventDescriptor, withReply reply: NSAppleEventDescriptor) {
+        guard let string = event.paramDescriptor(forKeyword: AEKeyword(keyDirectObject))?.stringValue,
+              let url = URL(string: string) else { return }
+        handleIncomingURL(url)
+    }
+
+    private func handleIncomingURL(_ url: URL) {
+        guard url.scheme?.lowercased() == "majoor", let host = url.host?.lowercased(),
+              let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems else {
+            MajoorLogger.log("⛔ Ignored URL: \(url.absoluteString.prefix(120))")
+            return
+        }
+        func value(_ name: String) -> String {
+            items.first(where: { $0.name == name })?.value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        }
+        let expected = ProcessInfo.processInfo.environment["MAJOOR_AUTOMATION_TOKEN"] ?? ""
+        guard !expected.isEmpty, value("token") == expected else {
+            MajoorLogger.log("⛔ majoor://\(host) ignored: automation token missing or wrong")
+            return
+        }
+        switch host {
+        case "task":
+            let text = value("text")
+            guard !text.isEmpty else { MajoorLogger.log("⛔ majoor://task ignored: empty text"); return }
+            MajoorLogger.log("🔗 majoor://task accepted (\(text.count) chars)")
+            handleCommand(text)
+        #if DEBUG
+        // One-Mac dev loop (PHASE-1-PLAN 5e): a runtime instance mints a
+        // pairing code into its log; a client instance pairs with it.
+        case "pair-code":
+            Task {
+                if let code = await ControlServer.shared.mintPairingCode() {
+                    MajoorLogger.log("🔗 majoor://pair-code: \(code.code) (valid until \(code.expiresAt))")
+                } else {
+                    MajoorLogger.log("⛔ majoor://pair-code: control API is not configured (runtime mode only)")
+                }
+            }
+        case "pair":
+            guard let client = remoteClient, let port = UInt16(value("port")), !value("host").isEmpty, !value("code").isEmpty else {
+                MajoorLogger.log("⛔ majoor://pair needs host, port and code, in client mode")
+                return
+            }
+            let host = value("host"), code = value("code")
+            Task {
+                do {
+                    let ok = try await RemoteRuntimeClient.pair(host: host, port: port, code: code, deviceName: "Dev client")
+                    let credentials = ClientCredentials(host: host, port: port, clientId: ok.clientId, token: ok.token, runtimeId: nil)
+                    await client.forget()
+                    ClientCredentialsStore.save(credentials)
+                    await client.configure(credentials)
+                    await client.start()
+                    RuntimeConnectionModel.shared.refreshPairing()
+                    MajoorLogger.log("🔗 majoor://pair: paired as \(ok.clientId.prefix(8)) with \(host):\(port)")
+                } catch {
+                    MajoorLogger.log("⛔ majoor://pair failed: \((error as? RemoteClientError)?.userMessage ?? "\(error)")")
+                }
+            }
+        #endif
+        default:
+            MajoorLogger.log("⛔ Ignored URL: \(url.absoluteString.prefix(120))")
+        }
     }
 
     // MARK: - Command Handling
@@ -138,17 +400,19 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     private func handleCommand(_ input: String) {
         guard !input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
 
-        // Prevent double-submission
-        guard !taskManager.isTaskRunning else { return }
-
         commandBarWindow?.hide()
-        statusBarController?.setState(.working)
-        taskManager.isTaskRunning = true
-        taskManager.runningTaskInput = input
 
+        if AppMode.current == .client, !Self.runHere {
+            submitRemote(input)
+            return
+        }
+        runLocally(input)
+    }
+
+    /// The 1.x path: the local runtime, with this Mac's files and keys.
+    private func runLocally(_ input: String) {
         guard !APIConfig.claudeAPIKey.isEmpty else {
             statusBarController?.setState(.error, message: "API key not configured")
-            taskManager.isTaskRunning = false
             taskManager.showToast(type: .error, title: "Setup Required",
                                   body: "API key not configured. Open Settings to add your Anthropic API key.",
                                   autoDismiss: nil, actionLabel: "Settings") { [weak self] in
@@ -157,82 +421,60 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             showPanel()
             return
         }
+        ensureLocalRuntime()
+        statusBarController?.setState(.working)
+        // The panel is a channel like any other: the router authorizes the
+        // message, recognizes the exact command forms, and starts a session.
+        panelChannel?.submit(input)
+    }
 
-        runningTaskHandle = Task { [weak self] in
-            guard let self, let loop = agentLoop else { return }
+    /// Client mode: the paired runtime does the work. A failure is shown,
+    /// never silently retried locally: a task meant for the Mac mini must
+    /// not quietly run with this Mac's files and identity.
+    private func submitRemote(_ input: String) {
+        guard let gateway = remoteGateway, RuntimeConnectionModel.shared.isPaired else {
+            taskManager.showToast(type: .error, title: "Not paired",
+                                  body: "Pair this Mac with your runtime in Settings ▸ Mac mini, or switch on Run here.",
+                                  autoDismiss: nil, actionLabel: "Settings") { [weak self] in self?.openSettings() }
+            showPanel()
+            return
+        }
+        let command = InboundCommand.parse(input)
+        statusBarController?.setState(.working)
+        Task { [weak self] in
             do {
-                let result = try await loop.execute(userInput: input)
-
-                guard !Task.isCancelled else {
-                    await MainActor.run {
-                        self.taskManager.isTaskRunning = false
-                        self.statusBarController?.setState(.idle)
-                    }
-                    return
-                }
-
-                await MainActor.run {
-                    self.taskManager.isTaskRunning = false
-                    self.statusBarController?.setState(.success)
-                    let completedTask = self.taskManager.tasks.first
-                    self.taskManager.showToast(
-                        type: .info, title: "Task Complete", body: result.summary, autoDismiss: 6.0,
-                        actionLabel: "View Details",
-                        action: {
-                            if let task = completedTask {
-                                NotificationCenter.default.post(
-                                    name: .majoorOpenTaskDetail, object: nil,
-                                    userInfo: ["taskId": task.id.uuidString])
-                            }
-                        })
-                    self.showPanel()
-                }
-            } catch is CancellationError {
-                await MainActor.run {
-                    self.taskManager.isTaskRunning = false
-                    self.statusBarController?.setState(.idle)
-                    self.taskManager.showToast(type: .warning, title: "Task Stopped", body: "Task was cancelled by user.", autoDismiss: 4.0)
-                    self.showPanel()
-                }
-            } catch let error as LLMError {
-                await MainActor.run {
-                    self.taskManager.isTaskRunning = false
-                    self.handleLLMError(error)
+                switch command {
+                case .stopAll, .stop(nil):
+                    let stopped = await gateway.stop(shortId: nil)
+                    self?.taskManager.showToast(type: .warning, title: "Stopped", body: stopped.isEmpty ? "Nothing was running on the runtime." : "Stopped \(stopped.count) session(s) on the runtime.", autoDismiss: 4.0)
+                case .stop(let shortId?):
+                    let stopped = await gateway.stop(shortId: shortId)
+                    self?.taskManager.showToast(type: .warning, title: "Stopped", body: stopped.isEmpty ? "No running session \(shortId)." : "Stopped session \(shortId).", autoDismiss: 4.0)
+                case .status:
+                    let live = await gateway.list().filter { !$0.state.isTerminal }
+                    let body = live.isEmpty ? "Nothing running on the runtime." : live.map { "#\($0.shortId) \($0.state.rawValue): \($0.input.prefix(40))" }.joined(separator: "\n")
+                    self?.taskManager.showToast(type: .info, title: "Runtime status", body: body, autoDismiss: 8.0)
+                case .none:
+                    let threadKey = await gateway.defaultThreadKey()
+                    _ = try await gateway.submit(input, threadKey: threadKey)
                 }
             } catch {
-                await MainActor.run {
-                    self.taskManager.isTaskRunning = false
-                    self.statusBarController?.setState(.error, message: error.localizedDescription)
-                    self.taskManager.showToast(type: .error, title: "Task Failed", body: error.localizedDescription)
-                    self.showPanel()
-                }
+                let reason = (error as? RemoteClientError)?.userMessage ?? "\(error)"
+                self?.statusBarController?.setState(self?.taskManager.isTaskRunning == true ? .working : .idle)
+                self?.taskManager.showToast(type: .error, title: "Mac mini unreachable", body: "\(reason). Retry from the command bar, or run this task on this Mac.",
+                                            autoDismiss: nil, actionLabel: "Run here") { [weak self] in self?.runLocally(input) }
+                self?.showPanel()
             }
         }
     }
 
     func stopRunningTask() {
-        runningTaskHandle?.cancel()
-        runningTaskHandle = nil
-        // Resolve any pending confirmation as denied — a stopped task must not
-        // leave its continuation suspended, and a stale prompt approved later
-        // must not execute a tool for a dead task.
-        Task { await ConfirmationManager.shared.denyAll() }
+        // STOP: every session, the queue, every pending approval. The sessions
+        // record their own stopped outcome; the UI follows the events.
+        Task { await SessionManager.shared.stopAll() }
+        if let gateway = remoteGateway { Task { _ = await gateway.stop(shortId: nil) } }
         taskManager.clearConfirmation()
-        taskManager.isTaskRunning = false
         statusBarController?.setState(.idle)
-        // Mark the running task as failed
-        if let runningTask = taskManager.tasks.first(where: { $0.status == .running }) {
-            runningTask.status = .failed
-            runningTask.summary = "Cancelled by user"
-            runningTask.completedAt = Date()
-        }
-    }
-
-    private func handleLLMError(_ error: LLMError) {
-        let errorDesc = error.errorDescription ?? "Unknown error"
-        statusBarController?.setState(.error, message: errorDesc)
-        taskManager.showToast(type: .error, title: "Task Failed", body: errorDesc)
-        showPanel()
     }
 
     /// Send macOS notification only when the panel is not visible (fallback)
@@ -259,8 +501,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             ctx.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
             panel.animator().alphaValue = 0
         }, completionHandler: { [weak self] in
-            self?.panelWindow?.close()
-            self?.panelWindow?.alphaValue = 1
+            MainActor.assumeIsolated {
+                self?.panelWindow?.close()
+                self?.panelWindow?.alphaValue = 1
+            }
         })
     }
 

@@ -2,12 +2,12 @@
 // Majoor — Central Notification Handler
 //
 // Registers notification categories with action buttons,
-// sends notifications, and routes user responses to ConfirmationManager.
+// sends notifications, and routes user responses to the session that asked.
 
 import Foundation
-import UserNotifications
+@preconcurrency import UserNotifications
 
-final class NotificationManager: NSObject, UNUserNotificationCenterDelegate, @unchecked Sendable {
+nonisolated final class NotificationManager: NSObject, UNUserNotificationCenterDelegate, @unchecked Sendable {
 
     static let shared = NotificationManager()
 
@@ -30,6 +30,11 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate, @un
     static let actionKeep         = "ACTION_KEEP"
     static let actionDelete       = "ACTION_DELETE"
     static let actionOpenSettings = "ACTION_OPEN_SETTINGS"
+
+    /// Where an Approve/Deny tapped on a notification goes. The app delegate
+    /// sets it so client mode can answer a remote runtime with the nonce;
+    /// unset, answers go to the local SessionManager.
+    nonisolated static let approvalHandler = LockedValue<(@Sendable (String, ApprovalDecision, String) async -> Void)?>(nil)
 
     private override init() { super.init() }
 
@@ -182,8 +187,14 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate, @un
                 return
             }
 
+            let handler = Self.approvalHandler.withValue { $0 }
             Task {
-                await ConfirmationManager.shared.resolve(id: confirmationId, approved: approved)
+                if let handler {
+                    await handler(confirmationId, ApprovalDecision(approved: approved), "notification")
+                } else {
+                    _ = await SessionManager.shared.answerApproval(
+                        id: confirmationId, nonce: nil, decision: ApprovalDecision(approved: approved), byChannel: "notification")
+                }
             }
         }
 
@@ -224,4 +235,5 @@ extension Notification.Name {
     static let majoorOpenTaskDetail = Notification.Name("majoorOpenTaskDetail")
     static let majoorOpenSettings = Notification.Name("majoorOpenSettings")
     static let majoorOpenPanel = Notification.Name("majoorOpenPanel")
+    static let majoorStopAll = Notification.Name("majoorStopAll")
 }

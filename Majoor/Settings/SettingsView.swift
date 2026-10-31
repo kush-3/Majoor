@@ -18,6 +18,17 @@ struct SettingsView: View {
                 .tabItem { Label("Memory", systemImage: "brain") }
             UsageSettingsView()
                 .tabItem { Label("Usage", systemImage: "chart.bar") }
+            if AppMode.current == .client {
+                ClientSettingsView()
+                    .tabItem { Label("Mac mini", systemImage: "desktopcomputer") }
+            } else {
+                ControlAPISettingsView()
+                    .tabItem { Label("Remote", systemImage: "antenna.radiowaves.left.and.right") }
+            }
+            if AppMode.current == .runtime {
+                ChannelsSettingsView()
+                    .tabItem { Label("Channels", systemImage: "message") }
+            }
             AboutTab()
                 .tabItem { Label("About", systemImage: "info.circle") }
         }
@@ -31,7 +42,14 @@ struct GeneralSettingsTab: View {
     @AppStorage("launchAtLogin") private var launchAtLogin = false
     @AppStorage("showNotifications") private var showNotifications = true
     @AppStorage(PermissionMode.defaultsKey) private var permissionMode = PermissionMode.standard.rawValue
+    @AppStorage(AppMode.defaultsKey) private var appMode = AppMode.local.rawValue
+    @State private var modeAtLaunch = AppMode.current
     @State private var autoCheckUpdates: Bool = true
+    @StateObject private var remotePermission = RemotePermissionModel()
+    @ObservedObject private var connection = RuntimeConnectionModel.shared
+
+    /// Client mode edits the runtime's permission mode over the API.
+    private var editsRemotePermission: Bool { connection.isClientMode && connection.isPaired }
 
     private var updateManager: UpdateManager? {
         (NSApp.delegate as? AppDelegate)?.updateManager
@@ -40,15 +58,64 @@ struct GeneralSettingsTab: View {
     var body: some View {
         Form {
             Section {
-                Picker("Permission mode", selection: $permissionMode) {
-                    ForEach(PermissionMode.allCases, id: \.rawValue) { mode in
+                Picker("Mode", selection: $appMode) {
+                    ForEach(AppMode.allCases, id: \.rawValue) { mode in
                         Text(mode.displayName).tag(mode.rawValue)
                     }
                 }
                 .pickerStyle(.segmented)
-                Text((PermissionMode(rawValue: permissionMode) ?? .standard).blurb)
+                Text((AppMode(rawValue: appMode) ?? .local).blurb)
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                if AppMode(rawValue: appMode) != modeAtLaunch {
+                    HStack {
+                        Text("Restart Majoor to apply the new mode.")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                        Spacer()
+                        Button("Quit Majoor") { NSApplication.shared.terminate(nil) }
+                    }
+                }
+            } header: {
+                Text("Mode")
+            }
+
+            Section {
+                if editsRemotePermission {
+                    Picker("Permission mode", selection: Binding(get: { remotePermission.mode }, set: { remotePermission.set($0) })) {
+                        ForEach(PermissionMode.allCases, id: \.rawValue) { mode in
+                            Text(mode.displayName).tag(mode.rawValue)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .disabled(!remotePermission.loaded)
+                    Text((PermissionMode(rawValue: remotePermission.mode) ?? .standard).blurb)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text(remotePermission.loaded ? "This is the Mac mini's setting. You can tighten it from here; loosening it must be done on the Mac mini." : "Reading the Mac mini's setting…")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    if let error = remotePermission.error {
+                        Text(error)
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                    }
+                } else {
+                    Picker("Permission mode", selection: $permissionMode) {
+                        ForEach(PermissionMode.allCases, id: \.rawValue) { mode in
+                            Text(mode.displayName).tag(mode.rawValue)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    Text((PermissionMode(rawValue: permissionMode) ?? .standard).blurb)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    if connection.isClientMode {
+                        Text("Applies to tasks run on this Mac (\"Run here\"). Pair with the runtime to edit its mode.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
             } header: {
                 Text("Permissions")
             }
@@ -102,6 +169,10 @@ struct GeneralSettingsTab: View {
         .formStyle(.grouped)
         .onAppear {
             autoCheckUpdates = updateManager?.automaticallyChecksForUpdates ?? true
+            if editsRemotePermission { remotePermission.load() }
+        }
+        .onChange(of: connection.isConnected) { _, connected in
+            if connected, editsRemotePermission { remotePermission.load() }
         }
     }
 }

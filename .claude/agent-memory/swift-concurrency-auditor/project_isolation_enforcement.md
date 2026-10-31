@@ -24,6 +24,11 @@ false inference that the compiler already rejects the racy shapes. It does not. 
   reasoning from memory:
   `swiftc -typecheck -swift-version 6 -default-isolation MainActor repro.swift`
   (run it at `-swift-version 5` too — the delta is exactly what the Swift 6 migration will break).
+  **Verify swiftc actually works first** — in some agent sandboxes `/usr/bin/swiftc`
+  exits 0 and prints nothing even on a deliberate error (2026-08-03: `func g() -> Int
+  { let x: Int; return x }` typechecked "clean"). Always run a known-bad file as a
+  control before trusting a clean result; if the control also passes, the toolchain is
+  inert and you must reason from the language rules instead of claiming verification.
 - Verified semantics: type-level `nonisolated` on a struct covers the synthesized
   `Codable` conformance *and* all custom members (custom `init(from:)`, `toX()`), so a
   single type-level annotation is sufficient. Explicit `Sendable` conformance does **not**

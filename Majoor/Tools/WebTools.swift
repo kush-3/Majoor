@@ -109,6 +109,13 @@ nonisolated struct FetchWebpageTool: AgentTool {
             return ToolResult(success: false, output: "Error: Invalid URL: \(urlStr)")
         }
 
+        // SSRF guard: the model picks these URLs, so localhost, the Tailscale
+        // network, link-local metadata and friends are off limits — including
+        // via DNS and via redirects (see RedirectGuard).
+        if let rejection = await URLGuard.checkResolved(url) {
+            return ToolResult(success: false, output: "⛔ Blocked: \(rejection.reason)")
+        }
+
         let maxLength = Int(arguments["max_length"] ?? "5000") ?? 5000
 
         var request = URLRequest(url: url)
@@ -116,9 +123,12 @@ nonisolated struct FetchWebpageTool: AgentTool {
         request.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36", forHTTPHeaderField: "User-Agent")
 
         do {
-            let (data, httpResponse) = try await URLSession.shared.data(for: request)
+            let (data, httpResponse) = try await URLSession.shared.data(for: request, delegate: RedirectGuard.shared)
 
             if let http = httpResponse as? HTTPURLResponse, http.statusCode != 200 {
+                if (300..<400).contains(http.statusCode) {
+                    return ToolResult(success: false, output: "HTTP \(http.statusCode) fetching \(urlStr): redirect target was blocked by the URL guard")
+                }
                 return ToolResult(success: false, output: "HTTP \(http.statusCode) fetching \(urlStr)")
             }
 
@@ -173,6 +183,29 @@ nonisolated struct FetchWebpageTool: AgentTool {
         text = lines.joined(separator: "\n")
 
         return text
+    }
+}
+
+/// Re-validates every redirect target. A public URL must not be able to 302
+/// the agent into a private address; a refused redirect is not followed and
+/// the 3xx response surfaces as an error.
+private nonisolated final class RedirectGuard: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+    static let shared = RedirectGuard()
+
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        willPerformHTTPRedirection response: HTTPURLResponse,
+        newRequest request: URLRequest,
+        completionHandler: @escaping @Sendable (URLRequest?) -> Void
+    ) {
+        guard let url = request.url, URLGuard.check(url) == nil else {
+            completionHandler(nil)
+            return
+        }
+        Task {
+            completionHandler(await URLGuard.checkResolved(url) == nil ? request : nil)
+        }
     }
 }
 

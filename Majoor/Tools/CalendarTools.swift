@@ -12,13 +12,16 @@ import AppKit
 
 nonisolated(unsafe) let sharedEventStore = EKEventStore()
 
-private func ensureCalendarAccess() async throws {
+private nonisolated func ensureCalendarAccess() async throws {
     let status = EKEventStore.authorizationStatus(for: .event)
     MajoorLogger.log("📅 Calendar auth status: \(status.rawValue) (\(describeAuthStatus(status)))")
 
     switch status {
-    case .fullAccess, .authorized:
+    case .fullAccess:   // .authorized is the pre-macOS 14 spelling of the same value
         return
+    case .writeOnly:
+        MajoorLogger.error("📅 Calendar access is write-only; reading events needs full access. Reset with: tccutil reset Calendar com.Majoor")
+        throw CalendarError.accessDenied
     case .notDetermined:
         MajoorLogger.log("📅 Requesting calendar access...")
         // LSUIElement apps have .accessory activation policy — TCC won't show
@@ -31,10 +34,10 @@ private func ensureCalendarAccess() async throws {
         do {
             granted = try await sharedEventStore.requestFullAccessToEvents()
         } catch {
-            await MainActor.run { NSApp.setActivationPolicy(.accessory) }
+            _ = await MainActor.run { NSApp.setActivationPolicy(.accessory) }
             throw error
         }
-        await MainActor.run { NSApp.setActivationPolicy(.accessory) }
+        _ = await MainActor.run { NSApp.setActivationPolicy(.accessory) }
         if granted {
             MajoorLogger.log("📅 Calendar access granted!")
         } else {
@@ -50,7 +53,7 @@ private func ensureCalendarAccess() async throws {
     }
 }
 
-private func describeAuthStatus(_ status: EKAuthorizationStatus) -> String {
+private nonisolated func describeAuthStatus(_ status: EKAuthorizationStatus) -> String {
     switch status {
     case .notDetermined: return "notDetermined"
     case .restricted: return "restricted"
@@ -78,7 +81,7 @@ private enum CalendarError: LocalizedError {
     }
 }
 
-private func parseDate(_ string: String) throws -> Date {
+private nonisolated func parseDate(_ string: String) throws -> Date {
     // Try ISO8601 first
     let iso = ISO8601DateFormatter()
     iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
@@ -99,7 +102,7 @@ private func parseDate(_ string: String) throws -> Date {
     throw CalendarError.parseDateFailed(string)
 }
 
-private func formatEvent(_ event: EKEvent) -> String {
+private nonisolated func formatEvent(_ event: EKEvent) -> String {
     let df = DateFormatter()
     df.dateStyle = .medium
     df.timeStyle = .short

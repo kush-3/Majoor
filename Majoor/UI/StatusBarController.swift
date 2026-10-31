@@ -12,19 +12,22 @@ class StatusBarController {
     private(set) var statusItem: NSStatusItem?
     private let onLeftClick: () -> Void
     private let onSettingsClick: () -> Void
+    private let onStopAllClick: () -> Void
     private let onQuitClick: () -> Void
     private var pulseTimer: Timer?
     private var successRevertTimer: Timer?
     private var pulseOn = true
     private var currentState: AgentState = .idle
 
-    enum AgentState { case idle, working, success, attention, error }
+    nonisolated enum AgentState { case idle, working, success, attention, error }
 
     init(onLeftClick: @escaping () -> Void,
          onSettingsClick: @escaping () -> Void,
+         onStopAllClick: @escaping () -> Void = {},
          onQuitClick: @escaping () -> Void) {
         self.onLeftClick = onLeftClick
         self.onSettingsClick = onSettingsClick
+        self.onStopAllClick = onStopAllClick
         self.onQuitClick = onQuitClick
         setupStatusItem()
         observePowerState()
@@ -34,14 +37,18 @@ class StatusBarController {
         NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.willSleepNotification, object: nil, queue: .main
         ) { [weak self] _ in
-            self?.pulseTimer?.invalidate()
-            self?.pulseTimer = nil
+            MainActor.assumeIsolated {
+                self?.pulseTimer?.invalidate()
+                self?.pulseTimer = nil
+            }
         }
         NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
         ) { [weak self] _ in
-            guard let self, self.currentState == .working else { return }
-            self.setState(.working)
+            MainActor.assumeIsolated {
+                guard let self, self.currentState == .working else { return }
+                self.setState(.working)
+            }
         }
     }
 
@@ -74,6 +81,12 @@ class StatusBarController {
         cmdItem.target = self
         menu.addItem(cmdItem)
 
+        if currentState == .working {
+            let stopItem = NSMenuItem(title: "Stop All Tasks", action: #selector(doStopAll), keyEquivalent: "")
+            stopItem.target = self
+            menu.addItem(stopItem)
+        }
+
         menu.addItem(NSMenuItem.separator())
 
         let settingsItem = NSMenuItem(title: "Settings...", action: #selector(doSettings), keyEquivalent: ",")
@@ -95,6 +108,7 @@ class StatusBarController {
         if let d = NSApp.delegate as? AppDelegate { d.toggleCommandBar() }
     }
     @objc private func doSettings() { onSettingsClick() }
+    @objc private func doStopAll() { onStopAllClick() }
     @objc private func doQuit() { onQuitClick() }
 
     func setState(_ state: AgentState, message: String? = nil) {
@@ -122,14 +136,18 @@ class StatusBarController {
 
             // Gentle pulse — not jarring, just enough to signal activity
             pulseOn = true
+            // Timers scheduled from the main run loop fire on it; the closure is
+            // @Sendable so the isolation is asserted rather than inferred.
             pulseTimer = Timer.scheduledTimer(withTimeInterval: 0.9, repeats: true) { [weak self] _ in
-                guard let self, let btn = self.statusItem?.button else { return }
-                self.pulseOn.toggle()
-                let target: CGFloat = self.pulseOn ? 1.0 : 0.5
-                NSAnimationContext.runAnimationGroup { ctx in
-                    ctx.duration = 0.7
-                    ctx.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-                    btn.animator().alphaValue = target
+                MainActor.assumeIsolated {
+                    guard let self, let btn = self.statusItem?.button else { return }
+                    self.pulseOn.toggle()
+                    let target: CGFloat = self.pulseOn ? 1.0 : 0.5
+                    NSAnimationContext.runAnimationGroup { ctx in
+                        ctx.duration = 0.7
+                        ctx.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+                        btn.animator().alphaValue = target
+                    }
                 }
             }
 
@@ -139,14 +157,19 @@ class StatusBarController {
             button.contentTintColor = .systemGreen
             button.toolTip = "Majoor -- Task complete"
             successRevertTimer = Timer.scheduledTimer(withTimeInterval: 2.5, repeats: false) { [weak self] _ in
-                self?.setState(.idle)
+                MainActor.assumeIsolated { self?.setState(.idle) }
             }
 
         case .attention:
-            button.image = NSImage(systemSymbolName: "hammer.circle", accessibilityDescription: "Needs Input")
-            button.image?.isTemplate = true
-            button.contentTintColor = nil
-            button.toolTip = "Majoor -- Waiting for input"
+            // Tinted and non-template so an unfinished run is distinguishable from
+            // idle at a glance — as a plain template hammer it was near-invisible,
+            // and the toast that announces it is gone after 8 seconds. The caller's
+            // message is used rather than discarded: the old hardcoded "Waiting for
+            // input" described the opposite of what actually happened.
+            button.image = NSImage(systemSymbolName: "exclamationmark.circle", accessibilityDescription: "Needs Attention")
+            button.image?.isTemplate = false
+            button.contentTintColor = .systemOrange
+            button.toolTip = message != nil ? "Majoor -- \(message!)" : "Majoor -- Waiting for input"
 
         case .error:
             button.image = NSImage(systemSymbolName: "exclamationmark.triangle.fill", accessibilityDescription: "Error")

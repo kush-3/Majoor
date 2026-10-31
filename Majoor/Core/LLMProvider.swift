@@ -12,6 +12,32 @@ nonisolated enum LLMResponse: Sendable {
     /// assistant turn is missing or has edited them.
     case toolCalls([ToolCall], rawContent: [AnthropicContentBlock])
     case mixed(text: String, toolCalls: [ToolCall], rawContent: [AnthropicContentBlock])
+    /// The model stopped at the output limit mid-turn. This is never a final answer.
+    /// `toolCalls` were parsed but their input JSON may be cut mid-object, so they
+    /// must be answered and never executed. `rawContent` is the turn verbatim.
+    ///
+    /// This is a case rather than a thrown error on purpose: the agent loop's switch
+    /// over `LLMResponse` is the only exhaustive one in the app, so adding it here
+    /// makes handling truncation a compile error rather than a convention someone
+    /// can quietly drop later.
+    case truncated(partialText: String, toolCalls: [ToolCall], rawContent: [AnthropicContentBlock])
+}
+
+/// Why a run ended without producing an answer. Every one of these used to be
+/// reported as a completed task.
+nonisolated enum IncompleteReason: String, Sendable, CaseIterable {
+    case truncated, emptyResponse, iterationLimit, cancelled, toolPhaseFailure, budgetExceeded
+
+    var userFacing: String {
+        switch self {
+        case .truncated:        return "Claude's response was cut off by the output limit and couldn't be recovered."
+        case .emptyResponse:    return "Claude finished without producing an answer."
+        case .iterationLimit:   return "Stopped after hitting the step limit without finishing."
+        case .cancelled:        return "Stopped by user."
+        case .toolPhaseFailure: return "Stopped while running tools."
+        case .budgetExceeded:   return "Stopped: the session token budget was reached."
+        }
+    }
 }
 
 nonisolated struct ToolCall: Identifiable, Sendable {
@@ -31,7 +57,7 @@ nonisolated enum StreamDelta: Sendable {
     case messageDelta(stopReason: String?)              // Message ending with usage
 }
 
-protocol LLMProvider: Sendable {
+nonisolated protocol LLMProvider: Sendable {
     var name: String { get }
     var model: String { get }
 
@@ -76,6 +102,13 @@ enum LLMError: LocalizedError, Sendable {
     case rateLimited(retryAfter: Int?)
     case contextOverflow
     case serverOverloaded
+    /// The run stopped without finishing. Distinct from a hard failure so the UI can
+    /// say so, and so `AppDelegate` can't render it as a green "Task Complete".
+    case incomplete(reason: IncompleteReason)
+    /// Safety classifiers declined the request (HTTP 200, `stop_reason: "refusal"`).
+    /// Its own case so the message isn't prefixed "API error:" — a model policy
+    /// decision must not be recorded in history as an infrastructure fault.
+    case refused(category: String?)
 
     nonisolated var errorDescription: String? {
         switch self {
@@ -88,6 +121,9 @@ enum LLMError: LocalizedError, Sendable {
             return retry.map { "Rate limited. Retry in \($0)s." } ?? "Rate limited."
         case .contextOverflow: return "Task too complex — conversation exceeded context limit. Try breaking it into smaller steps."
         case .serverOverloaded: return "Claude API is overloaded. Try again in a few minutes."
+        case .incomplete(let reason): return reason.userFacing
+        case .refused(let category):
+            return category.map { "Claude declined this request (\($0))." } ?? "Claude declined this request."
         }
     }
 
@@ -95,7 +131,8 @@ enum LLMError: LocalizedError, Sendable {
     nonisolated var isTransient: Bool {
         switch self {
         case .rateLimited, .serverOverloaded, .networkError: return true
-        case .invalidAPIKey, .noInternet, .contextOverflow, .apiError, .decodingError: return false
+        case .invalidAPIKey, .noInternet, .contextOverflow, .apiError, .decodingError,
+             .incomplete, .refused: return false
         }
     }
 

@@ -114,7 +114,7 @@ Majoor/
 │   ├── MCP/                      # MCP client, server manager, tool bridge
 │   ├── OAuth/                    # Google OAuth 2.0 loopback flow
 │   └── Database/                 # GRDB database manager
-├── Tools/                        # 37 tools: File, Shell, Git, Web, Calendar, Email, Memory
+├── Tools/                        # 40 tools: File, Shell, Git, Web, Calendar, Email, Memory, Reminders
 ├── UI/
 │   ├── MainPanelView.swift       # Dropdown panel (tasks, chat, confirmations, pipeline)
 │   ├── ChatView.swift            # Streaming chat with message bubbles

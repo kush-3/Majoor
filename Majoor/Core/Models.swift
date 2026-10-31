@@ -71,11 +71,16 @@ nonisolated struct AnthropicContentBlock: Codable, Sendable {
     var thinking: String?
     var signature: String?
     var data: String?
+    /// On a `tool_result`, marks the call as failed so the model is told outright
+    /// rather than having to infer it from the output prose. Declared last so the
+    /// memberwise initializer's argument order stays stable for existing call sites.
+    var isError: Bool?
 
     enum CodingKeys: String, CodingKey {
         case type, text, id, name, input
         case toolUseId = "tool_use_id"
         case content, thinking, signature, data
+        case isError = "is_error"
     }
 }
 
@@ -114,12 +119,25 @@ nonisolated struct AnthropicResponse: Codable, Sendable {
     let content: [AnthropicContentBlock]
     let stopReason: String?
     let usage: AnthropicUsage?
-    
+    /// Populated *only* when `stopReason == "refusal"`, and null for every other
+    /// stop reason — branch on `stopReason`, never probe this directly.
+    let stopDetails: AnthropicStopDetails?
+
     enum CodingKeys: String, CodingKey {
         case id, type, role, content
         case stopReason = "stop_reason"
         case usage
+        case stopDetails = "stop_details"
     }
+}
+
+/// Refusal detail. Every field is optional: `category` is one of cyber / bio /
+/// frontier_llm / reasoning_extraction / general_harms **or null**, and a null
+/// there is a normal permanent value rather than a placeholder.
+nonisolated struct AnthropicStopDetails: Codable, Sendable {
+    let type: String?
+    let category: String?
+    let explanation: String?
 }
 
 nonisolated struct AnthropicUsage: Codable, Sendable {
@@ -155,6 +173,9 @@ class AgentTask: ObservableObject, Identifiable {
     @Published var completedAt: Date?
     @Published var tokensUsed: Int
     @Published var modelUsed: String
+    /// Which runtime ran it: "local" (this Mac) or "remote" (a paired runtime
+    /// seen through client mode). Persistence-restored tasks are local.
+    var source: String = "local"
     
     init(userInput: String) {
         self.id = UUID()
@@ -170,8 +191,9 @@ class AgentTask: ObservableObject, Identifiable {
 
     /// Restore a task from persistence with its original ID and timestamps
     init(id: UUID, userInput: String, createdAt: Date, status: TaskStatus, summary: String,
-         completedAt: Date?, tokensUsed: Int, modelUsed: String, steps: [TaskStep]) {
+         completedAt: Date?, tokensUsed: Int, modelUsed: String, steps: [TaskStep], source: String = "local") {
         self.id = id
+        self.source = source
         self.userInput = userInput
         self.createdAt = createdAt
         self.status = status
@@ -183,21 +205,21 @@ class AgentTask: ObservableObject, Identifiable {
     }
 }
 
-enum TaskStatus: String, Sendable {
+nonisolated enum TaskStatus: String, Codable, Sendable {
     case running = "Running"
     case completed = "Completed"
     case failed = "Failed"
     case waiting = "Waiting for Input"
 }
 
-struct TaskStep: Identifiable, Sendable {
+nonisolated struct TaskStep: Identifiable, Sendable {
     let id = UUID()
     let timestamp: Date
     let type: StepType
     let description: String
     let detail: String?
     
-    enum StepType: Sendable {
+    nonisolated enum StepType: Sendable {
         case thinking, toolCall, toolResult, response, error
     }
 }
@@ -210,7 +232,7 @@ nonisolated struct TaskResult: Sendable {
 
 // MARK: - Pipeline Step Model
 
-struct PipelineStep: Identifiable, Sendable {
+nonisolated struct PipelineStep: Identifiable, Sendable {
     let id = UUID()
     let planDescription: String        // "Create PR 'Add auth' on kush/majoor"
     var status: PipelineStepStatus     // pending → running → completed → failed → skipped
@@ -229,13 +251,13 @@ struct PipelineStep: Identifiable, Sendable {
     }
 }
 
-enum PipelineStepStatus: String, Sendable {
+nonisolated enum PipelineStepStatus: String, Sendable {
     case pending, running, completed, failed, skipped
 }
 
 // MARK: - AnyCodable Helper
 
-struct AnyCodable: Codable, Sendable {
+nonisolated struct AnyCodable: Codable, Sendable {
     let value: any Sendable
     
     init(_ value: any Sendable) { self.value = value }

@@ -12,10 +12,19 @@ final nonisolated class AnthropicProvider: LLMProvider, @unchecked Sendable {
     private var apiKey: String { stateLock.withLock { _apiKey } }
     private let baseURL = "https://api.anthropic.com/v1/messages"
     private let apiVersion = "2023-06-01"
-    private let maxTokens = 16384
+    // Covers thinking + visible output together, since the 5-family models think
+    // adaptively. 16384 left too little for the answer on hard tasks, which is what
+    // made max_tokens truncation reachable. The API imposes no streaming
+    // requirement here (that check is client-side SDK validation, and this is a raw
+    // URLSession client); the real ceiling is the request timeout below. Opus 5 and
+    // Sonnet 5 allow 128K output, Haiku 4.5 allows 64K — this value is safe on all
+    // three, which matters because ModelRouter can route any of them through here.
+    private let maxTokens = 32768
     
     // Retry configuration — 3 retries = 4 total attempts (0, 1, 2, 3)
     private let maxRetries = 3
+    /// Timeouts get their own, lower cap — see the `.timedOut` arm for why.
+    private let timedOutMaxRetries = 1
     private let baseDelaySeconds: Double = 2.0      // For 429s: 2s, 4s, 8s
     private let networkRetryBaseSeconds: Double = 10.0 // For network timeouts: 10s, 20s, 40s
 
@@ -95,8 +104,10 @@ final nonisolated class AnthropicProvider: LLMProvider, @unchecked Sendable {
         urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
         urlRequest.setValue(apiKey, forHTTPHeaderField: "x-api-key")
         urlRequest.setValue(apiVersion, forHTTPHeaderField: "anthropic-version")
-        // Opus with large contexts can take 3+ minutes to respond
-        urlRequest.timeoutInterval = model.contains("opus") ? 300 : 180
+        // Opus with large contexts can take 3+ minutes to respond, and a turn that
+        // actually uses the full maxTokens budget takes longer still — too short a
+        // timeout here just trades a truncated answer for a retried network error.
+        urlRequest.timeoutInterval = model.contains("opus") ? 600 : 360
         
         // Retry loop with exponential backoff for 429, 529, and network errors
         var lastError: Error?
@@ -119,14 +130,25 @@ final nonisolated class AnthropicProvider: LLMProvider, @unchecked Sendable {
             } catch let urlError as URLError {
                 // Classify network errors: no internet vs timeout vs other
                 switch urlError.code {
+                case .cancelled:
+                    // URLSession reports task cancellation as URLError(.cancelled),
+                    // not CancellationError. Left in the default arm it became a
+                    // "network error" and was retried at 10/20/40s — so pressing Stop
+                    // meant waiting out the ladder and landing on a bogus summary.
+                    throw CancellationError()
                 case .notConnectedToInternet, .networkConnectionLost, .dataNotAllowed:
                     MajoorLogger.log("⚠️ No internet connection")
                     throw LLMError.noInternet
                 case .timedOut:
                     lastWasNetworkTimeout = true
                     lastError = LLMError.networkError("Request timed out — API may be slow")
-                    MajoorLogger.log("⚠️ Request timed out (attempt \(attempt + 1)/\(maxRetries + 1))")
-                    if attempt < maxRetries { continue }
+                    MajoorLogger.log("⚠️ Request timed out (attempt \(attempt + 1)/\(timedOutMaxRetries + 1))")
+                    // Deliberately fewer retries than other network errors. A timeout
+                    // after the full 600s/360s budget usually means the model was still
+                    // generating, and the retry re-sends an identical request — so each
+                    // attempt bills another full generation. At a 32K output ceiling
+                    // three retries is four paid generations for one answer.
+                    if attempt < timedOutMaxRetries { continue }
                     throw lastError!
                 default:
                     lastWasNetworkTimeout = true
@@ -158,28 +180,44 @@ final nonisolated class AnthropicProvider: LLMProvider, @unchecked Sendable {
                     throw LLMError.decodingError(error.localizedDescription)
                 }
                 
-                // Detect truncated tool calls — if stop_reason is "max_tokens" and
-                // there are tool_use blocks, the arguments were likely cut off.
-                // Return a text response telling the agent to use smaller writes.
-                if response.stopReason == "max_tokens" {
-                    let hasToolUse = response.content.contains { $0.type == "tool_use" }
-                    if hasToolUse {
-                        MajoorLogger.log("⚠️ Response truncated (max_tokens) with pending tool calls — requesting smaller output")
-                        let recoveryText = response.content
-                            .compactMap { $0.text }
-                            .joined(separator: "\n")
-                        let message = recoveryText.isEmpty
-                            ? "My previous response was truncated because the output was too large. I'll break this into smaller steps."
-                            : recoveryText + "\n\n[Output was truncated. Breaking into smaller steps.]"
-                        recordSuccess()
-                        return (.text(message), response.usage)
-                    }
-                }
-
-                let llmResponse = parseResponse(response)
                 MajoorLogger.log("✅ API: \(response.stopReason ?? "?"), tokens: \(response.usage?.inputTokens ?? 0)in/\(response.usage?.outputTokens ?? 0)out")
+                // HTTP 200 means the transport is healthy. Whether the *model*
+                // finished is a separate axis, deliberately kept out of the breaker.
                 recordSuccess()
-                return (llmResponse, response.usage)
+
+                // Report what actually happened instead of inventing an answer. A
+                // turn the model did not finish must never reach the loop as `.text`,
+                // because the loop treats any text as the final answer — which is how
+                // a cut-off run used to be persisted as a completed success.
+                switch response.stopReason {
+                case "max_tokens":
+                    return (.truncated(partialText: visibleText(response.content),
+                                       toolCalls: parsedToolCalls(response),
+                                       rawContent: response.content), response.usage)
+
+                case "refusal":
+                    throw LLMError.refused(category: response.stopDetails?.category)
+
+                case "model_context_window_exceeded":
+                    // Route into the trimming recovery the loop already implements
+                    // rather than dead-ending as a blank completion.
+                    throw LLMError.contextOverflow
+
+                case "pause_turn":
+                    // Not a clean ending — the API paused a long turn and expects the
+                    // conversation resent to resume. Unreachable while every declared
+                    // tool is client-side, but it must not sit in the clean bucket:
+                    // treating it as end_turn would complete the task on a half-turn.
+                    return (.truncated(partialText: visibleText(response.content),
+                                       toolCalls: parsedToolCalls(response),
+                                       rawContent: response.content), response.usage)
+
+                default:
+                    // end_turn, stop_sequence, nil, and any future reason carrying real
+                    // content. Forward-tolerant by design — an unrecognized reason with
+                    // a genuine answer still returns normally.
+                    return (parseResponse(response), response.usage)
+                }
                 
             case 401:
                 throw LLMError.invalidAPIKey
@@ -260,6 +298,9 @@ final nonisolated class AnthropicProvider: LLMProvider, @unchecked Sendable {
         urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
         urlRequest.setValue(apiKey, forHTTPHeaderField: "x-api-key")
         urlRequest.setValue(apiVersion, forHTTPHeaderField: "anthropic-version")
+        // Shorter than the non-streaming path on purpose: on a byte stream this acts
+        // as the gap-between-packets budget, not the whole-turn budget, so a long
+        // answer doesn't accumulate against it.
         urlRequest.timeoutInterval = model.contains("opus") ? 300 : 180
 
         let (bytes, httpResponse) = try await URLSession.shared.bytes(for: urlRequest)
@@ -343,6 +384,23 @@ final nonisolated class AnthropicProvider: LLMProvider, @unchecked Sendable {
             return dict.mapValues { anyCodableToAny($0) }
         default:
             return value.value
+        }
+    }
+
+    /// The visible half of a turn that didn't finish.
+    private func visibleText(_ content: [AnthropicContentBlock]) -> String {
+        content.compactMap { $0.type == "text" ? $0.text : nil }.joined(separator: "\n")
+    }
+
+    /// Tool calls carried by an unfinished turn. Handed up so the loop can *answer*
+    /// them (every `tool_use` needs a matching `tool_result` or the next request
+    /// 400s) — never so it can run them, since a cut can sever the input JSON.
+    private func parsedToolCalls(_ response: AnthropicResponse) -> [ToolCall] {
+        switch parseResponse(response) {
+        case .toolCalls(let calls, _):  return calls
+        case .mixed(_, let calls, _):   return calls
+        case .truncated(_, let calls, _): return calls
+        case .text:                     return []
         }
     }
 

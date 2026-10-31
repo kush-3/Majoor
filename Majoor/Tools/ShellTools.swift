@@ -40,7 +40,22 @@ nonisolated struct ExecuteShellTool: AgentTool {
             return ToolResult(success: false, output: "Error: Working directory not found: \(workDir)")
         }
 
+        // `git push` through the shell gets the same protected-branch guard as
+        // the git_push tool — the confirmation prompt alone is not that guard.
+        if let violation = await ShellCommandClassifier.protectedPushViolation(in: command, workingDirectory: workDir) {
+            return ToolResult(success: false, output: "⛔ \(violation)")
+        }
+
         return await runShellCommand(command, workingDirectory: workDir, timeout: 30)
+    }
+
+    /// The prompt says WHY this command needs approval, not just what it is.
+    func confirmationPreview(arguments: [String: String]) async -> String? {
+        let command = arguments["command"] ?? ""
+        let reasons = ShellCommandClassifier.classify(command).reasons
+        let why = reasons.isEmpty ? "" : " (\(reasons.joined(separator: "; ")))"
+        let dir = arguments["working_directory"].map { " in \($0)" } ?? ""
+        return "Run shell command\(why)\(dir):\n\(String(command.prefix(600)))\(command.count > 600 ? "…" : "")"
     }
 }
 
@@ -56,6 +71,18 @@ nonisolated struct ExecuteScriptTool: AgentTool {
     ]
     let requiredParameters = ["language", "code"]
     let requiresConfirmation = false
+
+    func confirmationPreview(arguments: [String: String]) async -> String? {
+        let language = arguments["language"] ?? "?"
+        let code = arguments["code"] ?? ""
+        var why = "arbitrary \(language) code"
+        if language.lowercased() == "bash" {
+            let reasons = ShellCommandClassifier.classify(code).reasons
+            if !reasons.isEmpty { why = reasons.joined(separator: "; ") }
+        }
+        let dir = arguments["working_directory"].map { " in \($0)" } ?? ""
+        return "Run \(language) script (\(why))\(dir):\n\(String(code.prefix(500)))\(code.count > 500 ? "…" : "")"
+    }
 
     func execute(arguments: [String: String]) async throws -> ToolResult {
         guard let language = arguments["language"], let code = arguments["code"] else {
@@ -203,7 +230,7 @@ nonisolated struct RunTestsTool: AgentTool {
         if let cmd = arguments["command"] {
             testCommand = cmd
         } else {
-            testCommand = detectTestCommand(at: expanded)
+            testCommand = Self.detectTestCommand(at: expanded)
         }
 
         if testCommand.isEmpty {
@@ -218,7 +245,17 @@ nonisolated struct RunTestsTool: AgentTool {
         return await runShellCommand(testCommand, workingDirectory: expanded, timeout: 120)
     }
 
-    private func detectTestCommand(at path: String) -> String {
+    func confirmationPreview(arguments: [String: String]) async -> String? {
+        let path = NSString(string: arguments["path"] ?? "").expandingTildeInPath
+        let command = arguments["command"] ?? Self.detectTestCommand(at: path)
+        let reasons = ShellCommandClassifier.classify(command).reasons
+        let why = reasons.isEmpty ? "" : " (\(reasons.joined(separator: "; ")))"
+        return "Run tests\(why) in \(path):\n\(command)"
+    }
+
+    /// Static so the permission gate can see the command that will actually
+    /// run when the caller omits one.
+    static func detectTestCommand(at path: String) -> String {
         let fm = FileManager.default
         // Node.js
         if fm.fileExists(atPath: (path as NSString).appendingPathComponent("package.json")) {
