@@ -12,6 +12,7 @@ class StatusBarController {
     private(set) var statusItem: NSStatusItem?
     private let onLeftClick: () -> Void
     private let onSettingsClick: () -> Void
+    private let onStopAllClick: () -> Void
     private let onQuitClick: () -> Void
     private var pulseTimer: Timer?
     private var successRevertTimer: Timer?
@@ -22,9 +23,11 @@ class StatusBarController {
 
     init(onLeftClick: @escaping () -> Void,
          onSettingsClick: @escaping () -> Void,
+         onStopAllClick: @escaping () -> Void = {},
          onQuitClick: @escaping () -> Void) {
         self.onLeftClick = onLeftClick
         self.onSettingsClick = onSettingsClick
+        self.onStopAllClick = onStopAllClick
         self.onQuitClick = onQuitClick
         setupStatusItem()
         observePowerState()
@@ -78,6 +81,12 @@ class StatusBarController {
         cmdItem.target = self
         menu.addItem(cmdItem)
 
+        if currentState == .working {
+            let stopItem = NSMenuItem(title: "Stop All Tasks", action: #selector(doStopAll), keyEquivalent: "")
+            stopItem.target = self
+            menu.addItem(stopItem)
+        }
+
         menu.addItem(NSMenuItem.separator())
 
         let settingsItem = NSMenuItem(title: "Settings...", action: #selector(doSettings), keyEquivalent: ",")
@@ -99,6 +108,7 @@ class StatusBarController {
         if let d = NSApp.delegate as? AppDelegate { d.toggleCommandBar() }
     }
     @objc private func doSettings() { onSettingsClick() }
+    @objc private func doStopAll() { onStopAllClick() }
     @objc private func doQuit() { onQuitClick() }
 
     func setState(_ state: AgentState, message: String? = nil) {

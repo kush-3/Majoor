@@ -68,7 +68,13 @@ actor ControlServer {
         return (1024...65535).contains(stored) ? UInt16(stored) : ControlProtocol.defaultPort
     }
 
-    static var isEnabled: Bool { UserDefaults.standard.bool(forKey: enabledKey) }
+    /// Off by default in local mode, on by default in runtime mode; the
+    /// Settings toggle stores an explicit choice either way.
+    static var isEnabled: Bool {
+        let defaults = UserDefaults.standard
+        if defaults.object(forKey: enabledKey) == nil { return AppMode.current == .runtime }
+        return defaults.bool(forKey: enabledKey)
+    }
 
     static var runtimeId: String {
         if let existing = UserDefaults.standard.string(forKey: runtimeIdKey), !existing.isEmpty { return existing }

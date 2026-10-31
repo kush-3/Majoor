@@ -382,6 +382,8 @@ Unit tests: every `ControlMessage` encode/decode round trip; pairing code single
 
 ## Step 5. Client mode in the same binary
 
+> **Status: done 2026-10-31** (commit "feat: Client mode: the laptop drives a paired runtime over the control API"). As designed, with these notes: `AppMode` (default `local`) gates launch in `AppDelegate`; client mode configures the local `SessionManager` lazily on the first "Run here"; the control API is on by default in runtime mode and off by default in local mode. The remote pump is `SessionEventPump.startRemote(client:)` feeding `TaskManager.apply(event, source: "remote")` and `TaskManager.applySnapshot`, which replaces only remote tasks and approvals. Approvals route through `TaskManager.answerApproval` → `AppDelegate.routeApproval` (nonce over the API for remote sessions, local SessionManager otherwise), and the notification delegate uses the same router via `NotificationManager.approvalHandler`. A revoked or mismatched runtime puts the client in a terminal `.failed` state instead of retrying forever. `stop`/`/status`/`/stop N` typed in the bar are honored against the runtime. Unit tests: backoff schedule, seq cursor, snapshot replace, and a loopback lifecycle (pair, connect, submit, runtime restart, revoke). Not yet verified by hand: the two-Mac flow in 5e.
+
 **Size:** ~700 new lines, ~250 changed, 2–3 days. **Depends on:** step 4 (and 3's `SessionGateway`).
 
 ### 5a. Mode selection

@@ -57,14 +57,70 @@ class TaskManager: ObservableObject {
 
     // MARK: - Session event mirror
 
+    static let localSource = "local"
+    static let remoteSource = "remote"
+
+    /// Sessions that live on a paired runtime (client mode). Their approvals
+    /// are answered over the control API, with the nonce.
+    private(set) var remoteSessionIds: Set<SessionID> = []
+
+    /// Set by the app delegate: routes an answer to the runtime that asked.
+    /// Without it, answers go to the local SessionManager.
+    var approvalRouter: ((String, ApprovalDecision, String) async -> Void)?
+
+    func isRemote(sessionId: SessionID) -> Bool { remoteSessionIds.contains(sessionId) }
+
+    func isRemoteApproval(id: String) -> Bool {
+        guard let request = pendingApprovals.first(where: { $0.id == id }) else { return false }
+        return remoteSessionIds.contains(request.sessionId)
+    }
+
+    func answerApproval(id: String, decision: ApprovalDecision, byChannel: String) {
+        let router = approvalRouter
+        Task {
+            if let router {
+                await router(id, decision, byChannel)
+            } else {
+                _ = await SessionManager.shared.answerApproval(id: id, nonce: nil, decision: decision, byChannel: byChannel)
+            }
+        }
+    }
+
+    /// Client mode: the runtime's snapshot replaces everything previously
+    /// known about remote work. Local (Run-here) tasks are untouched.
+    func applySnapshot(_ snapshot: SnapshotBody, source: String = TaskManager.remoteSource) {
+        tasks.removeAll { $0.source == source }
+        pendingApprovals.removeAll { remoteSessionIds.contains($0.sessionId) }
+        remoteSessionIds.removeAll()
+        for recent in snapshot.recentTasks {
+            let task = recent.agentTask
+            task.source = source
+            tasks.append(task)
+            remoteSessionIds.insert(task.id)
+        }
+        for info in snapshot.sessions where !info.state.isTerminal {
+            apply(.created(info), source: source)
+            apply(.state(id: info.id, state: info.state), source: source)
+        }
+        for request in snapshot.pendingApprovals where !pendingApprovals.contains(where: { $0.id == request.id }) {
+            pendingApprovals.append(request)
+            remoteSessionIds.insert(request.sessionId)
+        }
+        tasks.sort { $0.createdAt > $1.createdAt }
+        if tasks.count > 100 { tasks = Array(tasks.prefix(100)) }
+        syncActiveConfirmation()
+        refreshRunning()
+    }
+
     /// Every change the runtime makes lands here as an event; the published
     /// properties the views already read are derived from it.
-    func apply(_ event: SessionEvent) {
+    func apply(_ event: SessionEvent, source: String = TaskManager.localSource) {
+        if source == Self.remoteSource, let id = event.sessionId { remoteSessionIds.insert(id) }
         switch event {
         case .created(let info):
             if !tasks.contains(where: { $0.id == info.id }) {
                 addTask(AgentTask(id: info.id, userInput: info.input, createdAt: info.createdAt, status: .running,
-                                  summary: "", completedAt: nil, tokensUsed: 0, modelUsed: "", steps: []))
+                                  summary: "", completedAt: nil, tokensUsed: 0, modelUsed: "", steps: [], source: source))
             }
             refreshRunning()
         case .state(let id, let state):

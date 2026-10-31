@@ -196,9 +196,7 @@ struct ConfirmationSheet: View {
         let feedback = feedbackText.trimmingCharacters(in: .whitespacesAndNewlines)
         let skipped = confirmation.isPipelinePlan ? taskManager.disabledPipelineStepIndices : []
         let decision = ApprovalDecision(approved: approved, feedback: feedback.isEmpty ? nil : feedback, skippedStepIndices: skipped)
-        Task {
-            _ = await SessionManager.shared.answerApproval(id: confirmation.id, nonce: nil, decision: decision, byChannel: "panel")
-        }
+        taskManager.answerApproval(id: confirmation.id, decision: decision, byChannel: "panel")
         taskManager.clearConfirmation()
     }
 }

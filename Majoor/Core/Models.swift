@@ -173,6 +173,9 @@ class AgentTask: ObservableObject, Identifiable {
     @Published var completedAt: Date?
     @Published var tokensUsed: Int
     @Published var modelUsed: String
+    /// Which runtime ran it: "local" (this Mac) or "remote" (a paired runtime
+    /// seen through client mode). Persistence-restored tasks are local.
+    var source: String = "local"
     
     init(userInput: String) {
         self.id = UUID()
@@ -188,8 +191,9 @@ class AgentTask: ObservableObject, Identifiable {
 
     /// Restore a task from persistence with its original ID and timestamps
     init(id: UUID, userInput: String, createdAt: Date, status: TaskStatus, summary: String,
-         completedAt: Date?, tokensUsed: Int, modelUsed: String, steps: [TaskStep]) {
+         completedAt: Date?, tokensUsed: Int, modelUsed: String, steps: [TaskStep], source: String = "local") {
         self.id = id
+        self.source = source
         self.userInput = userInput
         self.createdAt = createdAt
         self.status = status

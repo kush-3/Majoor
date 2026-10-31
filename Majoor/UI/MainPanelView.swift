@@ -10,6 +10,7 @@ import SwiftUI
 struct MainPanelView: View {
     @EnvironmentObject var taskManager: TaskManager
     @EnvironmentObject var chatManager: ChatManager
+    @ObservedObject private var connection = RuntimeConnectionModel.shared
     @State private var selectedTask: AgentTask?
 
     var body: some View {
@@ -81,7 +82,32 @@ struct MainPanelView: View {
                 .transition(.opacity.combined(with: .scale(scale: 0.95)))
             }
 
+            if connection.isClientMode {
+                connectionBadge
+            }
+
             Spacer()
+
+            // STOP: every session, local and remote, and every pending approval.
+            if taskManager.isTaskRunning {
+                Button {
+                    NotificationCenter.default.post(name: .majoorStopAll, object: nil)
+                } label: {
+                    HStack(spacing: 3) {
+                        Image(systemName: "stop.fill")
+                            .font(.system(size: 8))
+                        Text("Stop")
+                            .font(DT.Font.caption(.medium))
+                    }
+                    .foregroundStyle(.red)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 5)
+                    .background(Capsule(style: .continuous).fill(Color.red.opacity(0.1)))
+                }
+                .buttonStyle(.plain)
+                .help("Stop every running task")
+                .transition(.opacity)
+            }
 
             // Segmented tab control — Apple-style pill picker
             HStack(spacing: 2) {
@@ -98,6 +124,27 @@ struct MainPanelView: View {
         .padding(.top, DT.Spacing.md)
         .padding(.bottom, DT.Spacing.sm)
         .animation(DT.Anim.fast, value: taskManager.isTaskRunning)
+    }
+
+    private var connectionBadge: some View {
+        HStack(spacing: 4) {
+            Circle()
+                .fill(badgeColor)
+                .frame(width: 6, height: 6)
+            Text(connection.shortStatus)
+                .font(DT.Font.micro(.medium))
+                .foregroundStyle(.secondary)
+        }
+        .help(connection.statusText)
+    }
+
+    private var badgeColor: Color {
+        switch connection.tone {
+        case .ok: return .green
+        case .warning: return .orange
+        case .bad: return .red
+        case .off: return .secondary.opacity(0.4)
+        }
     }
 
     private func tabPill(_ label: String, systemImage: String, tag: Int) -> some View {

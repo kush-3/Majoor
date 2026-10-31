@@ -31,6 +31,11 @@ nonisolated final class NotificationManager: NSObject, UNUserNotificationCenterD
     static let actionDelete       = "ACTION_DELETE"
     static let actionOpenSettings = "ACTION_OPEN_SETTINGS"
 
+    /// Where an Approve/Deny tapped on a notification goes. The app delegate
+    /// sets it so client mode can answer a remote runtime with the nonce;
+    /// unset, answers go to the local SessionManager.
+    nonisolated static let approvalHandler = LockedValue<(@Sendable (String, ApprovalDecision, String) async -> Void)?>(nil)
+
     private override init() { super.init() }
 
     /// Register all notification categories and set self as delegate.
@@ -182,9 +187,14 @@ nonisolated final class NotificationManager: NSObject, UNUserNotificationCenterD
                 return
             }
 
+            let handler = Self.approvalHandler.withValue { $0 }
             Task {
-                _ = await SessionManager.shared.answerApproval(
-                    id: confirmationId, nonce: nil, decision: ApprovalDecision(approved: approved), byChannel: "notification")
+                if let handler {
+                    await handler(confirmationId, ApprovalDecision(approved: approved), "notification")
+                } else {
+                    _ = await SessionManager.shared.answerApproval(
+                        id: confirmationId, nonce: nil, decision: ApprovalDecision(approved: approved), byChannel: "notification")
+                }
             }
         }
 
@@ -225,4 +235,5 @@ extension Notification.Name {
     static let majoorOpenTaskDetail = Notification.Name("majoorOpenTaskDetail")
     static let majoorOpenSettings = Notification.Name("majoorOpenSettings")
     static let majoorOpenPanel = Notification.Name("majoorOpenPanel")
+    static let majoorStopAll = Notification.Name("majoorStopAll")
 }

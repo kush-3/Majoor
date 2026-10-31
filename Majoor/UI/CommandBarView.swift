@@ -20,7 +20,9 @@ struct CommandBarView: View {
         return CommandMode(rawValue: saved.capitalized) ?? .task
     }()
     @State private var historyIndex: Int = -1
+    @State private var runHere = UserDefaults.standard.bool(forKey: AppDelegate.runHereKey)
     @FocusState private var isFocused: Bool
+    @ObservedObject private var connection = RuntimeConnectionModel.shared
 
     let isTaskRunning: Bool
     let runningTaskInput: String
@@ -135,6 +137,28 @@ struct CommandBarView: View {
                 .buttonStyle(.plain)
                 .help("Tab to switch mode")
 
+                // Client mode: where a task runs. Explicit and persisted;
+                // the app never falls back to this Mac on its own.
+                if connection.isClientMode && mode == .task {
+                    Button(action: toggleRunHere) {
+                        HStack(spacing: 4) {
+                            Image(systemName: runHere ? "laptopcomputer" : "desktopcomputer")
+                                .font(.system(size: 9, weight: .medium))
+                            Text(runHere ? "Run here" : "Mac mini")
+                                .font(DT.Font.caption(.medium))
+                        }
+                        .foregroundStyle(runHere ? Color.orange : .secondary)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 4)
+                        .background(
+                            Capsule(style: .continuous)
+                                .fill(runHere ? Color.orange.opacity(0.12) : Color.primary.opacity(0.04))
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .help(runHere ? "Tasks run on this Mac with its files and keys. Click to send them to the Mac mini." : "Tasks run on the Mac mini. Click to run them on this Mac instead.")
+                }
+
                 // Submit button — only visible when there's text
                 if !inputText.isEmpty {
                     Button(action: submitCommand) {
@@ -161,6 +185,9 @@ struct CommandBarView: View {
                 hintLabel("\u{2191}\u{2193}", "history")
                 hintLabel("Esc", "close")
                 Spacer()
+                if connection.isClientMode {
+                    connectionDot
+                }
             }
             .padding(.horizontal, DT.Spacing.xl)
             .padding(.vertical, DT.Spacing.sm)
@@ -183,6 +210,36 @@ struct CommandBarView: View {
                 .font(.system(size: 9))
         }
         .foregroundStyle(.quaternary)
+    }
+
+    // MARK: - Connection
+
+    private var connectionDot: some View {
+        HStack(spacing: 4) {
+            Circle()
+                .fill(dotColor)
+                .frame(width: 6, height: 6)
+            Text(connection.shortStatus)
+                .font(.system(size: 9))
+        }
+        .foregroundStyle(.quaternary)
+        .help(connection.statusText)
+    }
+
+    private var dotColor: Color {
+        switch connection.tone {
+        case .ok: return .green
+        case .warning: return .orange
+        case .bad: return .red
+        case .off: return .secondary.opacity(0.4)
+        }
+    }
+
+    private func toggleRunHere() {
+        withAnimation(DT.Anim.fast) {
+            runHere.toggle()
+            UserDefaults.standard.set(runHere, forKey: AppDelegate.runHereKey)
+        }
     }
 
     // MARK: - Helpers
