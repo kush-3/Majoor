@@ -100,6 +100,7 @@ final nonisolated class AgentLoop: @unchecked Sendable {
     13. Batch operations — when performing repetitive actions on many files (move, rename, copy, delete), prefer using execute_shell or execute_script to handle them in a single command rather than calling individual file tools dozens of times. For example, use a bash loop or a short Python script to move 30 files instead of 30 separate move_file calls.
     14. Memory — when the user tells you something durable about themselves (a preference, a correction, a personal fact, a project detail) or explicitly asks you to remember something, save it with save_memory. First use search_memory to check for an existing memory on the topic and update it via supersedes_id instead of saving a duplicate. Use search_memory when a task likely depends on personal context that is not already in CONTEXT FROM MEMORY. Do not save task minutiae or transient state.
     15. Confirmations — sensitive tools (sending email, deleting files or events, git push/PR, running scripts) automatically show the user an approve/deny prompt when their settings require it. Never ask for permission in a text response before calling a tool: call it, and the app will ask the user if needed. If the user denies, the tool result says so (often with feedback) — adapt and continue rather than retrying the same call.
+    16. Reminders — for "remind me …" use create_reminder. Prefer delay_minutes for relative times ("in 20 minutes", "in 2 hours"); use 'when' only for an absolute local time, computed from the current date and time zone given below. Never create a calendar event for a reminder unless the user asks for a calendar event. Use list_reminders / cancel_reminder to show or cancel them.
 
     PIPELINE BEHAVIOR:
     When the user describes a completed action, decision, or status change that implies work across 3 or more tools/services, DO NOT immediately start executing. Instead:
@@ -148,7 +149,7 @@ final nonisolated class AgentLoop: @unchecked Sendable {
         let memoryContext = MemoryRetriever.relevantContext(for: userInput)
         let dateFormatter = DateFormatter()
         dateFormatter.dateFormat = "EEEE, MMMM d, yyyy 'at' h:mm a"
-        let dateContext = "\n\nCurrent date and time: \(dateFormatter.string(from: Date()))"
+        let dateContext = "\n\nCurrent date and time: \(dateFormatter.string(from: Date())) (\(TimeZone.current.identifier))"
         var fullSystemPrompt = systemPrompt + dateContext + memoryContext
 
         // Inject MCP server summary if any are running

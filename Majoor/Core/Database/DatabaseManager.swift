@@ -283,6 +283,37 @@ nonisolated final class DatabaseManager: @unchecked Sendable {
             }
         }
 
+        // Phase 1 step 6: the full PRD §5.3 automation shape. Phase 1 writes
+        // only one-shot reminders; cron, activeHours, inputSources, tier and
+        // the ceilings stay null until Phase 2's scheduled jobs.
+        migrator.registerMigration("v7_automations") { db in
+            try db.create(table: "automations", ifNotExists: true) { t in
+                t.primaryKey("id", .text)
+                t.column("name", .text).notNull()
+                t.column("kind", .text).notNull()
+                t.column("scheduleKind", .text).notNull()
+                t.column("runAt", .datetime)
+                t.column("cron", .text)
+                t.column("activeHours", .text)
+                t.column("inputSources", .text)
+                t.column("prompt", .text).notNull()
+                t.column("scratch", .text)
+                t.column("tier", .text)
+                t.column("deliveryChannel", .text).notNull()
+                t.column("deliveryThread", .text).notNull()
+                t.column("urgencyCeiling", .integer)
+                t.column("riskCeiling", .text)
+                t.column("enabled", .boolean).notNull().defaults(to: true)
+                t.column("nextRunAt", .datetime)
+                t.column("claimedAt", .datetime)
+                t.column("createdAt", .datetime).notNull()
+                t.column("createdBySession", .text)
+                t.column("lastRunAt", .datetime)
+                t.column("lastResult", .text)
+            }
+            try db.create(index: "automations_due", on: "automations", columns: ["enabled", "nextRunAt"], options: [.ifNotExists])
+        }
+
         try migrator.migrate(dbQueue)
     }
 }

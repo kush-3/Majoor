@@ -423,6 +423,8 @@ Dev loop on one Mac: runtime-mode instance and client-mode instance can run as t
 
 ## Step 6. `automations` table and one-shot reminders
 
+> **Status: done 2026-10-31** (commit "feat: Automations table, scheduler and one-shot reminders"). As designed: migration `v7_automations` with the full PRD shape and the `(enabled, nextRunAt)` index; `AutomationStore.claimDue` is one write transaction (tested with four concurrent claimers); `AutomationScheduler` is one timer behind a `SchedulerClock` seam, re-armed by `wake()` (create/cancel, system wake, `NSSystemClockDidChange`), with launch catch-up, the "(missed, was due …)" prefix past 24 h, stale-claim release after 2 min, 60 s retries up to 5 then `delivery_failed` plus a local notification. A fired reminder is recorded through `SessionManager.recordJob` (a `job` session with no model call) so it appears in the feed and history. Tools `create_reminder` / `list_reminders` / `cancel_reminder` (40 tools; CLAUDE.md and README updated), prompt rule 16, time zone appended to the date context. Delivery: `imessage` origin → `ChannelRouter.send` (throws when the channel is not registered, so it retries until step 7's channel exists); panel/control origin → local notification plus a panel toast. Runs in local and runtime modes only. Not yet verified by hand: the sleep/wake and clock-change re-arm on a real Mac.
+
 **Size:** ~450 new lines, 1.5 days. **Depends on:** step 3 (delivery), step 2 (`SessionContext`, `job` kind). Independent of 4 and 5.
 
 ### 6a. Schema

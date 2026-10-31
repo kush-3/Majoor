@@ -47,7 +47,7 @@ The agent loop is `nonisolated` and runs off the main thread inside an `AgentSes
 
 ### Tool System (`Tools/`)
 
-37 tools across 7 files, registered via `ToolRegistry.defaultTools()`.
+40 tools across 8 files, registered via `ToolRegistry.defaultTools()`.
 
 All tools conform to `AgentTool` protocol (`ToolProtocol.swift`):
 - `name`, `description`, `parameters` → converted to Anthropic tool schema automatically
@@ -391,7 +391,7 @@ Location:
 Tools/
 ```
 
-37 tools across 7 files.
+40 tools across 8 files.
 
 All tools conform to:
 

@@ -87,6 +87,25 @@ actor SessionManager {
         return await session.info
     }
 
+    /// A session with no model call: the scheduler records a fired reminder
+    /// this way so it shows in the feed, the sessions table and `/status`
+    /// history like any other work.
+    @discardableResult
+    func recordJob(input: String, origin: ChannelRef, summary: String) async -> SessionInfo {
+        let now = Date()
+        var info = SessionInfo(shortId: nextShortId, kind: .job, state: .running, input: input, origin: origin, createdAt: now)
+        nextShortId += 1
+        await bus.publish(.created(info))
+        info.state = .completed
+        info.endedAt = now
+        info.summary = summary
+        store?.upsert(info)
+        persistTask?(TaskSnapshot(id: info.id, userInput: input, createdAt: now, status: .completed, summary: summary, completedAt: now,
+                                  tokensIn: 0, tokensOut: 0, modelUsed: "none", steps: [StepDTO(type: "response", description: summary)]))
+        await bus.publish(.finished(id: info.id, state: .completed, summary: summary))
+        return info
+    }
+
     private func sessionFinished(_ id: SessionID) async {
         active.remove(id)
         while active.count < maxConcurrent, !queue.isEmpty {

@@ -203,6 +203,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         switch mode {
         case .local, .runtime:
             ensureLocalRuntime()
+            startScheduler()
             Task {
                 await ControlServer.shared.configure(
                     gateway: LocalSessionGateway(manager: SessionManager.shared, channelId: "control", trust: .authenticatedClient, tasks: TaskPersistence.shared),
@@ -230,6 +231,39 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
                 notify: { request in
                     NotificationManager.shared.sendActionable(id: request.id, title: request.title, body: request.body, category: request.category)
                 })
+        }
+    }
+
+    /// Reminders fire in local and runtime modes, never in client mode (the
+    /// runtime owns them). Delivery goes to the channel the reminder came
+    /// from when that channel can carry it (iMessage); the panel is
+    /// ephemeral, so panel and control-client reminders also post a local
+    /// notification, and the job session's events reach any connected client.
+    private func startScheduler() {
+        Task {
+            await AutomationScheduler.shared.configure(
+                store: AutomationStore.shared,
+                recordJob: { input, origin, summary in
+                    await SessionManager.shared.recordJob(input: input, origin: origin, summary: summary)
+                },
+                deliver: { record, message in
+                    if record.deliveryChannel == "imessage" {
+                        try await ChannelRouter.shared.send(to: record.delivery, text: message)
+                    } else {
+                        NotificationManager.shared.sendSimple(title: "Reminder", body: message)
+                        await ChannelRouter.shared.deliver(to: record.delivery, text: "⏰ " + message)
+                    }
+                },
+                onDeliveryFailed: { record, _ in
+                    NotificationManager.shared.sendSimple(title: "Reminder could not be delivered", body: record.prompt)
+                })
+            await AutomationScheduler.shared.start()
+        }
+        NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: nil) { _ in
+            Task { await AutomationScheduler.shared.wake() }
+        }
+        NotificationCenter.default.addObserver(forName: .NSSystemClockDidChange, object: nil, queue: nil) { _ in
+            Task { await AutomationScheduler.shared.wake() }
         }
     }
 

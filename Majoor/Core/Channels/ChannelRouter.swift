@@ -82,6 +82,13 @@ actor ChannelRouter {
         catch { MajoorLogger.error("Delivery to \(ref.channelId) failed: \(error)") }
     }
 
+    /// Like `deliver`, but the caller learns about failure: no such channel
+    /// registered, or the channel's send threw.
+    func send(to ref: ChannelRef, text: String) async throws {
+        guard let channel = channels[ref.channelId] else { throw GatewayError.unavailable }
+        try await channel.send(to: ref.threadKey, text: text)
+    }
+
     // MARK: - Inbound
 
     func handle(_ message: InboundMessage, via channel: any Channel) async {

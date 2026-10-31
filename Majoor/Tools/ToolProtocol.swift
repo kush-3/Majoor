@@ -116,9 +116,12 @@ nonisolated struct ToolRegistry: Sendable {
             DraftEmailTool(),
             SendEmailTool(),
             ReplyToEmailTool(),
-            // Long-Term Memory
+            // Memory and reminders
             SaveMemoryTool(),
             SearchMemoryTool(),
+            CreateReminderTool(),
+            ListRemindersTool(),
+            CancelReminderTool(),
         ]
     }
 }
