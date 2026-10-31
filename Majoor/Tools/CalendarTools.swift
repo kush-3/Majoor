@@ -12,7 +12,7 @@ import AppKit
 
 nonisolated(unsafe) let sharedEventStore = EKEventStore()
 
-private func ensureCalendarAccess() async throws {
+private nonisolated func ensureCalendarAccess() async throws {
     let status = EKEventStore.authorizationStatus(for: .event)
     MajoorLogger.log("📅 Calendar auth status: \(status.rawValue) (\(describeAuthStatus(status)))")
 
@@ -50,7 +50,7 @@ private func ensureCalendarAccess() async throws {
     }
 }
 
-private func describeAuthStatus(_ status: EKAuthorizationStatus) -> String {
+private nonisolated func describeAuthStatus(_ status: EKAuthorizationStatus) -> String {
     switch status {
     case .notDetermined: return "notDetermined"
     case .restricted: return "restricted"
@@ -78,7 +78,7 @@ private enum CalendarError: LocalizedError {
     }
 }
 
-private func parseDate(_ string: String) throws -> Date {
+private nonisolated func parseDate(_ string: String) throws -> Date {
     // Try ISO8601 first
     let iso = ISO8601DateFormatter()
     iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
@@ -99,7 +99,7 @@ private func parseDate(_ string: String) throws -> Date {
     throw CalendarError.parseDateFailed(string)
 }
 
-private func formatEvent(_ event: EKEvent) -> String {
+private nonisolated func formatEvent(_ event: EKEvent) -> String {
     let df = DateFormatter()
     df.dateStyle = .medium
     df.timeStyle = .short

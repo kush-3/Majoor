@@ -364,7 +364,12 @@ actor MCPClient {
                 } else if let result = json["result"] as? [String: Any] {
                     timeoutTasks.removeValue(forKey: id)?.cancel()
                     if let continuation = pending.removeValue(forKey: id) {
-                        continuation.resume(returning: result)
+                        // `[String: Any]` is not Sendable. The dictionary was just
+                        // parsed from the wire and nothing here touches it again, so
+                        // handing it to the waiter is safe. A typed JSONValue replaces
+                        // this with the iMessage JSON-RPC client (Phase 1 step 7).
+                        nonisolated(unsafe) let handoff = result
+                        continuation.resume(returning: handoff)
                     }
                 } else {
                     timeoutTasks.removeValue(forKey: id)?.cancel()

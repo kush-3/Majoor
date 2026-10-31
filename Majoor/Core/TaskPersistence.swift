@@ -39,7 +39,7 @@ nonisolated final class TaskPersistence: @unchecked Sendable {
 
     private init() {}
 
-    func saveTask(_ task: AgentTask) {
+    @MainActor func saveTask(_ task: AgentTask) {
         let steps = task.steps.map { step in
             PersistableStep(
                 timestamp: step.timestamp,
@@ -71,7 +71,7 @@ nonisolated final class TaskPersistence: @unchecked Sendable {
         }
     }
 
-    func loadRecentTasks(limit: Int = 50) -> [AgentTask] {
+    @MainActor func loadRecentTasks(limit: Int = 50) -> [AgentTask] {
         do {
             let records = try db.read { db in
                 try TaskRecord.order(Column("createdAt").desc).limit(limit).fetchAll(db)
@@ -96,7 +96,7 @@ nonisolated final class TaskPersistence: @unchecked Sendable {
 
     // MARK: - Conversion
 
-    private func recordToTask(_ record: TaskRecord) -> AgentTask? {
+    @MainActor private func recordToTask(_ record: TaskRecord) -> AgentTask? {
         guard let id = UUID(uuidString: record.id) else { return nil }
 
         var steps: [TaskStep] = []

@@ -228,7 +228,7 @@ nonisolated struct TaskResult: Sendable {
 
 // MARK: - Pipeline Step Model
 
-struct PipelineStep: Identifiable, Sendable {
+nonisolated struct PipelineStep: Identifiable, Sendable {
     let id = UUID()
     let planDescription: String        // "Create PR 'Add auth' on kush/majoor"
     var status: PipelineStepStatus     // pending → running → completed → failed → skipped
@@ -247,13 +247,13 @@ struct PipelineStep: Identifiable, Sendable {
     }
 }
 
-enum PipelineStepStatus: String, Sendable {
+nonisolated enum PipelineStepStatus: String, Sendable {
     case pending, running, completed, failed, skipped
 }
 
 // MARK: - AnyCodable Helper
 
-struct AnyCodable: Codable, Sendable {
+nonisolated struct AnyCodable: Codable, Sendable {
     let value: any Sendable
     
     init(_ value: any Sendable) { self.value = value }

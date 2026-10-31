@@ -141,9 +141,13 @@ final nonisolated class AgentLoop: @unchecked Sendable {
         }
         let anthropicTools = activeTools.map { $0.toAnthropicTool() }
 
-        // 4. Create task and add to UI
-        let task = AgentTask(userInput: userInput)
-        await MainActor.run { taskManager.addTask(task) }
+        // 4. Create task and add to UI. AgentTask is a MainActor model object,
+        // so it is created on the main actor (it is Sendable by isolation).
+        let task = await MainActor.run { () -> AgentTask in
+            let created = AgentTask(userInput: userInput)
+            taskManager.addTask(created)
+            return created
+        }
 
         // 5. Build messages — inject all conversations from the last 10 minutes
         var messages: [AnthropicMessage] = []
@@ -429,7 +433,8 @@ final nonisolated class AgentLoop: @unchecked Sendable {
                     }
                 }
 
-                return TaskResult(summary: summarize(text), steps: task.steps, tokensUsed: totalTokens)
+                let finalSteps = await MainActor.run { task.steps }
+                return TaskResult(summary: summarize(text), steps: finalSteps, tokensUsed: totalTokens)
 
             case .truncated(let partialText, let calls, let rawContent):
                 guard truncationRecoveries < maxTruncationRecoveries else {

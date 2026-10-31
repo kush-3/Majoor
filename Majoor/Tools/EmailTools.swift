@@ -8,7 +8,7 @@ import Foundation
 
 // MARK: - Gmail API Helper
 
-private struct GmailAPI {
+private nonisolated struct GmailAPI {
 
     static let baseURL = "https://gmail.googleapis.com/gmail/v1/users/me"
 
@@ -213,7 +213,7 @@ private struct GmailAPI {
 
 // MARK: - Validation
 
-private func isValidEmailId(_ id: String) -> Bool {
+private nonisolated func isValidEmailId(_ id: String) -> Bool {
     id.range(of: #"^[a-zA-Z0-9]+$"#, options: .regularExpression) != nil
 }
 

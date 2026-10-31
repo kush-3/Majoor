@@ -18,7 +18,7 @@ class StatusBarController {
     private var pulseOn = true
     private var currentState: AgentState = .idle
 
-    enum AgentState { case idle, working, success, attention, error }
+    nonisolated enum AgentState { case idle, working, success, attention, error }
 
     init(onLeftClick: @escaping () -> Void,
          onSettingsClick: @escaping () -> Void,

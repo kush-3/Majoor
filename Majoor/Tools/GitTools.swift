@@ -6,11 +6,11 @@
 
 import Foundation
 
-private func shellEscape(_ s: String) -> String {
+private nonisolated func shellEscape(_ s: String) -> String {
     "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"
 }
 
-private func isValidBranchName(_ name: String) -> Bool {
+private nonisolated func isValidBranchName(_ name: String) -> Bool {
     let pattern = #"^[a-zA-Z0-9/_.\-]+$"#
     return name.range(of: pattern, options: .regularExpression) != nil
 }

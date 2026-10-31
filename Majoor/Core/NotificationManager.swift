@@ -7,7 +7,7 @@
 import Foundation
 import UserNotifications
 
-final class NotificationManager: NSObject, UNUserNotificationCenterDelegate, @unchecked Sendable {
+nonisolated final class NotificationManager: NSObject, UNUserNotificationCenterDelegate, @unchecked Sendable {
 
     static let shared = NotificationManager()
 
