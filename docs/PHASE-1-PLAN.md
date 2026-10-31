@@ -250,6 +250,8 @@ Needs a process registry that `runShellCommand` registers into and a `withTaskCa
 
 ## Step 3. `Channel` protocol and the panel channel
 
+> **Status: done 2026-10-31** (commit "feat: Channel protocol, trust policy and channel router"). Deviations: `ChannelTrust` cases are `local` / `authenticatedClient` / `remoteText`; coded approval replies (`yes K7Q2`) are parsed by the router for every remote channel now rather than in step 7; `ask` has a default no-answer implementation until the Phase 2 "I'm blocked" job; `SessionGateway` carries `recentTasks` and `events` for the control API's snapshot.
+
 **Size:** ~450 new lines, ~120 changed, 1–1.5 days. **Depends on:** step 2.
 
 **New files:**
@@ -291,6 +293,8 @@ Needs a process registry that `runShellCommand` registers into and a `withTaskCa
 ---
 
 ## Step 4. Control API (WebSocket on the Tailscale interface)
+
+> **Status: done 2026-10-31** (commit "feat: Control API: WebSocket server on the Tailscale interface"). Implemented as designed with these notes: the per-connection handler is an actor; `ControlSettings.validate` is the pure tighten-only check the tests cover; the client endpoint must be a `ws://` URL (a host-and-port endpoint never completes the HTTP upgrade); the listener reports `.waiting` as a failed state so Settings shows why. Not yet verified by hand: the LAN-side refusal (`nc -vz <LAN-IP> 47821`) and the Local Network privacy prompt on a real Tailscale bind. Enabled from Settings ▸ Remote; off by default.
 
 **Size:** ~900 new lines, 3 days. **Depends on:** step 3 (uses `SessionGateway`, `EventBus`). Runs only in runtime mode (step 5 adds the mode switch; for development, a DEBUG-only toggle enables it).
 

@@ -201,7 +201,7 @@ class AgentTask: ObservableObject, Identifiable {
     }
 }
 
-nonisolated enum TaskStatus: String, Sendable {
+nonisolated enum TaskStatus: String, Codable, Sendable {
     case running = "Running"
     case completed = "Completed"
     case failed = "Failed"

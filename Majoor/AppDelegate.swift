@@ -70,12 +70,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         ) { _ in
             MajoorLogger.log("System sleeping — stopping MCP servers")
             Task { await MCPServerManager.shared.stopAll() }
+            Task { await ControlServer.shared.stop() }
         }
         NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didWakeNotification, object: nil, queue: nil
         ) { _ in
             MajoorLogger.log("System woke — restarting MCP servers")
             Task { await MCPServerManager.shared.startAll() }
+            Task { await ControlServer.shared.restartIfEnabled() }
         }
 
         // Listen for "Open Settings" from notification actions
@@ -160,6 +162,15 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
                 notify: { request in
                     NotificationManager.shared.sendActionable(id: request.id, title: request.title, body: request.body, category: request.category)
                 })
+        }
+        Task {
+            let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0"
+            await ControlServer.shared.configure(
+                gateway: LocalSessionGateway(manager: SessionManager.shared, channelId: "control", trust: .authenticatedClient, tasks: TaskPersistence.shared),
+                pairing: PairingManager(store: ClientStore.shared),
+                bus: SessionManager.shared.bus,
+                runtime: ControlRuntimeInfo(runtimeId: ControlServer.runtimeId, serverVersion: version, mode: "runtime"))
+            if ControlServer.isEnabled { await ControlServer.shared.start() }
         }
         let channel = PanelChannel(taskManager: taskManager)
         panelChannel = channel

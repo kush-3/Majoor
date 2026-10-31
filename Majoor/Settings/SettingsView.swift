@@ -18,6 +18,8 @@ struct SettingsView: View {
                 .tabItem { Label("Memory", systemImage: "brain") }
             UsageSettingsView()
                 .tabItem { Label("Usage", systemImage: "chart.bar") }
+            ControlAPISettingsView()
+                .tabItem { Label("Remote", systemImage: "antenna.radiowaves.left.and.right") }
             AboutTab()
                 .tabItem { Label("About", systemImage: "info.circle") }
         }

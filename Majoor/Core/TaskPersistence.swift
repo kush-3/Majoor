@@ -31,7 +31,7 @@ typealias PersistableStep = StepDTO
 // MARK: - Snapshot
 
 /// Everything persistence needs about a task, as a value.
-nonisolated struct TaskSnapshot: Sendable, Equatable {
+nonisolated struct TaskSnapshot: Codable, Sendable, Equatable {
     let id: UUID
     let userInput: String
     let createdAt: Date
