@@ -13,13 +13,23 @@ nonisolated final class DatabaseManager: @unchecked Sendable {
 
     let dbQueue: DatabaseQueue
 
+    /// MAJOOR_DB_PATH overrides the database file (tests point it at a temp
+    /// file so they never touch the real one).
+    private static var overridePath: String? {
+        let value = ProcessInfo.processInfo.environment["MAJOOR_DB_PATH"] ?? ""
+        return value.isEmpty ? nil : value
+    }
+
     private static var dbDirectory: URL {
+        if let overridePath {
+            return URL(fileURLWithPath: overridePath).deletingLastPathComponent()
+        }
         let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
         return appSupport.appendingPathComponent("ai.majoor.agent", isDirectory: true)
     }
 
     private static var dbPath: String {
-        dbDirectory.appendingPathComponent("majoor.sqlite").path
+        overridePath ?? dbDirectory.appendingPathComponent("majoor.sqlite").path
     }
 
     private init() {

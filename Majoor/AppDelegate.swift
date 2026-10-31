@@ -24,7 +24,21 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
 
     // MARK: - Lifecycle
 
+    /// True when the process is a unit-test host. The MajoorTests bundle is
+    /// loaded into this app, so launch must not start MCP servers, register
+    /// the global hotkey, open the database or show onboarding.
+    static var isRunningTests: Bool {
+        let env = ProcessInfo.processInfo.environment
+        return env["XCTestConfigurationFilePath"] != nil
+            || env["XCTestBundlePath"] != nil
+            || NSClassFromString("XCTestCase") != nil
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
+        if Self.isRunningTests {
+            MajoorLogger.log("Test host: skipping startup side effects")
+            return
+        }
         NSAppleEventManager.shared().setEventHandler(
             self, andSelector: #selector(handleGetURLEvent(_:withReply:)),
             forEventClass: AEEventClass(kInternetEventClass), andEventID: AEEventID(kAEGetURL))

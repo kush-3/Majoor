@@ -11,14 +11,30 @@
 		5C8FC7002F62A001005673E5 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = 5C8FC6FF2F62A001005673E5 /* Sparkle */; };
 /* End PBXBuildFile section */
 
+/* Begin PBXContainerItemProxy section */
+		5CA1000B2F6A001000C816F7 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 5C9B38092F5E1BFF00C816F7 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 5C9B38102F5E1BFF00C816F7;
+			remoteInfo = Majoor;
+		};
+/* End PBXContainerItemProxy section */
+
 /* Begin PBXFileReference section */
 		5C9B38112F5E1BFF00C816F7 /* Majoor.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Majoor.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		5CA100022F6A001000C816F7 /* MajoorTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = MajoorTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		5C9B38132F5E1BFF00C816F7 /* Majoor */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			path = Majoor;
+			sourceTree = "<group>";
+		};
+		5CA100032F6A001000C816F7 /* MajoorTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = MajoorTests;
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
@@ -33,6 +49,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		5CA100052F6A001000C816F7 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -40,6 +63,7 @@
 			isa = PBXGroup;
 			children = (
 				5C9B38132F5E1BFF00C816F7 /* Majoor */,
+				5CA100032F6A001000C816F7 /* MajoorTests */,
 				5C9B38122F5E1BFF00C816F7 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -48,6 +72,7 @@
 			isa = PBXGroup;
 			children = (
 				5C9B38112F5E1BFF00C816F7 /* Majoor.app */,
+				5CA100022F6A001000C816F7 /* MajoorTests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -79,6 +104,29 @@
 			productReference = 5C9B38112F5E1BFF00C816F7 /* Majoor.app */;
 			productType = "com.apple.product-type.application";
 		};
+		5CA100012F6A001000C816F7 /* MajoorTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 5CA100072F6A001000C816F7 /* Build configuration list for PBXNativeTarget "MajoorTests" */;
+			buildPhases = (
+				5CA100042F6A001000C816F7 /* Sources */,
+				5CA100052F6A001000C816F7 /* Frameworks */,
+				5CA100062F6A001000C816F7 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				5CA1000A2F6A001000C816F7 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				5CA100032F6A001000C816F7 /* MajoorTests */,
+			);
+			name = MajoorTests;
+			packageProductDependencies = (
+			);
+			productName = MajoorTests;
+			productReference = 5CA100022F6A001000C816F7 /* MajoorTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -91,6 +139,10 @@
 				TargetAttributes = {
 					5C9B38102F5E1BFF00C816F7 = {
 						CreatedOnToolsVersion = 26.2;
+					};
+					5CA100012F6A001000C816F7 = {
+						CreatedOnToolsVersion = 26.2;
+						TestTargetID = 5C9B38102F5E1BFF00C816F7;
 					};
 				};
 			};
@@ -113,12 +165,20 @@
 			projectRoot = "";
 			targets = (
 				5C9B38102F5E1BFF00C816F7 /* Majoor */,
+				5CA100012F6A001000C816F7 /* MajoorTests */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
 		5C9B380F2F5E1BFF00C816F7 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		5CA100062F6A001000C816F7 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -135,7 +195,22 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		5CA100042F6A001000C816F7 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		5CA1000A2F6A001000C816F7 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 5C9B38102F5E1BFF00C816F7 /* Majoor */;
+			targetProxy = 5CA1000B2F6A001000C816F7 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
 		5C9B381A2F5E1C0000C816F7 /* Debug */ = {
@@ -358,6 +433,48 @@
 			};
 			name = Release;
 		};
+		5CA100082F6A001000C816F7 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 5;
+				DEVELOPMENT_TEAM = 7AEAH22332;
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MARKETING_VERSION = 1.0.2;
+				PRODUCT_BUNDLE_IDENTIFIER = com.Majoor.MajoorTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 6.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Majoor.app/Contents/MacOS/Majoor";
+			};
+			name = Debug;
+		};
+		5CA100092F6A001000C816F7 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 5;
+				DEVELOPMENT_TEAM = 7AEAH22332;
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MARKETING_VERSION = 1.0.2;
+				PRODUCT_BUNDLE_IDENTIFIER = com.Majoor.MajoorTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 6.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Majoor.app/Contents/MacOS/Majoor";
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -375,6 +492,15 @@
 			buildConfigurations = (
 				5C9B381D2F5E1C0000C816F7 /* Debug */,
 				5C9B381E2F5E1C0000C816F7 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		5CA100072F6A001000C816F7 /* Build configuration list for PBXNativeTarget "MajoorTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				5CA100082F6A001000C816F7 /* Debug */,
+				5CA100092F6A001000C816F7 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

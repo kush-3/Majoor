@@ -15,7 +15,13 @@ xcodebuild -project Majoor.xcodeproj -scheme Majoor -configuration Debug build
 xcodebuild -project Majoor.xcodeproj -scheme Majoor clean
 ```
 
-There are no tests, linter, or CI/CD configured.
+Unit tests live in `MajoorTests/` (Swift Testing, app-hosted, synchronized folder like `Majoor/`; just add `.swift` files). Run them with:
+
+```bash
+xcodebuild test -project Majoor.xcodeproj -scheme Majoor -destination 'platform=macOS' -only-testing:MajoorTests
+```
+
+Two seams keep tests off real state: `AppDelegate.isRunningTests` skips every startup side effect in the test host, and `MAJOOR_DB_PATH` points `DatabaseManager` at a temp file. No linter or CI/CD is configured.
 
 ## Key Constraints
 
@@ -745,9 +751,11 @@ Logs are acceptable but:
 
 # Testing
 
-No test framework configured.
-
-Manual testing only.
+Swift Testing suites in `MajoorTests/` (app-hosted; see Build & Run for the
+command). Pure-logic code (classifiers, guards, parsers, schedulers) gets
+tests; UI and live-API flows are still tested manually. The
+`majoor://task?text=&token=` hook (AppDelegate) lets a script submit a task
+to a running build when the app was launched with `MAJOOR_AUTOMATION_TOKEN`.
 
 ---
 
