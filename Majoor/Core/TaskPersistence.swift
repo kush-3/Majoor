@@ -59,7 +59,7 @@ nonisolated final class TaskPersistence: @unchecked Sendable {
             summary: task.summary,
             tokensUsed: task.tokensUsed,
             // TODO: AgentTask should track inputTokens and outputTokens separately
-            costEstimate: CostConfig.estimateCost(model: task.modelUsed ?? "", inputTokens: task.tokensUsed / 2, outputTokens: task.tokensUsed / 2),
+            costEstimate: CostConfig.estimateCost(model: task.modelUsed, inputTokens: task.tokensUsed / 2, outputTokens: task.tokensUsed / 2),
             createdAt: task.createdAt,
             completedAt: task.completedAt
         )

@@ -5,7 +5,7 @@
 // sends notifications, and routes user responses to ConfirmationManager.
 
 import Foundation
-import UserNotifications
+@preconcurrency import UserNotifications
 
 nonisolated final class NotificationManager: NSObject, UNUserNotificationCenterDelegate, @unchecked Sendable {
 

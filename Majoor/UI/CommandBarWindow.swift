@@ -87,8 +87,10 @@ class CommandBarWindow {
             ctx.timingFunction = CAMediaTimingFunction(name: .easeIn)
             panel.animator().alphaValue = 0
         }, completionHandler: { [weak self] in
-            self?.panel?.orderOut(nil)
-            self?.panel?.alphaValue = 1
+            MainActor.assumeIsolated {
+                self?.panel?.orderOut(nil)
+                self?.panel?.alphaValue = 1
+            }
         })
     }
 

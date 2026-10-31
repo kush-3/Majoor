@@ -108,7 +108,7 @@ struct AccountsSettingsView: View {
     // MARK: - Computed Properties
 
     private var calendarGranted: Bool {
-        calendarStatus == .fullAccess || calendarStatus == .authorized
+        calendarStatus == .fullAccess   // .authorized is the pre-macOS 14 spelling; the target is 14+
     }
 
     private var calendarDenied: Bool {

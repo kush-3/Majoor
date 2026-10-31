@@ -69,7 +69,7 @@ nonisolated final class GoogleOAuthManager: NSObject, @unchecked Sendable {
         let authorizationURL = components.url!
 
         // 3. Open in default browser
-        await MainActor.run {
+        _ = await MainActor.run {
             NSWorkspace.shared.open(authorizationURL)
         }
 

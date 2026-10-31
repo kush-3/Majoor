@@ -65,15 +65,20 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         }
 
         // Listen for "Open Settings" from notification actions
+        // Observers on `queue: .main` run on the main thread, but the closure
+        // type is @Sendable, so the compiler cannot see that; assumeIsolated
+        // asserts it at runtime instead of hopping.
         NotificationCenter.default.addObserver(forName: .majoorOpenSettings, object: nil, queue: .main) { [weak self] _ in
-            self?.openSettings()
+            MainActor.assumeIsolated { self?.openSettings() }
         }
 
         // Listen for "Open Panel" (e.g., when a confirmation is needed)
         NotificationCenter.default.addObserver(forName: .majoorOpenPanel, object: nil, queue: .main) { [weak self] _ in
-            guard let self else { return }
-            if self.panelWindow == nil || self.panelWindow?.isVisible == false {
-                self.showPanel()
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                if self.panelWindow == nil || self.panelWindow?.isVisible == false {
+                    self.showPanel()
+                }
             }
         }
 
@@ -310,8 +315,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             ctx.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
             panel.animator().alphaValue = 0
         }, completionHandler: { [weak self] in
-            self?.panelWindow?.close()
-            self?.panelWindow?.alphaValue = 1
+            MainActor.assumeIsolated {
+                self?.panelWindow?.close()
+                self?.panelWindow?.alphaValue = 1
+            }
         })
     }
 

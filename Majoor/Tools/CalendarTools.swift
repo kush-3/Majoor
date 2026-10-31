@@ -17,8 +17,11 @@ private nonisolated func ensureCalendarAccess() async throws {
     MajoorLogger.log("📅 Calendar auth status: \(status.rawValue) (\(describeAuthStatus(status)))")
 
     switch status {
-    case .fullAccess, .authorized:
+    case .fullAccess:   // .authorized is the pre-macOS 14 spelling of the same value
         return
+    case .writeOnly:
+        MajoorLogger.error("📅 Calendar access is write-only; reading events needs full access. Reset with: tccutil reset Calendar com.Majoor")
+        throw CalendarError.accessDenied
     case .notDetermined:
         MajoorLogger.log("📅 Requesting calendar access...")
         // LSUIElement apps have .accessory activation policy — TCC won't show
@@ -31,10 +34,10 @@ private nonisolated func ensureCalendarAccess() async throws {
         do {
             granted = try await sharedEventStore.requestFullAccessToEvents()
         } catch {
-            await MainActor.run { NSApp.setActivationPolicy(.accessory) }
+            _ = await MainActor.run { NSApp.setActivationPolicy(.accessory) }
             throw error
         }
-        await MainActor.run { NSApp.setActivationPolicy(.accessory) }
+        _ = await MainActor.run { NSApp.setActivationPolicy(.accessory) }
         if granted {
             MajoorLogger.log("📅 Calendar access granted!")
         } else {

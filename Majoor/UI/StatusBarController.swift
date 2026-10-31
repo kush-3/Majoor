@@ -34,14 +34,18 @@ class StatusBarController {
         NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.willSleepNotification, object: nil, queue: .main
         ) { [weak self] _ in
-            self?.pulseTimer?.invalidate()
-            self?.pulseTimer = nil
+            MainActor.assumeIsolated {
+                self?.pulseTimer?.invalidate()
+                self?.pulseTimer = nil
+            }
         }
         NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
         ) { [weak self] _ in
-            guard let self, self.currentState == .working else { return }
-            self.setState(.working)
+            MainActor.assumeIsolated {
+                guard let self, self.currentState == .working else { return }
+                self.setState(.working)
+            }
         }
     }
 
@@ -122,14 +126,18 @@ class StatusBarController {
 
             // Gentle pulse — not jarring, just enough to signal activity
             pulseOn = true
+            // Timers scheduled from the main run loop fire on it; the closure is
+            // @Sendable so the isolation is asserted rather than inferred.
             pulseTimer = Timer.scheduledTimer(withTimeInterval: 0.9, repeats: true) { [weak self] _ in
-                guard let self, let btn = self.statusItem?.button else { return }
-                self.pulseOn.toggle()
-                let target: CGFloat = self.pulseOn ? 1.0 : 0.5
-                NSAnimationContext.runAnimationGroup { ctx in
-                    ctx.duration = 0.7
-                    ctx.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-                    btn.animator().alphaValue = target
+                MainActor.assumeIsolated {
+                    guard let self, let btn = self.statusItem?.button else { return }
+                    self.pulseOn.toggle()
+                    let target: CGFloat = self.pulseOn ? 1.0 : 0.5
+                    NSAnimationContext.runAnimationGroup { ctx in
+                        ctx.duration = 0.7
+                        ctx.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+                        btn.animator().alphaValue = target
+                    }
                 }
             }
 
@@ -139,7 +147,7 @@ class StatusBarController {
             button.contentTintColor = .systemGreen
             button.toolTip = "Majoor -- Task complete"
             successRevertTimer = Timer.scheduledTimer(withTimeInterval: 2.5, repeats: false) { [weak self] _ in
-                self?.setState(.idle)
+                MainActor.assumeIsolated { self?.setState(.idle) }
             }
 
         case .attention:
