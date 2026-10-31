@@ -50,11 +50,13 @@ All tools conform to `AgentTool` protocol (`ToolProtocol.swift`):
 
 AgentLoop normalizes LLM argument aliases (e.g., "file_path" → "path") before dispatching.
 
+`fetch_webpage` and `fetch_multiple_urls` pass every URL and every redirect through `Security/URLGuard.swift`: http(s) only, no embedded credentials, no localhost/private/link-local/CGNAT (Tailscale)/`.local`/`.ts.net` targets, and DNS-resolved addresses are checked too.
+
 ### Confirmation Flow
 
 A permission mode (Settings → General; `Core/PermissionMode.swift`, stored in UserDefaults) decides which tool calls prompt via `ConfirmationPolicy`:
 - **Manual** — every non-read-only tool prompts (tools declare `isReadOnly`; MCP tools use a get_/list_/search_ name heuristic)
-- **Standard** (default) — sensitive tools prompt: email send/reply, file/event deletion, git push/PR, non-bash scripts, and shell commands that invoke an interpreter on a script file (closing the write_file + `python3 x.py` bypass). Sensitive prompts survive pipeline approval. MCP write tools do NOT prompt in Standard (known carve-out).
+- **Standard** (default) — sensitive tools prompt: email send/reply, file/event deletion, git push/PR, non-bash scripts, and any shell command (execute_shell, run_tests, bash execute_script) that `Security/ShellCommandClassifier.swift` maps to one of those: interpreters and script files, rm/git clean/git reset --hard, git push, gh writes, ssh, package publishing, curl/wget, Keychain access, launchd/cron, mail. Shell `git push` also gets git_push's protected-branch guard. Sensitive prompts survive pipeline approval. MCP write tools do NOT prompt in Standard (known carve-out).
 - **Auto** — sensitive tools prompt only when a fail-closed Haiku consent check judges that the user's own task wording didn't request that specific action (it sees the concrete arguments, so injected recipient/target swaps still prompt). Exception: send_email/reply_to_email ALWAYS prompt, in every mode — outbound email is irreversible
 
 Bash scripts always pass through `CommandSanitizer` (interpreted-language scripts are confirmation-gated instead). Tools can supply a human-readable `confirmationPreview` (e.g. delete_calendar_event shows the event title/date instead of an opaque id). Stopping a task denies any pending confirmation (`ConfirmationManager.denyAll`). The prompt flow:
@@ -65,7 +67,7 @@ Bash scripts always pass through `CommandSanitizer` (interpreted-language script
 
 ### Google OAuth (`Core/OAuth/GoogleOAuthManager.swift`)
 
-Uses a loopback HTTP server on `127.0.0.1` (dynamic port) for OAuth redirect — Google blocks custom URL schemes for desktop apps. Tokens stored in macOS Keychain.
+Uses a loopback HTTP server on `127.0.0.1` (dynamic port) for OAuth redirect — Google blocks custom URL schemes for desktop apps. The flow sends `state` and PKCE (S256); a callback whose state does not match the attempt is rejected. Tokens stored in macOS Keychain.
 
 ### EventKit Calendar
 
@@ -425,9 +427,11 @@ Gated by a permission mode (`Core/PermissionMode.swift`; Settings → General):
 
 Sensitive = send_email, reply_to_email, delete_file, delete_calendar_event,
 git_push, git_create_pr, execute_script for non-bash languages (bash scripts
-go through CommandSanitizer in every mode), and execute_shell/run_tests
-commands that run an interpreter on a script file. MCP write tools are a
-known carve-out: they never prompt in Standard/Auto.
+go through CommandSanitizer in every mode), and any execute_shell/run_tests/
+bash-script command that `Security/ShellCommandClassifier.swift` maps to an
+equivalent sensitive action (interpreters, script files, deletions, git push,
+gh writes, ssh, publishing, curl/wget, Keychain, launchd/cron, mail). MCP
+write tools are a known carve-out: they never prompt in Standard/Auto.
 
 Flow:
 
