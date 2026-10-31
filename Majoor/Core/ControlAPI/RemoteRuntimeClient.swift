@@ -227,6 +227,13 @@ actor RemoteRuntimeClient {
                     self.credentials?.runtimeId = ok.runtimeId
                     ClientCredentialsStore.saveRuntimeId(ok.runtimeId)
                 }
+                // The bus numbers events per runtime process: a relaunched
+                // runtime starts again at 0. A cursor past its latest seq is
+                // from a previous life, so start over with a snapshot.
+                if let last = cursor.lastSeq, ok.seq < last {
+                    MajoorLogger.log("Control client: runtime restarted (seq \(ok.seq) < \(last)); resyncing from a snapshot")
+                    cursor = EventCursor()
+                }
                 state = .connected(runtimeId: ok.runtimeId)
                 backoff.reset()
                 MajoorLogger.log("🔗 Connected to runtime \(ok.runtimeId.prefix(8)) at \(credentials.host):\(credentials.port) (seq \(ok.seq))")
@@ -407,6 +414,8 @@ actor RemoteRuntimeClient {
         do {
             return try expect(.submitAck, from: try await request(.submit, body: body)).body(as: SubmitAck.self)
         } catch RemoteClientError.timeout, RemoteClientError.closed, RemoteClientError.notConnected {
+            // Skip the rest of the backoff: the user is waiting on this.
+            wakeRequested = true
             guard await waitForConnection(timeout: .seconds(15)) else { throw RemoteClientError.notConnected }
             return try expect(.submitAck, from: try await request(.submit, body: body)).body(as: SubmitAck.self)
         }

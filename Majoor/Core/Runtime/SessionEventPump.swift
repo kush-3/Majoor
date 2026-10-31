@@ -45,7 +45,11 @@ final class SessionEventPump {
                 case .snapshot(let body):
                     self.taskManager.applySnapshot(body)
                     self.setState(self.taskManager.isTaskRunning ? .working : .idle, nil)
+                    MajoorLogger.log("🖥️ Runtime snapshot applied: \(body.sessions.count) live session(s), \(body.recentTasks.count) recent task(s), seq \(body.seq)")
                 case .event(let item):
+                    if case .finished(let id, let state, _) = item.event {
+                        MajoorLogger.log("🖥️ Runtime session \(id.uuidString.prefix(8)) \(state.rawValue) (seq \(item.seq))")
+                    }
                     self.handle(item, source: TaskManager.remoteSource)
                 case .state, .bye:
                     break

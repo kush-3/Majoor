@@ -50,37 +50,59 @@ nonisolated final class WebSocketPeer: @unchecked Sendable {
         return "\(connection.endpoint)"
     }
 
-    /// Starts the connection and waits until it is ready (or fails).
+    /// Starts the connection and waits until it is ready, or fails fast.
+    /// A refused or unreachable peer surfaces as `.waiting` (Network.framework
+    /// would keep retrying on its own); the caller owns retries, so that is a
+    /// failure here. On timeout the connection is cancelled, which resumes
+    /// the waiting continuation, so the task group can never hang on it.
     func start(timeout: Duration = .seconds(10)) async throws {
         guard started.withValue({ value -> Bool in let was = value; value = true; return !was }) else { return }
         let ready = LockedValue(false)
+        let connection = self.connection
+        let queue = self.queue
         try await withThrowingTaskGroup(of: Void.self) { group in
             group.addTask {
-                try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-                    self.connection.stateUpdateHandler = { state in
-                        let fire = ready.withValue { done -> Bool in
-                            if done { return false }
+                try await withTaskCancellationHandler {
+                    try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                        connection.stateUpdateHandler = { state in
+                            let fire = ready.withValue { done -> Bool in
+                                if done { return false }
+                                switch state {
+                                case .ready, .failed, .cancelled, .waiting: done = true; return true
+                                default: return false
+                                }
+                            }
+                            guard fire else { return }
                             switch state {
-                            case .ready, .failed, .cancelled: done = true; return true
-                            default: return false
+                            case .ready:
+                                continuation.resume()
+                            case .failed(let error):
+                                continuation.resume(throwing: WebSocketError.notReady("\(error)"))
+                            case .waiting(let error):
+                                connection.cancel()
+                                continuation.resume(throwing: WebSocketError.notReady("\(error)"))
+                            case .cancelled:
+                                continuation.resume(throwing: WebSocketError.closed)
+                            default:
+                                break
                             }
                         }
-                        guard fire else { return }
-                        switch state {
-                        case .ready: continuation.resume()
-                        case .failed(let error): continuation.resume(throwing: WebSocketError.notReady("\(error)"))
-                        case .cancelled: continuation.resume(throwing: WebSocketError.closed)
-                        default: break
-                        }
+                        connection.start(queue: queue)
                     }
-                    self.connection.start(queue: self.queue)
+                } onCancel: {
+                    connection.cancel()
                 }
             }
             group.addTask {
                 try await Task.sleep(for: timeout)
                 throw WebSocketError.timeout
             }
-            try await group.next()
+            do {
+                try await group.next()
+            } catch {
+                group.cancelAll()
+                throw error
+            }
             group.cancelAll()
         }
     }

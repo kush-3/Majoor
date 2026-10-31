@@ -339,21 +339,60 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     }
 
     private func handleIncomingURL(_ url: URL) {
-        guard url.scheme?.lowercased() == "majoor", url.host?.lowercased() == "task",
-              let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems,
-              let text = items.first(where: { $0.name == "text" })?.value?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !text.isEmpty else {
+        guard url.scheme?.lowercased() == "majoor", let host = url.host?.lowercased(),
+              let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems else {
             MajoorLogger.log("⛔ Ignored URL: \(url.absoluteString.prefix(120))")
             return
         }
+        func value(_ name: String) -> String {
+            items.first(where: { $0.name == name })?.value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        }
         let expected = ProcessInfo.processInfo.environment["MAJOOR_AUTOMATION_TOKEN"] ?? ""
-        let given = items.first(where: { $0.name == "token" })?.value ?? ""
-        guard !expected.isEmpty, given == expected else {
-            MajoorLogger.log("⛔ majoor://task ignored: automation token missing or wrong")
+        guard !expected.isEmpty, value("token") == expected else {
+            MajoorLogger.log("⛔ majoor://\(host) ignored: automation token missing or wrong")
             return
         }
-        MajoorLogger.log("🔗 majoor://task accepted (\(text.count) chars)")
-        handleCommand(text)
+        switch host {
+        case "task":
+            let text = value("text")
+            guard !text.isEmpty else { MajoorLogger.log("⛔ majoor://task ignored: empty text"); return }
+            MajoorLogger.log("🔗 majoor://task accepted (\(text.count) chars)")
+            handleCommand(text)
+        #if DEBUG
+        // One-Mac dev loop (PHASE-1-PLAN 5e): a runtime instance mints a
+        // pairing code into its log; a client instance pairs with it.
+        case "pair-code":
+            Task {
+                if let code = await ControlServer.shared.mintPairingCode() {
+                    MajoorLogger.log("🔗 majoor://pair-code: \(code.code) (valid until \(code.expiresAt))")
+                } else {
+                    MajoorLogger.log("⛔ majoor://pair-code: control API is not configured (runtime mode only)")
+                }
+            }
+        case "pair":
+            guard let client = remoteClient, let port = UInt16(value("port")), !value("host").isEmpty, !value("code").isEmpty else {
+                MajoorLogger.log("⛔ majoor://pair needs host, port and code, in client mode")
+                return
+            }
+            let host = value("host"), code = value("code")
+            Task {
+                do {
+                    let ok = try await RemoteRuntimeClient.pair(host: host, port: port, code: code, deviceName: "Dev client")
+                    let credentials = ClientCredentials(host: host, port: port, clientId: ok.clientId, token: ok.token, runtimeId: nil)
+                    await client.forget()
+                    ClientCredentialsStore.save(credentials)
+                    await client.configure(credentials)
+                    await client.start()
+                    RuntimeConnectionModel.shared.refreshPairing()
+                    MajoorLogger.log("🔗 majoor://pair: paired as \(ok.clientId.prefix(8)) with \(host):\(port)")
+                } catch {
+                    MajoorLogger.log("⛔ majoor://pair failed: \((error as? RemoteClientError)?.userMessage ?? "\(error)")")
+                }
+            }
+        #endif
+        default:
+            MajoorLogger.log("⛔ Ignored URL: \(url.absoluteString.prefix(120))")
+        }
     }
 
     // MARK: - Command Handling

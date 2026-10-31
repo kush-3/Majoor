@@ -113,10 +113,13 @@ struct RemoteRuntimeClientTests {
         let path: String
     }
 
-    private func startRuntime(provider: ScriptedProvider, port: UInt16 = 0, existing: Runtime? = nil) async throws -> Runtime {
+    /// `existing` reuses the pairing store (so hello still works) and, unless
+    /// `freshManager`, the manager and its bus; a fresh manager models a
+    /// relaunched runtime whose sequence numbers start again at zero.
+    private func startRuntime(provider: ScriptedProvider, port: UInt16 = 0, existing: Runtime? = nil, freshManager: Bool = false) async throws -> Runtime {
         let path = existing?.path ?? NSTemporaryDirectory() + "majoor-client-\(UUID().uuidString).sqlite"
         let manager: SessionManager
-        if let existing { manager = existing.manager } else { manager = await makeManager(route: { _ in (provider, []) }) }
+        if let existing, !freshManager { manager = existing.manager } else { manager = await makeManager(route: { _ in (provider, []) }) }
         let pairing: PairingManager
         if let existing { pairing = existing.pairing } else { pairing = PairingManager(store: ClientStore(db: try DatabaseManager.openAndMigrate(path: path))) }
         let server = ControlServer()
@@ -188,6 +191,52 @@ struct RemoteRuntimeClientTests {
         #expect(await waitUntil(timeout: .seconds(20)) { if case .failed = await client.state { return true }; return false })
         await client.stop()
         await restarted.server.stop()
+    }
+
+    @Test("a runtime relaunched with a fresh bus is resynced from a snapshot, and later events still arrive")
+    func runtimeRestart() async throws {
+        let provider = ScriptedProvider([.text("Before restart"), .text("After restart")])
+        let runtime = try await startRuntime(provider: provider)
+        defer { try? FileManager.default.removeItem(atPath: runtime.path) }
+        let code = await runtime.pairing.mintCode()
+        let ok = try await RemoteRuntimeClient.pair(host: "127.0.0.1", port: runtime.port, code: code.code, deviceName: "Test laptop")
+        let client = RemoteRuntimeClient(appVersion: "test")
+        let box = UpdateBox()
+        let updates = await client.updates()
+        let collector = Task { for await update in updates { box.append(update) } }
+        defer { collector.cancel() }
+        await client.configure(ClientCredentials(host: "127.0.0.1", port: runtime.port, clientId: ok.clientId, token: ok.token, runtimeId: nil))
+        await client.start()
+        #expect(await waitUntil { await client.state.isConnected })
+        let first = try await client.submit(text: "first", threadKey: nil)
+        #expect(await waitUntil { box.events.contains { if case .finished(let id, .completed, "Before restart") = $0.event { return id == first.sessionId }; return false } })
+        let seqBefore = try #require(await client.lastSeq)
+        #expect(seqBefore >= 2)
+
+        await runtime.server.stop()
+        #expect(await waitUntil { if case .reconnecting = await client.state { return true }; return false })
+        let relaunched = try await startRuntime(provider: provider, port: runtime.port, existing: runtime, freshManager: true)
+        await client.wake()
+        #expect(await waitUntil(timeout: .seconds(20)) { await client.state.isConnected })
+        // The cursor was ahead of the new bus: a snapshot replaced it.
+        #expect(await waitUntil { box.snapshots.count >= 2 })
+        #expect(await client.lastSeq == 0)
+        let second = try await client.submit(text: "second", threadKey: nil)
+        #expect(second.shortId == 1)   // the relaunched runtime numbers from one again
+        #expect(await waitUntil { box.events.contains { if case .finished(let id, .completed, "After restart") = $0.event { return id == second.sessionId }; return false } })
+        let delivered = box.events.filter { $0.event.sessionId == second.sessionId }
+        #expect(!delivered.isEmpty && delivered.allSatisfy { $0.seq <= seqBefore })
+        await client.stop()
+        await relaunched.server.stop()
+    }
+
+    @Test("connecting to a closed port fails fast instead of hanging")
+    func refusedConnection() async throws {
+        let peer = WebSocketPeer.client(host: "127.0.0.1", port: 1, queue: DispatchQueue(label: "test-refused"))
+        let clock = ContinuousClock()
+        let started = clock.now
+        await #expect(throws: WebSocketError.self) { try await peer.start(timeout: .seconds(10)) }
+        #expect(clock.now - started < .seconds(5))
     }
 
     @Test("requests fail fast when there is no connection")
