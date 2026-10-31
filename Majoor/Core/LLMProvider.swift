@@ -25,7 +25,7 @@ nonisolated enum LLMResponse: Sendable {
 
 /// Why a run ended without producing an answer. Every one of these used to be
 /// reported as a completed task.
-nonisolated enum IncompleteReason: String, Sendable {
+nonisolated enum IncompleteReason: String, Sendable, CaseIterable {
     case truncated, emptyResponse, iterationLimit, cancelled, toolPhaseFailure, budgetExceeded
 
     var userFacing: String {
@@ -57,7 +57,7 @@ nonisolated enum StreamDelta: Sendable {
     case messageDelta(stopReason: String?)              // Message ending with usage
 }
 
-protocol LLMProvider: Sendable {
+nonisolated protocol LLMProvider: Sendable {
     var name: String { get }
     var model: String { get }
 

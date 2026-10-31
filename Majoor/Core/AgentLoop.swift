@@ -2,35 +2,73 @@
 // Majoor — The Agent Loop (THE BRAIN)
 //
 // Cycle: Send to Claude → Claude returns tool calls → Execute locally → Send results back → Repeat
-// Now with: memory injection, model routing, task persistence, usage tracking.
-// Nonisolated — the loop runs off the main thread. UI updates go through MainActor.run.
+// With: memory injection, model routing, task persistence, usage tracking.
+// Nonisolated — the loop runs off the main thread. It knows nothing about the
+// UI: it records through its host's TaskRecorder, publishes SessionEvents,
+// reads and writes thread history, and asks its host for approvals.
 
 import Foundation
+import CryptoKit
+
+/// Picks the provider and MCP tool sets for a task. The default is the
+/// hybrid router; tests inject a scripted provider.
+typealias ProviderRouter = @Sendable (String) async -> (provider: any LLMProvider, toolSets: [String])
+
+/// Pipeline plan state for one run: which numbered step each tool call
+/// belongs to, and how each step is going. Shared between the run frame and
+/// the tool phase, hence a locked class rather than an inout array.
+nonisolated final class PipelineState: @unchecked Sendable {
+    private let lock = NSLock()
+    private var steps: [PipelineStep] = []
+
+    var count: Int { lock.withLock { steps.count } }
+    var isEmpty: Bool { count == 0 }
+
+    func replace(_ newSteps: [PipelineStep]) { lock.withLock { steps = newSteps } }
+    func clear() { lock.withLock { steps = [] } }
+    func snapshot() -> [PipelineStep] { lock.withLock { steps } }
+    func dtos() -> [PipelineStepDTO] { snapshot().enumerated().map { PipelineStepDTO(index: $0.offset, $0.element) } }
+
+    func update(at index: Int, status: PipelineStepStatus, result: String? = nil, error: String? = nil) {
+        lock.withLock {
+            guard index < steps.count else { return }
+            steps[index].status = status
+            if let result { steps[index].result = result }
+            if let error { steps[index].error = error }
+        }
+    }
+
+    func addToolCall(at index: Int, name: String) {
+        lock.withLock {
+            guard index < steps.count else { return }
+            steps[index].toolCalls.append(name)
+        }
+    }
+
+    func setEnabled(_ index: Int, _ enabled: Bool) {
+        lock.withLock {
+            guard index < steps.count else { return }
+            steps[index].enabled = enabled
+        }
+    }
+}
 
 final nonisolated class AgentLoop: @unchecked Sendable {
 
     private let tools: [any AgentTool]
-    private let taskManager: TaskManager
+    private let route: ProviderRouter
     private let maxIterations = 75
     /// How many times one run may recover from an output-limit cut before giving up
     /// honestly. Bounded because each attempt costs a full turn.
     private let maxTruncationRecoveries = 3
     /// Cap on any single tool result entering the conversation (chars, ≈7.5k tokens)
     private let maxToolResultChars = 30_000
-    private let conversationTimeoutSeconds: TimeInterval = 600 // 10 minutes
-    private let maxConversationEntries = 5
     private let maxResponseTextLength = 1000
 
-    /// Stores conversation history for continuity
-    private struct ConversationContext: @unchecked Sendable {
-        let userInput: String
-        let responseText: String
-        let toolSummaries: [String]
-        let toolSets: [String]  // Which MCP services were used (for follow-up routing)
-        let timestamp: Date
+    static let defaultRouter: ProviderRouter = { input in
+        let routed = await ModelRouter.routeHybrid(input)
+        return (routed.provider, routed.toolSets)
     }
-    private var conversationHistory: [ConversationContext] = []
-    private let historyLock = NSLock()
 
     private let systemPrompt = """
     You are Majoor, an autonomous AI agent running as a native macOS menu bar app. \
@@ -82,31 +120,28 @@ final nonisolated class AgentLoop: @unchecked Sendable {
     Use this context to make your plan specific. Instead of "Create a PR on GitHub", show "Create a PR 'Add JWT auth middleware' on kush/majoor (3 files, +142 -28)".
     """
 
-    init(tools: [any AgentTool], taskManager: TaskManager) {
+    init(tools: [any AgentTool], route: @escaping ProviderRouter = AgentLoop.defaultRouter) {
         self.tools = tools
-        self.taskManager = taskManager
+        self.route = route
     }
 
-    func execute(userInput: String) async throws -> TaskResult {
+    // MARK: - Run
+
+    func run(userInput: String, host: any AgentLoopHost) async throws -> TaskResult {
         MajoorLogger.log("🚀 Task: \(userInput)")
+        let thread = host.threadKey
 
         // 1. Hybrid routing: keyword fast-path or LLM classification
         // Include recent conversation context so the router understands follow-ups
-        let historySnapshot = historyLock.withLock { conversationHistory }
+        let historySnapshot = host.history.snapshot(thread: thread)
         let recentContext = historySnapshot.suffix(3).map { $0.userInput }.joined(separator: " | ")
         let routingInput = recentContext.isEmpty ? userInput : "\(userInput) [recent context: \(recentContext)]"
-        let (provider, routedToolSets) = await ModelRouter.routeHybrid(routingInput)
+        let (provider, routedToolSets) = await route(routingInput)
 
         // Merge tool sets from recent conversations so follow-ups retain access
         var toolSets = routedToolSets
-        let now = Date()
-        let recentToolSets = historySnapshot
-            .filter { now.timeIntervalSince($0.timestamp) < conversationTimeoutSeconds }
-            .flatMap { $0.toolSets }
-        for ts in recentToolSets {
-            if !toolSets.contains(ts) {
-                toolSets.append(ts)
-            }
+        for ts in historySnapshot.flatMap({ $0.toolSets }) where !toolSets.contains(ts) {
+            toolSets.append(ts)
         }
 
         // 2. Retrieve relevant memories, inject current date, and MCP summary
@@ -141,22 +176,11 @@ final nonisolated class AgentLoop: @unchecked Sendable {
         }
         let anthropicTools = activeTools.map { $0.toAnthropicTool() }
 
-        // 4. Create task and add to UI. AgentTask is a MainActor model object,
-        // so it is created on the main actor (it is Sendable by isolation).
-        let task = await MainActor.run { () -> AgentTask in
-            let created = AgentTask(userInput: userInput)
-            taskManager.addTask(created)
-            return created
-        }
-
-        // 5. Build messages — inject all conversations from the last 10 minutes
+        // 4. Build messages — inject all conversations from the last 10 minutes
         var messages: [AnthropicMessage] = []
-        let recentConversations = historySnapshot.filter {
-            now.timeIntervalSince($0.timestamp) < conversationTimeoutSeconds
-        }
-        if !recentConversations.isEmpty {
-            MajoorLogger.log("📎 Injecting \(recentConversations.count) recent conversation(s) as context")
-            for prev in recentConversations {
+        if !historySnapshot.isEmpty {
+            MajoorLogger.log("📎 Injecting \(historySnapshot.count) recent conversation(s) as context")
+            for prev in historySnapshot {
                 messages.append(AnthropicMessage(role: "user", content: .string(prev.userInput)))
                 var recap = prev.responseText
                 if !prev.toolSummaries.isEmpty {
@@ -170,7 +194,7 @@ final nonisolated class AgentLoop: @unchecked Sendable {
         // Overflow recovery may drop seeded history pairs from the front, but
         // only as many as were actually seeded — string pairs further in (a
         // pipeline plan + approval) contain the task and must survive.
-        var seededHistoryPairs = recentConversations.count
+        var seededHistoryPairs = historySnapshot.count
 
         var totalInputTokens = 0
         var totalOutputTokens = 0
@@ -182,14 +206,13 @@ final nonisolated class AgentLoop: @unchecked Sendable {
         /// moves on to something else — a stale prefix would otherwise be glued
         /// onto an unrelated later answer and become that task's summary.
         var truncatedPrefix = ""
+        let pipeline = PipelineState()
 
         // 5. Agent loop
         while iteration < maxIterations {
             iteration += 1
             MajoorLogger.log("🔄 Iteration \(iteration)/\(maxIterations) [\(provider.name)]")
-
-            let thinkStep = TaskStep(timestamp: Date(), type: .thinking, description: "Thinking... (\(iteration))", detail: nil)
-            await MainActor.run { task.steps.append(thinkStep) }
+            await record(TaskStep(timestamp: Date(), type: .thinking, description: "Thinking... (\(iteration))", detail: nil), host: host)
 
             // API call with structured error recovery
             let response: LLMResponse
@@ -211,8 +234,7 @@ final nonisolated class AgentLoop: @unchecked Sendable {
                         // longer has any record of having written it. Discard rather
                         // than risk gluing an abandoned draft onto a later answer.
                         truncatedPrefix = ""
-                        let recoveryStep = TaskStep(timestamp: Date(), type: .thinking, description: "Context too large — trimming history and retrying...", detail: nil)
-                        await MainActor.run { task.steps.append(recoveryStep) }
+                        await record(TaskStep(timestamp: Date(), type: .thinking, description: "Context too large — trimming history and retrying...", detail: nil), host: host)
                         continue // Retry with trimmed messages
                     }
                     // If we can't trim further, fall through to failure
@@ -227,41 +249,19 @@ final nonisolated class AgentLoop: @unchecked Sendable {
                 // All other errors: mark task failed
                 let errorDesc = error.errorDescription ?? "API error"
                 MajoorLogger.error("❌ API error: \(errorDesc)")
-                let errorStep = TaskStep(timestamp: Date(), type: .error, description: errorDesc, detail: nil)
-                let totalTokens = totalInputTokens + totalOutputTokens
-                await MainActor.run {
-                    task.steps.append(errorStep)
-                    task.status = .failed
-                    task.summary = errorDesc
-                    task.completedAt = Date()
-                    task.tokensUsed = totalTokens
-                    task.modelUsed = provider.model
-                }
-                await MainActor.run { taskManager.persistTask(task) }
+                await record(TaskStep(timestamp: Date(), type: .error, description: errorDesc, detail: nil), host: host)
+                await host.recorder.fail(message: errorDesc)
                 throw error
             } catch is CancellationError {
                 // URLSession surfaces Stop as URLError(.cancelled), which the provider
-                // now maps to CancellationError. That is not an LLMError, so without
-                // this arm it fell through to the generic catch below and persisted
-                // "The operation couldn't be completed. (Swift.CancellationError
-                // error 1.)" as the user-visible summary. Rethrow the original so
-                // AppDelegate's `catch is CancellationError` still shows "Task
-                // Stopped" rather than the incomplete-run treatment.
-                _ = await fail(task, .cancelled)
+                // maps to CancellationError. Record it as stopped and rethrow so the
+                // session reports "stopped" rather than a failure.
+                _ = await fail(host, .cancelled)
                 throw CancellationError()
             } catch {
                 MajoorLogger.error("❌ Unexpected error: \(error.localizedDescription)")
-                let errorStep = TaskStep(timestamp: Date(), type: .error, description: error.localizedDescription, detail: nil)
-                let totalTokens = totalInputTokens + totalOutputTokens
-                await MainActor.run {
-                    task.steps.append(errorStep)
-                    task.status = .failed
-                    task.summary = error.localizedDescription
-                    task.completedAt = Date()
-                    task.tokensUsed = totalTokens
-                    task.modelUsed = provider.model
-                }
-                await MainActor.run { taskManager.persistTask(task) }
+                await record(TaskStep(timestamp: Date(), type: .error, description: error.localizedDescription, detail: nil), host: host)
+                await host.recorder.fail(message: error.localizedDescription)
                 throw error
             }
 
@@ -275,16 +275,17 @@ final nonisolated class AgentLoop: @unchecked Sendable {
                     inputTokens: usage.inputTokens,
                     outputTokens: usage.outputTokens
                 )
+                // Keep attribution current every iteration, not only on the success path.
+                await host.recorder.addUsage(input: usage.inputTokens, output: usage.outputTokens, model: provider.model)
             }
 
             let totalTokens = totalInputTokens + totalOutputTokens
-            // Keep attribution current every iteration rather than only on the success
-            // path. Every exit through fail() used to persist tokensUsed = 0 and
-            // modelUsed = "", so a run that burned three Opus recovery turns was filed
-            // at zero cost with no model recorded.
-            await MainActor.run {
-                task.tokensUsed = totalTokens
-                task.modelUsed = provider.model
+            let sessionUSD = CostConfig.estimateCost(model: provider.model, inputTokens: totalInputTokens, outputTokens: totalOutputTokens)
+            await host.emit(.cost(id: host.sessionId, tokensIn: totalInputTokens, tokensOut: totalOutputTokens,
+                                  sessionUSD: sessionUSD, dayUSD: UsageStore.shared.todayUsage().totalCost))
+            if host.budget.isExceeded(by: totalTokens) || TokenBudget.dailyCapExceeded() {
+                MajoorLogger.error("❌ Budget exceeded: \(totalTokens) tokens this session")
+                throw await fail(host, .budgetExceeded)
             }
 
             switch response {
@@ -297,71 +298,8 @@ final nonisolated class AgentLoop: @unchecked Sendable {
                 if rawText.contains("%%PIPELINE_CONFIRM%%") {
                     truncatedPrefix = ""
                     let planText = rawText.replacingOccurrences(of: "%%PIPELINE_CONFIRM%%", with: "").trimmingCharacters(in: .whitespacesAndNewlines)
-                    MajoorLogger.log("🔄 Pipeline plan proposed, waiting for approval...")
-
-                    // Parse numbered steps from plan text
-                    let parsedSteps = parsePipelineSteps(from: planText)
-
-                    let planStep = TaskStep(timestamp: Date(), type: .response, description: planText, detail: nil)
-                    await MainActor.run {
-                        task.steps.append(planStep)
-                        taskManager.showPipelinePlan(planText, taskId: task.id)
-                        taskManager.setPipelineSteps(parsedSteps)
-                        // Auto-open the panel so user can see the plan and toggle steps
-                        NotificationCenter.default.post(name: .majoorOpenPanel, object: nil)
-                    }
-
-                    // Show in-app confirmation + notification fallback
-                    let confirmResult = await ConfirmationManager.shared.requestConfirmation(
-                        title: "Majoor Pipeline",
-                        body: String(planText.prefix(200)),
-                        category: NotificationManager.pipelineConfirmCategory,
-                        onPending: { [taskManager] confirmId in
-                            Task { @MainActor in
-                                taskManager.showConfirmation(id: confirmId, title: "Majoor Pipeline", body: planText, category: NotificationManager.pipelineConfirmCategory)
-                            }
-                        }
-                    )
-                    await MainActor.run {
-                        taskManager.clearConfirmation()
-                        taskManager.pipelineExecuting = confirmResult.approved
-                    }
-
-                    if confirmResult.approved {
-                        // Build approval message including which steps are disabled and user feedback
-                        let skippedSteps = await MainActor.run { taskManager.pipelineSteps.enumerated().filter { !$0.element.enabled }.map { $0.offset + 1 } }
-                        var approvalMsg = "User approved. Execute all steps now."
-                        if !skippedSteps.isEmpty {
-                            let skippedList = skippedSteps.map(String.init).joined(separator: ", ")
-                            approvalMsg = "User approved but wants to SKIP step(s): \(skippedList). Execute the remaining steps only."
-                            // Mark skipped steps
-                            await MainActor.run {
-                                for idx in skippedSteps {
-                                    taskManager.updatePipelineStep(at: idx - 1, status: .skipped)
-                                }
-                            }
-                        }
-                        // Inject user feedback if provided
-                        if let feedback = confirmResult.feedback {
-                            approvalMsg += " User note: \(feedback)"
-                        }
-                        messages.append(AnthropicMessage(role: "assistant", content: .string(planText)))
-                        messages.append(AnthropicMessage(role: "user", content: .string(approvalMsg)))
-                        MajoorLogger.log("✅ Pipeline approved — executing")
-                        continue
-                    } else {
-                        var denialMsg = "User declined."
-                        if let feedback = confirmResult.feedback {
-                            denialMsg += " User feedback: \(feedback)"
-                        } else {
-                            denialMsg += " Ask what they'd like to do differently."
-                        }
-                        messages.append(AnthropicMessage(role: "assistant", content: .string(planText)))
-                        messages.append(AnthropicMessage(role: "user", content: .string(denialMsg)))
-                        MajoorLogger.log("❌ Pipeline declined — asking follow-up")
-                        await MainActor.run { taskManager.clearPipelinePlan() }
-                        continue
-                    }
+                    await proposePlan(planText, pipeline: pipeline, host: host, messages: &messages)
+                    continue
                 }
 
                 // A turn with no text is not an answer — thinking may have eaten the
@@ -373,12 +311,10 @@ final nonisolated class AgentLoop: @unchecked Sendable {
                 // answer that never arrived, and the run would complete on a fragment.
                 guard !rawText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                     if !truncatedPrefix.isEmpty {
-                        let salvage = TaskStep(timestamp: Date(), type: .response,
-                                               description: truncatedPrefix,
-                                               detail: "Partial answer — cut off at the output limit")
-                        await MainActor.run { task.steps.append(salvage) }
+                        await record(TaskStep(timestamp: Date(), type: .response, description: truncatedPrefix,
+                                              detail: "Partial answer — cut off at the output limit"), host: host)
                     }
-                    throw await fail(task, .emptyResponse)
+                    throw await fail(host, .emptyResponse)
                 }
 
                 // This turn is the answer, so fold in anything salvaged from an earlier
@@ -388,53 +324,26 @@ final nonisolated class AgentLoop: @unchecked Sendable {
                 truncatedPrefix = ""
 
                 MajoorLogger.log("✅ Done after \(iteration) iterations")
-                let step = TaskStep(timestamp: Date(), type: .response, description: text, detail: nil)
+                await record(TaskStep(timestamp: Date(), type: .response, description: text, detail: nil), host: host)
                 let summary = summarize(text)
-                // The liveness check has to happen inside the same hop as the write.
-                // Stop runs on the main queue, so a check made before `await
-                // MainActor.run` can pass and then lose the race to stopRunningTask,
-                // and the success path would overwrite the cancellation and persist it.
-                let wroteCompletion = await MainActor.run { () -> Bool in
-                    guard !Task.isCancelled, task.status == .running else { return false }
-                    task.steps.append(step)
-                    task.status = .completed
-                    task.summary = summary
-                    task.completedAt = Date()
-                    task.tokensUsed = totalTokens
-                    task.modelUsed = provider.model
-                    taskManager.clearPipelinePlan()
-                    // 5. Persist in the same hop (memories are saved by the model
-                    // via save_memory) — a second hop would leave a window where the
-                    // task reads completed in the UI but isn't in SQLite yet.
-                    taskManager.persistTask(task)
-                    return true
-                }
-                // Rethrow as CancellationError, not the .incomplete error: this only
-                // happens because the task was stopped, and AppDelegate has a
-                // dedicated arm that shows "Task Stopped" for it.
-                guard wroteCompletion else {
-                    _ = await fail(task, .cancelled)
+                // The recorder serializes finishing: if a stop already failed this
+                // run, complete() returns false and the success must not be reported.
+                guard !Task.isCancelled, await host.recorder.complete(summary: summary) else {
+                    _ = await fail(host, .cancelled)
                     throw CancellationError()
                 }
 
-                // 6. Store conversation for continuity and prune stale/excess entries
-                let completedAt = Date()
-                historyLock.withLock {
-                    conversationHistory.removeAll { completedAt.timeIntervalSince($0.timestamp) >= conversationTimeoutSeconds }
-                    conversationHistory.append(ConversationContext(
-                        userInput: userInput,
-                        responseText: String(text.prefix(maxResponseTextLength)),
-                        toolSummaries: Array(toolSummaries.suffix(10)),
-                        toolSets: toolSets,
-                        timestamp: completedAt
-                    ))
-                    if conversationHistory.count > maxConversationEntries {
-                        conversationHistory.removeFirst(conversationHistory.count - maxConversationEntries)
-                    }
-                }
+                // 6. Store conversation for continuity
+                host.history.append(thread: thread, ConversationEntry(
+                    userInput: userInput,
+                    responseText: String(text.prefix(maxResponseTextLength)),
+                    toolSummaries: Array(toolSummaries.suffix(10)),
+                    toolSets: toolSets,
+                    timestamp: Date()
+                ))
 
-                let finalSteps = await MainActor.run { task.steps }
-                return TaskResult(summary: summarize(text), steps: finalSteps, tokensUsed: totalTokens)
+                let finalSteps = await host.recorder.steps.map(\.taskStep)
+                return TaskResult(summary: summary, steps: finalSteps, tokensUsed: totalTokens)
 
             case .truncated(let partialText, let calls, let rawContent):
                 guard truncationRecoveries < maxTruncationRecoveries else {
@@ -442,12 +351,10 @@ final nonisolated class AgentLoop: @unchecked Sendable {
                     // hold several full turns of real output, and the frame is about
                     // to unwind. Put it in the trail so it survives into SQLite.
                     if !truncatedPrefix.isEmpty {
-                        let salvage = TaskStep(timestamp: Date(), type: .response,
-                                               description: truncatedPrefix,
-                                               detail: "Partial answer — cut off at the output limit")
-                        await MainActor.run { task.steps.append(salvage) }
+                        await record(TaskStep(timestamp: Date(), type: .response, description: truncatedPrefix,
+                                              detail: "Partial answer — cut off at the output limit"), host: host)
                     }
-                    throw await fail(task, .truncated)
+                    throw await fail(host, .truncated)
                 }
                 truncationRecoveries += 1
                 MajoorLogger.log("✂️ Output limit hit — recovery \(truncationRecoveries)/\(maxTruncationRecoveries)")
@@ -469,17 +376,15 @@ final nonisolated class AgentLoop: @unchecked Sendable {
                         // nudge still changes the prompt, so the retry isn't a
                         // byte-identical resend and the run keeps making progress
                         // instead of burning the whole recovery budget on nothing.
-                        let step = TaskStep(timestamp: Date(), type: .thinking,
-                                            description: "Output limit reached before any answer — retrying more concisely", detail: nil)
-                        await MainActor.run { task.steps.append(step) }
+                        await record(TaskStep(timestamp: Date(), type: .thinking,
+                                              description: "Output limit reached before any answer — retrying more concisely", detail: nil), host: host)
                         messages.append(AnthropicMessage(role: "user", content: .string(
                             "Your previous attempt hit the output limit before producing any answer. Be more concise and answer directly.")))
                         continue
                     }
                     truncatedPrefix += partialText
-                    let step = TaskStep(timestamp: Date(), type: .thinking,
-                                        description: "Response hit the output limit — asking Claude to continue", detail: nil)
-                    await MainActor.run { task.steps.append(step) }
+                    await record(TaskStep(timestamp: Date(), type: .thinking,
+                                          description: "Response hit the output limit — asking Claude to continue", detail: nil), host: host)
                     messages.append(AnthropicMessage(role: "assistant", content: .blocks(echo)))
                     messages.append(AnthropicMessage(role: "user", content: .string(
                         "Your previous message was cut off at the output limit. Continue exactly where it stopped — do not repeat any text you already wrote and do not start over.")))
@@ -490,12 +395,11 @@ final nonisolated class AgentLoop: @unchecked Sendable {
                 // nothing here is executed — the calls are only answered.
                 guard let turn = unexecutedTurn(rawContent: rawContent, note:
                     "Your response hit the output limit before this tool call was complete, so it was NOT executed. Split the work into smaller steps and call again with smaller arguments.")
-                else { throw await fail(task, .truncated) }
+                else { throw await fail(host, .truncated) }
 
-                let cutStep = TaskStep(timestamp: Date(), type: .error,
-                                       description: "Response truncated — \(calls.count) tool call(s) not executed",
-                                       detail: partialText.isEmpty ? nil : String(partialText.prefix(500)))
-                await MainActor.run { task.steps.append(cutStep) }
+                await record(TaskStep(timestamp: Date(), type: .error,
+                                      description: "Response truncated — \(calls.count) tool call(s) not executed",
+                                      detail: partialText.isEmpty ? nil : String(partialText.prefix(500))), host: host)
                 messages.append(turn.assistant)
                 messages.append(turn.reply)
                 continue
@@ -504,7 +408,7 @@ final nonisolated class AgentLoop: @unchecked Sendable {
                 // The model moved on to tool work, so any salvaged partial belongs to
                 // an abandoned draft — dropping it keeps it out of the final summary.
                 truncatedPrefix = ""
-                let (aMsg, rMsg, summaries) = try await handleToolCalls(calls, task: task, assistantContent: rawContent, activeTools: activeTools, userInput: userInput)
+                let (aMsg, rMsg, summaries) = try await handleToolCalls(calls, host: host, pipeline: pipeline, assistantContent: rawContent, activeTools: activeTools, userInput: userInput)
                 messages.append(aMsg)
                 messages.append(rMsg)
                 toolSummaries.append(contentsOf: summaries)
@@ -514,68 +418,12 @@ final nonisolated class AgentLoop: @unchecked Sendable {
                 // Check for pipeline confirmation in mixed responses too
                 if text.contains("%%PIPELINE_CONFIRM%%") {
                     let planText = text.replacingOccurrences(of: "%%PIPELINE_CONFIRM%%", with: "").trimmingCharacters(in: .whitespacesAndNewlines)
-                    MajoorLogger.log("🔄 Pipeline plan proposed (mixed), waiting for approval...")
-
-                    let parsedSteps = parsePipelineSteps(from: planText)
-
-                    let planStep = TaskStep(timestamp: Date(), type: .response, description: planText, detail: nil)
-                    await MainActor.run {
-                        task.steps.append(planStep)
-                        taskManager.showPipelinePlan(planText, taskId: task.id)
-                        taskManager.setPipelineSteps(parsedSteps)
-                        // Auto-open the panel so user can see the plan and toggle steps
-                        NotificationCenter.default.post(name: .majoorOpenPanel, object: nil)
-                    }
-
-                    let confirmResult = await ConfirmationManager.shared.requestConfirmation(
-                        title: "Majoor Pipeline",
-                        body: String(planText.prefix(200)),
-                        category: NotificationManager.pipelineConfirmCategory,
-                        onPending: { [taskManager] confirmId in
-                            Task { @MainActor in
-                                taskManager.showConfirmation(id: confirmId, title: "Majoor Pipeline", body: planText, category: NotificationManager.pipelineConfirmCategory)
-                            }
-                        }
-                    )
-                    await MainActor.run {
-                        taskManager.clearConfirmation()
-                        taskManager.pipelineExecuting = confirmResult.approved
-                    }
-
-                    if confirmResult.approved {
-                        let skippedSteps = await MainActor.run { taskManager.pipelineSteps.enumerated().filter { !$0.element.enabled }.map { $0.offset + 1 } }
-                        var approvalMsg = "User approved. Execute all steps now."
-                        if !skippedSteps.isEmpty {
-                            let skippedList = skippedSteps.map(String.init).joined(separator: ", ")
-                            approvalMsg = "User approved but wants to SKIP step(s): \(skippedList). Execute the remaining steps only."
-                            await MainActor.run {
-                                for idx in skippedSteps {
-                                    taskManager.updatePipelineStep(at: idx - 1, status: .skipped)
-                                }
-                            }
-                        }
-                        if let feedback = confirmResult.feedback {
-                            approvalMsg += " User note: \(feedback)"
-                        }
-                        messages.append(AnthropicMessage(role: "assistant", content: .string(planText)))
-                        messages.append(AnthropicMessage(role: "user", content: .string(approvalMsg)))
-                        continue
-                    } else {
-                        var denialMsg = "User declined."
-                        if let feedback = confirmResult.feedback {
-                            denialMsg += " User feedback: \(feedback)"
-                        } else {
-                            denialMsg += " Ask what they'd like to do differently."
-                        }
-                        messages.append(AnthropicMessage(role: "assistant", content: .string(planText)))
-                        messages.append(AnthropicMessage(role: "user", content: .string(denialMsg)))
-                        await MainActor.run { taskManager.clearPipelinePlan() }
-                        continue
-                    }
+                    await proposePlan(planText, pipeline: pipeline, host: host, messages: &messages)
+                    continue
                 }
 
                 MajoorLogger.log("📝 \(text.prefix(100))...")
-                let (aMsg, rMsg, summaries) = try await handleToolCalls(calls, task: task, assistantContent: rawContent, activeTools: activeTools, userInput: userInput)
+                let (aMsg, rMsg, summaries) = try await handleToolCalls(calls, host: host, pipeline: pipeline, assistantContent: rawContent, activeTools: activeTools, userInput: userInput)
                 messages.append(aMsg)
                 messages.append(rMsg)
                 toolSummaries.append(contentsOf: summaries)
@@ -590,47 +438,88 @@ final nonisolated class AgentLoop: @unchecked Sendable {
 
         // Keep the history entry so a follow-up task still has the tool context, but
         // tell the truth in it — a false "completed" here trains the next task on a lie.
-        let completedAt = Date()
-        historyLock.withLock {
-            conversationHistory.removeAll { completedAt.timeIntervalSince($0.timestamp) >= conversationTimeoutSeconds }
-            conversationHistory.append(ConversationContext(
-                userInput: userInput,
-                responseText: "(the previous task was stopped after \(maxIterations) iterations without finishing)",
-                toolSummaries: Array(toolSummaries.suffix(10)),
-                toolSets: toolSets,
-                timestamp: completedAt
-            ))
-            if conversationHistory.count > maxConversationEntries {
-                conversationHistory.removeFirst(conversationHistory.count - maxConversationEntries)
-            }
-        }
+        host.history.append(thread: thread, ConversationEntry(
+            userInput: userInput,
+            responseText: "(the previous task was stopped after \(maxIterations) iterations without finishing)",
+            toolSummaries: Array(toolSummaries.suffix(10)),
+            toolSets: toolSets,
+            timestamp: Date()
+        ))
 
-        throw await fail(task, .iterationLimit)
+        throw await fail(host, .iterationLimit)
     }
 
-    // MARK: - Tool Execution
+    // MARK: - Recording
 
-    /// The one place a run becomes `.failed` for a non-transport reason. Status and
-    /// persistence happen in a single MainActor hop so SwiftUI can never render a
-    /// half-written task, and the returned error is thrown by the caller so
-    /// `AppDelegate` sees a failure instead of a successful return it would paint
-    /// as a green "Task Complete".
-    private func fail(_ task: AgentTask, _ reason: IncompleteReason) async -> LLMError {
+    private func record(_ step: TaskStep, host: any AgentLoopHost) async {
+        await host.recorder.append(StepDTO(step))
+    }
+
+    /// The one place a run becomes `.failed` for a non-transport reason. The
+    /// recorder writes status and persists atomically; the returned error is
+    /// thrown by the caller so the session sees a failure instead of a return.
+    private func fail(_ host: any AgentLoopHost, _ reason: IncompleteReason) async -> LLMError {
         MajoorLogger.error("❌ \(reason.userFacing)")
-        let step = TaskStep(timestamp: Date(), type: .error, description: reason.userFacing, detail: nil)
-        await MainActor.run {
-            task.steps.append(step)
-            task.status = .failed
-            task.summary = reason.userFacing
-            task.completedAt = Date()
-            // Only tear down a plan this task owns — clearing unconditionally would
-            // wipe a plan another task is mid-approval on.
-            if taskManager.pendingPipelineTaskId == task.id {
-                taskManager.clearPipelinePlan()
-            }
-            taskManager.persistTask(task)
-        }
+        await record(TaskStep(timestamp: Date(), type: .error, description: reason.userFacing, detail: nil), host: host)
+        await host.recorder.fail(reason)
         return LLMError.incomplete(reason: reason)
+    }
+
+    // MARK: - Pipeline plan
+
+    /// Shows a proposed plan, asks the session for approval, and appends the
+    /// resulting assistant/user turns. The approval and denial strings are
+    /// prompt text and must not change.
+    private func proposePlan(_ planText: String, pipeline: PipelineState, host: any AgentLoopHost,
+                             messages: inout [AnthropicMessage]) async {
+        MajoorLogger.log("🔄 Pipeline plan proposed, waiting for approval...")
+        pipeline.replace(parsePipelineSteps(from: planText))
+        await record(TaskStep(timestamp: Date(), type: .response, description: planText, detail: nil), host: host)
+        await host.emit(.pipelinePlan(id: host.sessionId, text: planText, steps: pipeline.dtos()))
+
+        let decision = await host.requestApproval(ApprovalDraft(
+            title: "Majoor Pipeline", body: planText, category: NotificationManager.pipelineConfirmCategory,
+            riskClass: .r1, actionSignature: "pipeline", isPipelinePlan: true, pipelineSteps: pipeline.dtos()))
+
+        messages.append(AnthropicMessage(role: "assistant", content: .string(planText)))
+        if decision.approved {
+            let skipped = Set(decision.skippedStepIndices).filter { $0 >= 0 && $0 < pipeline.count }.sorted()
+            var approvalMsg = "User approved. Execute all steps now."
+            if !skipped.isEmpty {
+                let skippedList = skipped.map { String($0 + 1) }.joined(separator: ", ")
+                approvalMsg = "User approved but wants to SKIP step(s): \(skippedList). Execute the remaining steps only."
+                for index in skipped {
+                    pipeline.setEnabled(index, false)
+                    pipeline.update(at: index, status: .skipped)
+                    await host.emit(.pipelineStep(id: host.sessionId, index: index, status: PipelineStepStatus.skipped.rawValue, result: nil, error: nil))
+                }
+            }
+            if let feedback = decision.feedback {
+                approvalMsg += " User note: \(feedback)"
+            }
+            messages.append(AnthropicMessage(role: "user", content: .string(approvalMsg)))
+            MajoorLogger.log("✅ Pipeline approved — executing")
+        } else {
+            var denialMsg = "User declined."
+            if let feedback = decision.feedback {
+                denialMsg += " User feedback: \(feedback)"
+            } else {
+                denialMsg += " Ask what they'd like to do differently."
+            }
+            messages.append(AnthropicMessage(role: "user", content: .string(denialMsg)))
+            MajoorLogger.log("❌ Pipeline declined — asking follow-up")
+            pipeline.clear()
+            await host.emit(.pipelinePlan(id: host.sessionId, text: "", steps: []))
+        }
+    }
+
+    private func updatePipeline(_ pipeline: PipelineState, host: any AgentLoopHost, toolName: String, arguments: [String: String],
+                                status: PipelineStepStatus, result: String? = nil, error: String? = nil, addCall: Bool = false) async {
+        guard !pipeline.isEmpty,
+              let index = matchToolToPipelineStep(toolName, arguments: arguments, steps: pipeline.snapshot()) else { return }
+        if addCall { pipeline.addToolCall(at: index, name: toolName) }
+        pipeline.update(at: index, status: status, result: result, error: error)
+        await host.emit(.pipelineStep(id: host.sessionId, index: index, status: status.rawValue, result: result, error: error))
     }
 
     /// Builds an API-legal assistant echo plus paired `tool_result` answers for a turn
@@ -661,22 +550,25 @@ final nonisolated class AgentLoop: @unchecked Sendable {
                 AnthropicMessage(role: "user", content: .blocks(blocks)))
     }
 
+    // MARK: - Tool Execution
+
     /// Wraps the tool phase so a throw from inside it cannot strand the task in
     /// `.running`. `performToolCalls` throws on cancellation, and that unwinds past
-    /// `execute()`'s do/catch — which covers only `provider.complete` — so without
-    /// this the row is never persisted and a stopped task simply vanishes on restart.
+    /// `run()`'s do/catch — which covers only `provider.complete` — so without this
+    /// the row is never persisted and a stopped task simply vanishes on restart.
     private func handleToolCalls(
         _ toolCalls: [ToolCall],
-        task: AgentTask,
+        host: any AgentLoopHost,
+        pipeline: PipelineState,
         assistantContent: [AnthropicContentBlock],
         activeTools: [any AgentTool],
         userInput: String
     ) async throws -> (assistant: AnthropicMessage, result: AnthropicMessage, toolSummaries: [String]) {
         do {
-            return try await performToolCalls(toolCalls, task: task, assistantContent: assistantContent,
+            return try await performToolCalls(toolCalls, host: host, pipeline: pipeline, assistantContent: assistantContent,
                                               activeTools: activeTools, userInput: userInput)
         } catch {
-            _ = await fail(task, error is CancellationError ? .cancelled : .toolPhaseFailure)
+            _ = await fail(host, error is CancellationError ? .cancelled : .toolPhaseFailure)
             throw error
         }
     }
@@ -684,7 +576,8 @@ final nonisolated class AgentLoop: @unchecked Sendable {
     /// `assistantContent` is the model's response content blocks verbatim.
     private func performToolCalls(
         _ toolCalls: [ToolCall],
-        task: AgentTask,
+        host: any AgentLoopHost,
+        pipeline: PipelineState,
         assistantContent: [AnthropicContentBlock],
         activeTools: [any AgentTool],
         userInput: String
@@ -706,16 +599,9 @@ final nonisolated class AgentLoop: @unchecked Sendable {
             // the next (uncancellable, synchronous) tool call.
             try Task.checkCancellation()
             MajoorLogger.log("🔧 Tool: \(call.toolName)")
-            let callStep = TaskStep(timestamp: Date(), type: .toolCall, description: "Calling \(call.toolName)", detail: String(call.arguments.map { "\($0.key): \($0.value)" }.joined(separator: ", ").prefix(1000)))
-            await MainActor.run {
-                task.steps.append(callStep)
-                // Update pipeline step tracking if executing a pipeline
-                let pipelineSteps = taskManager.pipelineSteps
-                if let matchedIndex = matchToolToPipelineStep(call.toolName, arguments: call.arguments, steps: pipelineSteps) {
-                    taskManager.addToolCallToPipelineStep(at: matchedIndex, toolName: call.toolName)
-                    taskManager.updatePipelineStep(at: matchedIndex, status: .running)
-                }
-            }
+            await record(TaskStep(timestamp: Date(), type: .toolCall, description: "Calling \(call.toolName)",
+                                  detail: String(call.arguments.map { "\($0.key): \($0.value)" }.joined(separator: ", ").prefix(1000))), host: host)
+            await updatePipeline(pipeline, host: host, toolName: call.toolName, arguments: call.arguments, status: .running, addCall: true)
 
             let output: String
             var confirmFeedback: String? = nil  // User feedback from confirmation (if any)
@@ -737,7 +623,7 @@ final nonisolated class AgentLoop: @unchecked Sendable {
                 // an approved pipeline — one approval must not blanket-authorize
                 // outbound email or deletions.
                 if await ConfirmationPolicy.shouldConfirm(
-                    mode: PermissionMode.current,
+                    mode: host.effectiveMode,
                     toolName: call.toolName,
                     requiresConfirmation: tool.requiresConfirmation,
                     isReadOnly: tool.isReadOnly,
@@ -777,38 +663,25 @@ final nonisolated class AgentLoop: @unchecked Sendable {
                     } else {
                         confirmCategory = NotificationManager.confirmGenericCategory
                     }
-                    let confirmResult = await ConfirmationManager.shared.requestConfirmation(
-                        title: confirmTitle,
-                        body: confirmBody,
-                        category: confirmCategory,
-                        onPending: { [taskManager] confirmId in
-                            Task { @MainActor in
-                                taskManager.showConfirmation(id: confirmId, title: confirmTitle, body: confirmBody, category: confirmCategory)
-                                NotificationCenter.default.post(name: .majoorOpenPanel, object: nil)
-                            }
-                        }
-                    )
-                    await MainActor.run { taskManager.clearConfirmation() }
-                    if !confirmResult.approved {
-                        let feedbackNote = confirmResult.feedback.map { " User feedback: \($0)" } ?? ""
+                    let sensitive = ConfirmationPolicy.isSensitive(toolName: call.toolName, requiresConfirmation: tool.requiresConfirmation, arguments: normalizedArgs)
+                    let decision = await host.requestApproval(ApprovalDraft(
+                        title: confirmTitle, body: confirmBody, category: confirmCategory,
+                        riskClass: sensitive ? .r3 : .r1,
+                        actionSignature: Self.actionSignature(toolName: call.toolName, arguments: normalizedArgs)))
+                    if !decision.approved {
+                        let feedbackNote = decision.feedback.map { " User feedback: \($0)" } ?? ""
                         output = "User declined to execute \(call.toolName).\(feedbackNote)"
-                        let resultStep = TaskStep(timestamp: Date(), type: .toolResult, description: "Declined: \(call.toolName)", detail: confirmResult.feedback)
-                        await MainActor.run {
-                            task.steps.append(resultStep)
-                            // Don't leave a matched pipeline step spinning at
-                            // .running forever after a mid-pipeline decline
-                            let pipelineSteps = taskManager.pipelineSteps
-                            if let matchedIndex = matchToolToPipelineStep(call.toolName, arguments: call.arguments, steps: pipelineSteps) {
-                                taskManager.updatePipelineStep(at: matchedIndex, status: .skipped)
-                            }
-                        }
+                        await record(TaskStep(timestamp: Date(), type: .toolResult, description: "Declined: \(call.toolName)", detail: decision.feedback), host: host)
+                        // Don't leave a matched pipeline step spinning at .running
+                        // forever after a mid-pipeline decline
+                        await updatePipeline(pipeline, host: host, toolName: call.toolName, arguments: call.arguments, status: .skipped)
                         resultBlocks.append(AnthropicContentBlock(type: "tool_result", text: nil, id: nil, name: nil, input: nil, toolUseId: call.id, content: output))
                         summaries.append("• \(call.toolName) → declined by user\(feedbackNote)")
                         continue
                     }
 
                     // If user approved with feedback, store it to append to the tool result
-                    confirmFeedback = confirmResult.feedback
+                    confirmFeedback = decision.feedback
                 }
 
                 // An approval that resumed after the task was stopped must not
@@ -849,20 +722,12 @@ final nonisolated class AgentLoop: @unchecked Sendable {
             let argsPreview = call.arguments.map { "\($0.key): \($0.value)" }.joined(separator: ", ")
             summaries.append("• \(call.toolName)(\(String(argsPreview.prefix(100)))) → \(String(output.prefix(150)))")
 
-            let resultStep = TaskStep(timestamp: Date(), type: .toolResult, description: "Result from \(call.toolName)", detail: String(output.prefix(500)))
-            await MainActor.run {
-                task.steps.append(resultStep)
-                // Update pipeline step status based on result
-                let pipelineSteps = taskManager.pipelineSteps
-                if let matchedIndex = matchToolToPipelineStep(call.toolName, arguments: call.arguments, steps: pipelineSteps) {
-                    let isError = output.lowercased().hasPrefix("error")
-                    if isError {
-                        taskManager.updatePipelineStep(at: matchedIndex, status: .failed, error: String(output.prefix(200)))
-                    } else {
-                        taskManager.updatePipelineStep(at: matchedIndex, status: .completed, result: String(output.prefix(100)))
-                    }
-                }
-            }
+            await record(TaskStep(timestamp: Date(), type: .toolResult, description: "Result from \(call.toolName)", detail: String(output.prefix(500))), host: host)
+            let isError = output.lowercased().hasPrefix("error")
+            await updatePipeline(pipeline, host: host, toolName: call.toolName, arguments: call.arguments,
+                                 status: isError ? .failed : .completed,
+                                 result: isError ? nil : String(output.prefix(100)),
+                                 error: isError ? String(output.prefix(200)) : nil)
 
             // Append user's confirmation feedback to the tool result so the LLM can adapt
             var finalOutput = boundedOutput
@@ -873,6 +738,14 @@ final nonisolated class AgentLoop: @unchecked Sendable {
         }
 
         return (assistantMsg, AnthropicMessage(role: "user", content: .blocks(resultBlocks)), summaries)
+    }
+
+    /// Stable identity of an action for the approvals log and the Phase 2 trust
+    /// ledger: the tool name plus its sorted, normalized arguments, hashed.
+    static func actionSignature(toolName: String, arguments: [String: String]) -> String {
+        let canonical = arguments.keys.sorted().map { "\($0)=\(String(arguments[$0]!.prefix(200)))" }.joined(separator: "|")
+        let digest = SHA256.hash(data: Data("\(toolName)|\(canonical)".utf8))
+        return toolName + ":" + digest.prefix(8).map { String(format: "%02x", $0) }.joined()
     }
 
     /// Normalizes argument keys so that common LLM aliases map to the tool's expected parameter names.
@@ -963,7 +836,7 @@ final nonisolated class AgentLoop: @unchecked Sendable {
     ]
 
     /// Match a tool call to the best pipeline step.
-    /// Returns the index into taskManager.pipelineSteps, or nil if no match.
+    /// Returns the index into the pipeline steps, or nil if no match.
     private func matchToolToPipelineStep(_ toolName: String, arguments: [String: String], steps: [PipelineStep]) -> Int? {
         guard !steps.isEmpty else { return nil }
 

@@ -34,11 +34,13 @@ struct CommandBarView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            // Sessions run concurrently: a running task shows above the input
+            // instead of replacing it, so a second task can be typed at once.
             if isTaskRunning {
                 runningState
-            } else {
-                inputState
+                Divider().opacity(0.4)
             }
+            inputState
         }
         .background(
             RoundedRectangle(cornerRadius: DT.Radius.large, style: .continuous)
@@ -51,9 +53,7 @@ struct CommandBarView: View {
         )
         .frame(width: DT.Layout.commandBarWidth)
         .onAppear {
-            if !isTaskRunning {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { isFocused = true }
-            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { isFocused = true }
         }
     }
 

@@ -73,12 +73,18 @@ actor TaskRecorder {
 
     @discardableResult
     func fail(_ reason: IncompleteReason) async -> Bool {
+        await fail(message: reason.userFacing, stopped: reason == .cancelled)
+    }
+
+    /// Failure with a free-form message (API and transport errors).
+    @discardableResult
+    func fail(message: String, stopped: Bool = false) async -> Bool {
         guard !isFinished else { return false }
         status = .failed
-        summary = reason.userFacing
+        summary = message
         completedAt = Date()
         persist?(snapshot())
-        await bus?.publish(.finished(id: sessionId, state: reason == .cancelled ? .stopped : .failed, summary: summary))
+        await bus?.publish(.finished(id: sessionId, state: stopped ? .stopped : .failed, summary: summary))
         return true
     }
 

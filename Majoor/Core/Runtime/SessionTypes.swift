@@ -143,6 +143,24 @@ nonisolated struct ApprovalRequest: Codable, Sendable, Identifiable, Equatable {
     let pipelineSteps: [PipelineStepDTO]
 }
 
+/// What the loop asks its session to get approved. The session mints the id,
+/// nonce and expiry and turns it into an ApprovalRequest.
+nonisolated struct ApprovalDraft: Sendable {
+    let title: String
+    let body: String
+    let category: String
+    let riskClass: RiskClass
+    let actionSignature: String
+    let isPipelinePlan: Bool
+    let pipelineSteps: [PipelineStepDTO]
+
+    init(title: String, body: String, category: String, riskClass: RiskClass, actionSignature: String,
+         isPipelinePlan: Bool = false, pipelineSteps: [PipelineStepDTO] = []) {
+        self.title = title; self.body = body; self.category = category; self.riskClass = riskClass
+        self.actionSignature = actionSignature; self.isPipelinePlan = isPipelinePlan; self.pipelineSteps = pipelineSteps
+    }
+}
+
 nonisolated struct ApprovalDecision: Codable, Sendable, Equatable {
     let approved: Bool
     let feedback: String?

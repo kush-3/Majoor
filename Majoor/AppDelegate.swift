@@ -19,8 +19,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     let taskManager = TaskManager()
     let chatManager = ChatManager()
     let updateManager = UpdateManager()
-    private var agentLoop: AgentLoop?
-    private var runningTaskHandle: Task<Void, Never>?
+    private var eventPump: SessionEventPump?
 
     // MARK: - Lifecycle
 
@@ -151,8 +150,21 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             }
         }
 
-        let tools = ToolRegistry.defaultTools()
-        agentLoop = AgentLoop(tools: tools, taskManager: taskManager)
+        let loop = AgentLoop(tools: ToolRegistry.defaultTools())
+        Task {
+            await SessionManager.shared.configure(
+                loop: loop,
+                store: SessionStore.shared,
+                persistTask: { TaskPersistence.shared.save($0) },
+                notify: { request in
+                    NotificationManager.shared.sendActionable(id: request.id, title: request.title, body: request.body, category: request.category)
+                })
+        }
+        eventPump = SessionEventPump(
+            taskManager: taskManager,
+            setState: { [weak self] state, message in self?.statusBarController?.setState(state, message: message) },
+            showPanel: { [weak self] in self?.showPanel() })
+        eventPump?.start()
     }
 
     // MARK: - URL Scheme (local automation hook)
@@ -191,17 +203,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     private func handleCommand(_ input: String) {
         guard !input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
 
-        // Prevent double-submission
-        guard !taskManager.isTaskRunning else { return }
-
         commandBarWindow?.hide()
-        statusBarController?.setState(.working)
-        taskManager.isTaskRunning = true
-        taskManager.runningTaskInput = input
 
         guard !APIConfig.claudeAPIKey.isEmpty else {
             statusBarController?.setState(.error, message: "API key not configured")
-            taskManager.isTaskRunning = false
             taskManager.showToast(type: .error, title: "Setup Required",
                                   body: "API key not configured. Open Settings to add your Anthropic API key.",
                                   autoDismiss: nil, actionLabel: "Settings") { [weak self] in
@@ -211,98 +216,37 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             return
         }
 
-        runningTaskHandle = Task { [weak self] in
-            guard let self, let loop = agentLoop else { return }
-            do {
-                let result = try await loop.execute(userInput: input)
+        statusBarController?.setState(.working)
+        Task {
+            // The panel is a local, trusted channel: exact "stop" / "/status" /
+            // "/stop N" forms are commands, everything else is a task.
+            let outcome = await SessionManager.shared.handleInbound(input, origin: .panel, trust: .local)
+            await MainActor.run { self.show(outcome) }
+        }
+    }
 
-                guard !Task.isCancelled else {
-                    await MainActor.run {
-                        self.taskManager.isTaskRunning = false
-                        self.statusBarController?.setState(.idle)
-                    }
-                    return
-                }
-
-                await MainActor.run {
-                    self.taskManager.isTaskRunning = false
-                    self.statusBarController?.setState(.success)
-                    let completedTask = self.taskManager.tasks.first
-                    self.taskManager.showToast(
-                        type: .info, title: "Task Complete", body: result.summary, autoDismiss: 6.0,
-                        actionLabel: "View Details",
-                        action: {
-                            if let task = completedTask {
-                                NotificationCenter.default.post(
-                                    name: .majoorOpenTaskDetail, object: nil,
-                                    userInfo: ["taskId": task.id.uuidString])
-                            }
-                        })
-                    self.showPanel()
-                }
-            } catch is CancellationError {
-                await MainActor.run {
-                    self.taskManager.isTaskRunning = false
-                    self.statusBarController?.setState(.idle)
-                    self.taskManager.showToast(type: .warning, title: "Task Stopped", body: "Task was cancelled by user.", autoDismiss: 4.0)
-                    self.showPanel()
-                }
-            } catch let error as LLMError {
-                await MainActor.run {
-                    self.taskManager.isTaskRunning = false
-                    self.handleLLMError(error)
-                }
-            } catch {
-                await MainActor.run {
-                    self.taskManager.isTaskRunning = false
-                    self.statusBarController?.setState(.error, message: error.localizedDescription)
-                    self.taskManager.showToast(type: .error, title: "Task Failed", body: error.localizedDescription)
-                    self.showPanel()
-                }
-            }
+    private func show(_ outcome: SessionManager.InboundOutcome) {
+        switch outcome {
+        case .submitted:
+            break
+        case .status(let text):
+            taskManager.showToast(type: .info, title: "Sessions", body: text, autoDismiss: 8.0)
+            showPanel()
+        case .stopped(let count):
+            taskManager.showToast(type: .warning, title: "Stopped", body: "\(count) session(s) stopped.", autoDismiss: 4.0)
+        case .nothingToStop(let text):
+            taskManager.showToast(type: .info, title: "Nothing stopped", body: text, autoDismiss: 6.0)
+        case .unavailable:
+            taskManager.showToast(type: .error, title: "Not ready", body: "The agent runtime is still starting. Try again in a moment.", autoDismiss: 5.0)
         }
     }
 
     func stopRunningTask() {
-        runningTaskHandle?.cancel()
-        runningTaskHandle = nil
-        // Resolve any pending confirmation as denied — a stopped task must not
-        // leave its continuation suspended, and a stale prompt approved later
-        // must not execute a tool for a dead task.
-        Task { await ConfirmationManager.shared.denyAll() }
+        // STOP: every session, the queue, every pending approval. The sessions
+        // record their own stopped outcome; the UI follows the events.
+        Task { await SessionManager.shared.stopAll() }
         taskManager.clearConfirmation()
-        taskManager.isTaskRunning = false
         statusBarController?.setState(.idle)
-        // Mark the running task as failed
-        if let runningTask = taskManager.tasks.first(where: { $0.status == .running }) {
-            runningTask.status = .failed
-            // Same string the loop's own cancellation path writes, so one event can't
-            // produce two different summaries depending on which writer lands last.
-            runningTask.summary = IncompleteReason.cancelled.userFacing
-            runningTask.completedAt = Date()
-            // Persist it. Without this the row was only ever updated in memory, so a
-            // stopped task didn't exist at all after a restart. The loop now also
-            // writes on its own cancellation path; both agree on .failed and the save
-            // is an upsert on the UUID, so whichever lands last is correct.
-            taskManager.persistTask(runningTask)
-        }
-    }
-
-    private func handleLLMError(_ error: LLMError) {
-        // A run that stopped without finishing is not the same as one that failed —
-        // rendering "Stopped after hitting the step limit" identically to an invalid
-        // API key trains you to ignore both.
-        if case .incomplete(let reason) = error {
-            statusBarController?.setState(.attention, message: reason.userFacing)
-            taskManager.showToast(type: .warning, title: "Task Incomplete",
-                                  body: reason.userFacing, autoDismiss: 8.0)
-            showPanel()
-            return
-        }
-        let errorDesc = error.errorDescription ?? "Unknown error"
-        statusBarController?.setState(.error, message: errorDesc)
-        taskManager.showToast(type: .error, title: "Task Failed", body: errorDesc)
-        showPanel()
     }
 
     /// Send macOS notification only when the panel is not visible (fallback)

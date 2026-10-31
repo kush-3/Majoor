@@ -48,10 +48,93 @@ class TaskManager: ObservableObject {
 
     // In-app confirmation UI state
     @Published var activeConfirmation: ConfirmationContext?
-
+    @Published var pendingApprovals: [ApprovalRequest] = []
+    @Published var runningCount: Int = 0
 
     var runningTasks: [AgentTask] {
-        tasks.filter { $0.status == .running }
+        tasks.filter { $0.status == .running || $0.status == .waiting }
+    }
+
+    // MARK: - Session event mirror
+
+    /// Every change the runtime makes lands here as an event; the published
+    /// properties the views already read are derived from it.
+    func apply(_ event: SessionEvent) {
+        switch event {
+        case .created(let info):
+            if !tasks.contains(where: { $0.id == info.id }) {
+                addTask(AgentTask(id: info.id, userInput: info.input, createdAt: info.createdAt, status: .running,
+                                  summary: "", completedAt: nil, tokensUsed: 0, modelUsed: "", steps: []))
+            }
+            refreshRunning()
+        case .state(let id, let state):
+            if let task = task(id) {
+                switch state {
+                case .waitingApproval: task.status = .waiting
+                case .running, .queued: if task.status == .waiting || task.status == .running { task.status = .running }
+                case .completed, .failed, .stopped: break   // .finished carries the summary
+                }
+            }
+            refreshRunning()
+        case .step(let id, let step):
+            task(id)?.steps.append(step.taskStep)
+        case .cost(let id, let tokensIn, let tokensOut, _, _):
+            task(id)?.tokensUsed = tokensIn + tokensOut
+        case .finished(let id, let state, let summary):
+            if let task = task(id) {
+                task.status = state == .completed ? .completed : .failed
+                task.summary = summary
+                task.completedAt = Date()
+            }
+            if pendingPipelineTaskId == id { clearPipelinePlan() }
+            pendingApprovals.removeAll { $0.sessionId == id }
+            syncActiveConfirmation()
+            refreshRunning()
+        case .pipelinePlan(let id, let text, let steps):
+            if text.isEmpty && steps.isEmpty {
+                if pendingPipelineTaskId == id { clearPipelinePlan() }
+            } else {
+                showPipelinePlan(text, taskId: id)
+                setPipelineSteps(steps.map { PipelineStep(planDescription: $0.planDescription, enabled: $0.enabled) })
+            }
+        case .pipelineStep(let id, let index, let status, let result, let error):
+            guard pendingPipelineTaskId == id, let stepStatus = PipelineStepStatus(rawValue: status) else { return }
+            updatePipelineStep(at: index, status: stepStatus, result: result, error: error)
+            if stepStatus == .running { pipelineExecuting = true }
+        case .approvalRequested(let request):
+            pendingApprovals.append(request)
+            syncActiveConfirmation()
+        case .approvalResolved(let approvalId, let approved, _):
+            if let request = pendingApprovals.first(where: { $0.id == approvalId }), request.isPipelinePlan {
+                pipelineExecuting = approved
+            }
+            pendingApprovals.removeAll { $0.id == approvalId }
+            syncActiveConfirmation()
+        }
+    }
+
+    private func task(_ id: UUID) -> AgentTask? {
+        tasks.first { $0.id == id }
+    }
+
+    private func syncActiveConfirmation() {
+        activeConfirmation = pendingApprovals.first.map {
+            ConfirmationContext(id: $0.id, title: $0.title, body: $0.body, category: $0.category, nonce: $0.nonce,
+                                sessionId: $0.sessionId, isPipelinePlan: $0.isPipelinePlan, pendingCount: pendingApprovals.count)
+        }
+    }
+
+    private func refreshRunning() {
+        let running = runningTasks
+        runningCount = running.count
+        isTaskRunning = !running.isEmpty
+        runningTaskInput = running.first?.userInput ?? ""
+    }
+
+    /// Indices of pipeline steps the user switched off in the panel, sent
+    /// with a plan approval so the runtime skips them.
+    var disabledPipelineStepIndices: [Int] {
+        pipelineSteps.enumerated().filter { !$0.element.enabled }.map(\.offset)
     }
 
     var completedTasks: [AgentTask] {

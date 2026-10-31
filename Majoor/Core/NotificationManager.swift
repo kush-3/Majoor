@@ -2,7 +2,7 @@
 // Majoor — Central Notification Handler
 //
 // Registers notification categories with action buttons,
-// sends notifications, and routes user responses to ConfirmationManager.
+// sends notifications, and routes user responses to the session that asked.
 
 import Foundation
 @preconcurrency import UserNotifications
@@ -183,7 +183,8 @@ nonisolated final class NotificationManager: NSObject, UNUserNotificationCenterD
             }
 
             Task {
-                await ConfirmationManager.shared.resolve(id: confirmationId, approved: approved)
+                _ = await SessionManager.shared.answerApproval(
+                    id: confirmationId, nonce: nil, decision: ApprovalDecision(approved: approved), byChannel: "notification")
             }
         }
 
