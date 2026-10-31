@@ -264,6 +264,25 @@ nonisolated final class DatabaseManager: @unchecked Sendable {
             try db.create(indexOn: "approvals", columns: ["sessionId"], options: [.ifNotExists])
         }
 
+        // Phase 1 channels and control API: who may give instructions, and
+        // which devices are paired. Only token hashes are stored.
+        migrator.registerMigration("v6_control_clients_contacts") { db in
+            try db.create(table: "contacts_policy", ifNotExists: true) { t in
+                t.primaryKey("handle", .text)
+                t.column("trust", .text).notNull()
+                t.column("isVIP", .boolean).notNull().defaults(to: false)
+                t.column("createdAt", .text).notNull()
+            }
+            try db.create(table: "paired_clients", ifNotExists: true) { t in
+                t.primaryKey("clientId", .text)
+                t.column("name", .text).notNull()
+                t.column("tokenHash", .blob).notNull()
+                t.column("createdAt", .text).notNull()
+                t.column("lastSeenAt", .text)
+                t.column("revokedAt", .text)
+            }
+        }
+
         try migrator.migrate(dbQueue)
     }
 }

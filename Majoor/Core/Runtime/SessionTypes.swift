@@ -34,7 +34,12 @@ nonisolated struct ChannelRef: Codable, Sendable, Hashable {
 
 /// How much the origin of a message is trusted (PRD §5.7).
 nonisolated enum ChannelTrust: String, Codable, Sendable {
-    case local, remoteText
+    /// In-process UI (the panel): the owner by construction.
+    case local
+    /// A control-API client holding a pairing token: the owner's own device.
+    case authenticatedClient
+    /// Text from a messaging service: the sender must be the configured owner.
+    case remoteText
 }
 
 nonisolated struct SessionInfo: Codable, Sendable, Identifiable, Equatable {

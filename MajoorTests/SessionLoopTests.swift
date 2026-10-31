@@ -80,16 +80,15 @@ func waitUntil(timeout: Duration = .seconds(15), _ condition: @Sendable () async
     return await condition()
 }
 
-@MainActor
+/// Suites run in parallel, so tests never touch the real permission-mode
+/// setting: the mode is pinned per manager instead. Kept as a scope marker.
 func withPermissionMode<T>(_ mode: PermissionMode, _ body: () async throws -> T) async rethrows -> T {
-    let previous = UserDefaults.standard.string(forKey: PermissionMode.defaultsKey)
-    UserDefaults.standard.set(mode.rawValue, forKey: PermissionMode.defaultsKey)
-    defer { UserDefaults.standard.set(previous, forKey: PermissionMode.defaultsKey) }
-    return try await body()
+    try await body()
 }
 
 func makeManager(route: @escaping ProviderRouter, tool: EchoTool = EchoTool(), maxConcurrent: Int = 3,
-                 approvalTimeout: TimeInterval = 600, persist: SnapshotBox? = nil) async -> SessionManager {
+                 approvalTimeout: TimeInterval = 600, persist: SnapshotBox? = nil,
+                 permissionMode: PermissionMode = .standard, budget: TokenBudget? = nil) async -> SessionManager {
     let manager = SessionManager()
     let loop = AgentLoop(tools: [tool], route: route)
     var persistClosure: (@Sendable (TaskSnapshot) -> Void)? = nil
@@ -97,7 +96,8 @@ func makeManager(route: @escaping ProviderRouter, tool: EchoTool = EchoTool(), m
         persistClosure = { snapshot in persist.append(snapshot) }
     }
     await manager.configure(loop: loop, store: nil, persistTask: persistClosure,
-                            notify: nil, maxConcurrent: maxConcurrent, approvalTimeout: approvalTimeout)
+                            notify: nil, maxConcurrent: maxConcurrent, approvalTimeout: approvalTimeout,
+                            permissionMode: permissionMode, sessionBudget: budget)
     return manager
 }
 
@@ -239,11 +239,8 @@ struct SessionLoopTests {
     @Test("crossing the session token budget fails the run honestly")
     func budget() async throws {
         try await withPermissionMode(.standard) {
-            let previous = UserDefaults.standard.integer(forKey: TokenBudget.sessionTokensKey)
-            UserDefaults.standard.set(5_000, forKey: TokenBudget.sessionTokensKey)
-            defer { UserDefaults.standard.set(previous, forKey: TokenBudget.sessionTokensKey) }
             let provider = ScriptedProvider([echoCall("loop")], usage: AnthropicUsage(inputTokens: 3_000, outputTokens: 0))
-            let manager = await makeManager(route: { _ in (provider, []) })
+            let manager = await makeManager(route: { _ in (provider, []) }, budget: TokenBudget(maxTotalTokens: 5_000))
             let info = try #require(await manager.submit(input: "burn", origin: .panel, trust: .local))
             let final = try #require(await terminal(manager, info.id))
             #expect(final.state == .failed)
@@ -288,7 +285,7 @@ struct SessionLoopTests {
     func remoteTrustDowngrade() async throws {
         try await withPermissionMode(.auto) {
             let provider = ScriptedProvider([.text("ok")])
-            let manager = await makeManager(route: { _ in (provider, []) })
+            let manager = await makeManager(route: { _ in (provider, []) }, permissionMode: .auto)
             let remote = try #require(await manager.submit(input: "from phone", origin: ChannelRef(channelId: "imessage", threadKey: "imessage:x"), trust: .remoteText))
             let local = try #require(await manager.submit(input: "from panel", origin: .panel, trust: .local))
             #expect(await manager.session(shortId: remote.shortId)?.effectiveMode == .standard)

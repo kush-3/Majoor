@@ -35,14 +35,19 @@ actor SessionManager {
     private var nextShortId = 1
     private(set) var maxConcurrent = 3
     private(set) var approvalTimeout: TimeInterval = 600
+    private var permissionMode: PermissionMode?
+    private var sessionBudget: TokenBudget?
 
     init() {}
 
     /// Production wiring happens once at launch; tests call this with their
     /// own loop, store and hooks.
     func configure(loop: AgentLoop, store: SessionStore?, persistTask: (@Sendable (TaskSnapshot) -> Void)?,
-                   notify: (@Sendable (ApprovalRequest) -> Void)?, maxConcurrent: Int = 3, approvalTimeout: TimeInterval = 600) {
+                   notify: (@Sendable (ApprovalRequest) -> Void)?, maxConcurrent: Int = 3, approvalTimeout: TimeInterval = 600,
+                   permissionMode: PermissionMode? = nil, sessionBudget: TokenBudget? = nil) {
         self.loop = loop
+        self.permissionMode = permissionMode
+        self.sessionBudget = sessionBudget
         self.store = store
         self.persistTask = persistTask
         self.notify = notify
@@ -62,9 +67,9 @@ actor SessionManager {
     func submit(input: String, origin: ChannelRef, trust: ChannelTrust, kind: SessionKind = .task) async -> SessionInfo? {
         guard let loop else { return nil }
         let session = AgentSession(
-            shortId: nextShortId, kind: kind, input: input, origin: origin, trust: trust, budget: TokenBudget.perSession,
+            shortId: nextShortId, kind: kind, input: input, origin: origin, trust: trust, budget: sessionBudget ?? TokenBudget.perSession,
             bus: bus, history: history, store: store, loop: loop, approvalTimeout: approvalTimeout,
-            persist: persistTask, notify: notify,
+            persist: persistTask, notify: notify, modeOverride: permissionMode,
             onFinished: { [weak self] id in await self?.sessionFinished(id) })
         nextShortId += 1
         let id = session.sessionId

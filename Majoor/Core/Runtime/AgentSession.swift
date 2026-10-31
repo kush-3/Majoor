@@ -39,6 +39,8 @@ actor AgentSession: AgentLoopHost {
     private let approvalTimeout: TimeInterval
     private let notify: (@Sendable (ApprovalRequest) -> Void)?
     private let onFinished: @Sendable (SessionID) async -> Void
+    /// Tests pin the mode; production reads the setting on every call.
+    private nonisolated let modeOverride: PermissionMode?
 
     private(set) var state: SessionState = .queued
     private var runTask: Task<Void, Never>?
@@ -53,8 +55,10 @@ actor AgentSession: AgentLoopHost {
     init(shortId: Int, kind: SessionKind, input: String, origin: ChannelRef, trust: ChannelTrust, budget: TokenBudget,
          bus: EventBus, history: ThreadHistory, store: SessionStore?, loop: AgentLoop, approvalTimeout: TimeInterval = 600,
          persist: (@Sendable (TaskSnapshot) -> Void)?, notify: (@Sendable (ApprovalRequest) -> Void)?,
+         modeOverride: PermissionMode? = nil,
          onFinished: @escaping @Sendable (SessionID) async -> Void) {
         let id = UUID()
+        self.modeOverride = modeOverride
         let now = Date()
         self.sessionId = id
         self.shortId = shortId
@@ -75,7 +79,7 @@ actor AgentSession: AgentLoopHost {
     }
 
     nonisolated var effectiveMode: PermissionMode {
-        let mode = PermissionMode.current
+        let mode = modeOverride ?? PermissionMode.current
         return (trust == .remoteText && mode == .auto) ? .standard : mode
     }
 

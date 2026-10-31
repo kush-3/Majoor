@@ -20,6 +20,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     let chatManager = ChatManager()
     let updateManager = UpdateManager()
     private var eventPump: SessionEventPump?
+    private var panelChannel: PanelChannel?
 
     // MARK: - Lifecycle
 
@@ -160,6 +161,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
                     NotificationManager.shared.sendActionable(id: request.id, title: request.title, body: request.body, category: request.category)
                 })
         }
+        let channel = PanelChannel(taskManager: taskManager)
+        panelChannel = channel
+        Task {
+            await ChannelRouter.shared.configure(manager: SessionManager.shared, owners: { ContactPolicyStore.shared.owners() })
+            await ChannelRouter.shared.register(channel)
+        }
         eventPump = SessionEventPump(
             taskManager: taskManager,
             setState: { [weak self] state, message in self?.statusBarController?.setState(state, message: message) },
@@ -217,28 +224,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         }
 
         statusBarController?.setState(.working)
-        Task {
-            // The panel is a local, trusted channel: exact "stop" / "/status" /
-            // "/stop N" forms are commands, everything else is a task.
-            let outcome = await SessionManager.shared.handleInbound(input, origin: .panel, trust: .local)
-            await MainActor.run { self.show(outcome) }
-        }
-    }
-
-    private func show(_ outcome: SessionManager.InboundOutcome) {
-        switch outcome {
-        case .submitted:
-            break
-        case .status(let text):
-            taskManager.showToast(type: .info, title: "Sessions", body: text, autoDismiss: 8.0)
-            showPanel()
-        case .stopped(let count):
-            taskManager.showToast(type: .warning, title: "Stopped", body: "\(count) session(s) stopped.", autoDismiss: 4.0)
-        case .nothingToStop(let text):
-            taskManager.showToast(type: .info, title: "Nothing stopped", body: text, autoDismiss: 6.0)
-        case .unavailable:
-            taskManager.showToast(type: .error, title: "Not ready", body: "The agent runtime is still starting. Try again in a moment.", autoDismiss: 5.0)
-        }
+        // The panel is a channel like any other: the router authorizes the
+        // message, recognizes the exact command forms, and starts a session.
+        panelChannel?.submit(input)
     }
 
     func stopRunningTask() {
