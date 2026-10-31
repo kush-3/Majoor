@@ -42,29 +42,36 @@ nonisolated enum PermissionMode: String, CaseIterable, Sendable {
 /// Decides, per mode, whether a tool call needs the user's confirmation.
 nonisolated enum ConfirmationPolicy {
 
-    /// Sensitive = the tool's own requiresConfirmation flag, plus interpreter
-    /// scripts: Python/Node/Ruby are arbitrary code that CommandSanitizer
-    /// cannot meaningfully inspect. Bash scripts are instead sanitized like
-    /// execute_shell in every mode (see ExecuteScriptTool), so they stay
-    /// prompt-free for routine batch work. Invoking an interpreter on a script
-    /// file through the shell is the same power as execute_script, so that
-    /// form is sensitive too — otherwise write_file + execute_shell
-    /// "python3 x.py" would dodge the script gate with zero prompts.
+    /// Sensitive = the tool's own requiresConfirmation flag, plus anything the
+    /// shell-shaped tools can do that an equivalent tool would prompt for.
+    /// ShellCommandClassifier maps each simple command to the tool it mirrors:
+    /// interpreters and script files → execute_script, rm/git clean →
+    /// delete_file, git push → git_push, gh pr create → git_create_pr, plus
+    /// outward-facing commands with no tool equivalent (ssh, publish, mail).
+    /// Python/Node/Ruby scripts are always sensitive: arbitrary code the
+    /// sanitizer cannot inspect. Bash scripts are sanitized in every mode and
+    /// then classified line by line, so `git push` inside a bash script prompts
+    /// exactly like `git push` typed into execute_shell.
     static func isSensitive(toolName: String, requiresConfirmation: Bool, arguments: [String: String]) -> Bool {
-        if toolName == "execute_script" {
+        switch toolName {
+        case "execute_script":
             // Unknown/missing language fails in the tool immediately — don't
             // burn a prompt on a call that cannot execute anything
-            return ["python", "node", "ruby"].contains((arguments["language"] ?? "").lowercased())
+            let language = (arguments["language"] ?? "").lowercased()
+            if ["python", "node", "ruby"].contains(language) { return true }
+            if language == "bash" { return ShellCommandClassifier.classify(arguments["code"] ?? "").isSensitive }
+            return false
+        case "execute_shell":
+            return ShellCommandClassifier.classify(arguments["command"] ?? "").isSensitive
+        case "run_tests":
+            // The gate must judge what will actually run: when no command is
+            // given, the tool auto-detects one (e.g. `python3 -m pytest`).
+            let command = arguments["command"]
+                ?? RunTestsTool.detectTestCommand(at: NSString(string: arguments["path"] ?? "").expandingTildeInPath)
+            return ShellCommandClassifier.classify(command).isSensitive
+        default:
+            return requiresConfirmation
         }
-        if toolName == "execute_shell" || toolName == "run_tests" {
-            // Any command-position interpreter invocation is the same power as
-            // execute_script — extensionless files, -m modules, and alternate
-            // runtimes included (osascript can drive Mail.app). Inline -c/-e
-            // forms are blocked outright by CommandSanitizer.
-            let cmd = (arguments["command"] ?? "").lowercased()
-            return cmd.range(of: #"(^|[;&|(`])\s*(env\s+)?(python3?|node|ruby|perl|deno|bun|uv|osascript)\b"#, options: .regularExpression) != nil
-        }
-        return requiresConfirmation
     }
 
     /// Auto mode's consent check: a fast Haiku call judges whether the user's
