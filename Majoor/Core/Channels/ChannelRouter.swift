@@ -159,7 +159,8 @@ actor ChannelRouter {
         case .approvalRequested(let request):
             guard let origin = await origin(of: request.sessionId, manager: manager), origin.channelId != PanelChannel.channelId else { return }
             let head = request.isPipelinePlan ? "Plan proposed:" : "Approval needed:"
-            await deliver(to: origin, text: "\(head)\n\(request.body)\n\nReply `yes \(request.nonce)` to approve or `no \(request.nonce)` to deny. Add a note after the code if you like.")
+            let minutes = max(1, Int(request.expiresAt.timeIntervalSince(request.requestedAt) / 60))
+            await deliver(to: origin, text: "\(head)\n\(request.body)\n\nReply \"yes \(request.nonce)\" to approve, \"no \(request.nonce) <note>\" to decline. Expires in \(minutes) min.")
         case .finished(let id, let state, let summary):
             guard let origin = await origin(of: id, manager: manager), origin.channelId != PanelChannel.channelId else { return }
             let text: String

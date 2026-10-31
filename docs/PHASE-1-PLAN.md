@@ -465,6 +465,8 @@ Dev loop on one Mac: runtime-mode instance and client-mode instance can run as t
 
 ## Step 7. iMessage channel via `imsg rpc`
 
+> **Status: done 2026-10-31** (commit "feat: iMessage channel over imsg rpc"). As designed, with these notes from `docs/json.md`: the message object carries `sender`, `text`, `is_from_me`, `created_at`, `guid`, `chat_id`, `is_group`, optional `type` (edited/unsent) and `is_reaction`; **`service` is on the chat, not the message**, so the channel fetches `chats.get` once per chat and requires `service == iMessage` and `is_group == false` with the owner as the only participant. `send` takes `service: "imessage"` and `allow_sms_fallback: false`. The existing `Core/Runtime/JSONValue.swift` is reused rather than a second JSON type; `MCPClient.resolveCommand` became internal `static` (one-word edit). On a first run with no saved row id the watch starts at the tail (no replay of the whole chat.db). The router's approval prompt is plain text with the expiry. `ask()` keeps the default no-answer implementation (Phase 2). Settings ▸ Channels (runtime mode) holds the enable toggle, owner handle, helper path/version, row id, stale window and a test send. Not yet verified by hand: nothing here has talked to a real `imsg` (it is not installed on this Mac); the loopback tests use a scripted transport and a Python JSON-RPC echo child. The manual checklist in 7g stands.
+
 **Size:** ~800 new lines, 3 days. **Depends on:** step 3 (channel, trust), step 2 (approvals with nonces). Independent of 4–6.
 
 ### 7a. What `imsg rpc` gives us (from its docs, `openclaw/imsg` `docs/rpc.md`)

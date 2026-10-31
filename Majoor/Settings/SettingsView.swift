@@ -25,6 +25,10 @@ struct SettingsView: View {
                 ControlAPISettingsView()
                     .tabItem { Label("Remote", systemImage: "antenna.radiowaves.left.and.right") }
             }
+            if AppMode.current == .runtime {
+                ChannelsSettingsView()
+                    .tabItem { Label("Channels", systemImage: "message") }
+            }
             AboutTab()
                 .tabItem { Label("About", systemImage: "info.circle") }
         }

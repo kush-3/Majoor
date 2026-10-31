@@ -424,7 +424,7 @@ actor MCPClient {
     ]
 
     /// Try to find a command in common PATH locations.
-    private static func resolveCommand(_ command: String) -> String? {
+    static func resolveCommand(_ command: String) -> String? {
         let searchPaths = extraPathDirs + ["/usr/bin", "/bin", "/usr/sbin", "/sbin"]
         for dir in searchPaths {
             let fullPath = "\(dir)/\(command)"

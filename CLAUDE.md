@@ -81,7 +81,7 @@ Must use the shared global `sharedEventStore` instance (defined in `CalendarTool
 
 ### Database (`Core/Database/DatabaseManager.swift`)
 
-SQLite via GRDB at `~/Library/Application Support/ai.majoor.agent/majoor.sqlite`. Three tables: `memories`, `tasks`, `usageStats`. Migrations registered on startup.
+SQLite via GRDB at `~/Library/Application Support/ai.majoor.agent/majoor.sqlite`. Tables: `memories`, `tasks`, `usageStats`, `sessions`, `approvals`, `contacts_policy`, `paired_clients`, `automations` (migrations v1–v7, registered on startup). `MAJOOR_DB_PATH` overrides the path; `DatabaseManager.openAndMigrate(path:)` gives tests a throwaway database.
 
 ### MCP Client (`Core/MCP/`)
 
@@ -109,6 +109,25 @@ Two separate execution paths:
 ### Conversation Continuity
 
 `SessionManager.history` (`Core/Runtime/ThreadHistory.swift`) keeps the last 10 minutes of completed turns per thread (the panel is one thread; an iMessage handle or a remote client is another), injected as context for the next task in that thread. Stale entries are pruned automatically.
+
+### App Modes (`Core/AppMode.swift`)
+
+One binary, three roles, chosen in Settings ▸ General ▸ Mode (UserDefaults `appMode`, restart to apply):
+- **local** (default): 1.x behaviour. Panel plus the local runtime; nothing listens on the network; reminders run.
+- **runtime**: the always-on Mac mini. Local plus the control API (on by default), the iMessage channel (Settings ▸ Channels) and the scheduler.
+- **client**: the laptop. The command bar submits to a paired runtime through `RemoteRuntimeClient`; the panel mirrors the runtime's snapshot and events (tasks carry a "Mac mini" / "This Mac" chip); approvals are answered over the API with their nonce; the local `SessionManager` is configured lazily and used only when the explicit, persisted **Run here** pill is on. A failed remote submit is shown with a Run-here action and never retried locally on its own. MCP servers are not started in client mode.
+
+### Control API (`Core/ControlAPI/`)
+
+`ControlServer` is an `NWListener` with `NWProtocolWebSocket` bound only to the Tailscale address (`TailscaleInterface`; a DEBUG toggle allows 127.0.0.1). Protocol v1 (`ControlProtocol.swift`): JSON text frames `{v, id, replyTo, type, body}`; `pair` with a 5-minute code from Settings ▸ Remote returns a client id and a token whose SHA-256 is stored in `paired_clients`; `hello` must arrive within five seconds; then `subscribe` (snapshot plus `event` frames from the `EventBus`), `submit` (idempotent on `clientRequestId`), `approval.answer` (nonce required), `stop`, `sessions.list`, `settings.get/set` (allowlisted keys; the permission mode can only be tightened remotely). Client side: `RemoteRuntimeClient` (reconnect 1→30 s backoff, resubscribe from the last seq, 10 s request timeouts, terminal `.failed` when revoked), `RemoteSessionGateway` (the `SessionGateway` shape over it), `RuntimeConnectionModel` (UI state), credentials in UserDefaults plus the token in the Keychain (`ClientCredentialsStore`).
+
+### Channels (`Core/Channels/`)
+
+A `Channel` yields `InboundMessage`s and sends text to a thread; `ChannelRouter` consumes every registered channel, applies `TrustPolicy` (remote-text senders must match an owner handle in `contacts_policy`, normalized E.164/lower-case email), recognizes coded approval replies (`yes K7Q2`, `no K7Q2 note`; a bare "yes" is a task), submits through `SessionManager.handleInbound`, and sends results and approval prompts back to the originating thread. `PanelChannel` is the command bar. `IMessageChannel` (`Channels/IMessage/`, runtime mode) drives one `imsg rpc` child (`brew install steipete/tap/imsg`; Majoor.app needs Full Disk Access and Automation for Messages) through `JSONRPCLineClient` (newline JSON-RPC, `NewlineJSONFramer`, notifications stream; `MCPClient` is untouched): initialize → replay `messages.after` from the saved row id → `watch.subscribe`. `IMessageInboundPolicy` accepts only the owner, only in a direct iMessage chat, drops our own echoes, reactions, edits, groups and SMS, rate-limits to 10/min, and after an outage summarizes rather than runs messages older than the stale window (default 10 min; a trailing `stop` is still honored). Replies are chunked at ~1,500 characters, max 6. The helper is restarted with 5→80 s backoff and given up after five quick exits.
+
+### Automations (`Core/Automation/`)
+
+`automations` holds the full PRD shape; Phase 1 writes one-shot reminders (`create_reminder`, `list_reminders`, `cancel_reminder` in `Tools/ReminderTools.swift`). `AutomationStore.claimDue` claims due rows in one transaction; `AutomationScheduler` is a single timer behind a `SchedulerClock` seam, re-armed by `wake()` (create/cancel, system wake, clock change), with launch catch-up (rows more than a day late are prefixed "missed"), stale-claim release and 60 s retries up to five. A firing is recorded through `SessionManager.recordJob` and delivered to the originating channel (iMessage) or as a local notification plus panel toast. Runs in local and runtime modes; active hours deliberately do not apply to reminders.
 
 # CLAUDE.md — Majoor
 

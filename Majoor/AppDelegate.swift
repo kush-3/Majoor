@@ -162,6 +162,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         if AppMode.current != .client {
             Task { await MCPServerManager.shared.stopAll() }
             Task { await ControlServer.shared.stop() }
+            IMessageModel.shared.stopChannel()
         }
         if let client = remoteClient { Task { await client.stop() } }
     }
@@ -204,6 +205,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         case .local, .runtime:
             ensureLocalRuntime()
             startScheduler()
+            if mode == .runtime { setupIMessage() }
             Task {
                 await ControlServer.shared.configure(
                     gateway: LocalSessionGateway(manager: SessionManager.shared, channelId: "control", trust: .authenticatedClient, tasks: TaskPersistence.shared),
@@ -264,6 +266,21 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         }
         NotificationCenter.default.addObserver(forName: .NSSystemClockDidChange, object: nil, queue: nil) { _ in
             Task { await AutomationScheduler.shared.wake() }
+        }
+    }
+
+    /// Runtime mode: the owner's iMessage thread is a channel. The model
+    /// owns the live channel so Settings can turn it on and off.
+    private func setupIMessage() {
+        let version = appVersion
+        IMessageModel.shared.configure {
+            var config = IMessageChannel.Config(owners: { ContactPolicyStore.shared.owners() })
+            config.staleAfter = IMessageModel.staleAfter
+            config.appVersion = version
+            config.loadCursor = { UserDefaults.standard.integer(forKey: IMessageChannel.lastRowIdKey) }
+            config.saveCursor = { UserDefaults.standard.set($0, forKey: IMessageChannel.lastRowIdKey) }
+            config.notifyLocally = { title, body in NotificationManager.shared.sendSimple(title: title, body: body) }
+            return IMessageChannel(transport: JSONRPCLineClient(command: "imsg", arguments: ["rpc"], label: "imsg"), config: config)
         }
     }
 
