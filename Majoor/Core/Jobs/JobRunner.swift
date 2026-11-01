@@ -178,6 +178,10 @@ actor JobRunner {
                           record: record, tier: tier.rawValue, startedAt: startedAt, tokens: (0, 0), automations: automations, runs: runs)
         }
 
+        let context = JobContext(record: record, definition: definition, tier: tier, now: startedAt, timeZone: timeZone,
+                                 since: record.lastRunAt, automations: automations, runs: runs, preset: preset,
+                                 providerFor: providerFor, recordUsage: recordUsage)
+
         // Gather, framing every payload as data.
         var sections: [String] = []
         var eventCount = 0
@@ -189,9 +193,20 @@ actor JobRunner {
             let body = events.map(Self.render).joined(separator: "\n")
             sections.append(UntrustedContent.wrap(label: "\(events.count) \(kinds) event(s)", source: input.sourceId, text: body))
         }
+        // The behavior's own sections (calendar windows, reminders, another
+        // job's state). A failure here is recorded, not papered over.
+        if let extra = definition.gather {
+            do {
+                sections.append(contentsOf: try await extra(context))
+            } catch {
+                return finish(.failed("gather failed: \(error.localizedDescription)"), record: record, tier: tier.rawValue,
+                              startedAt: startedAt, tokens: (0, 0), automations: automations, runs: runs)
+            }
+        }
 
         var tokens = (input: 0, output: 0)
-        let outcome: JobOutcome
+        var outcome: JobOutcome
+        var answer: JSONValue = .null
         if definition.modelFree {
             outcome = .noChange(summary: "heartbeat, \(eventCount) event(s) seen")
         } else if let provider = providerFor(tier) {
@@ -201,6 +216,7 @@ actor JobRunner {
                     tokens = (usage.inputTokens, usage.outputTokens)
                     recordUsage(provider.model, usage.inputTokens, usage.outputTokens, tier)
                 }
+                answer = object
                 outcome = Self.map(object, definition: definition)
             } catch is CancellationError {
                 outcome = .failed("cancelled")
@@ -209,6 +225,22 @@ actor JobRunner {
             }
         } else {
             outcome = .failed("tier \(tier.letter) is not configured in Settings ▸ Models")
+        }
+
+        // The behavior acts on the answer (state, merges, drafts) and may
+        // change what is delivered. Failures are not applied.
+        if let apply = definition.apply {
+            switch outcome {
+            case .failed, .refused: break
+            default:
+                do {
+                    outcome = try await apply(answer, outcome, context)
+                } catch is CancellationError {
+                    outcome = .failed("cancelled")
+                } catch {
+                    outcome = .failed("apply failed: \(error.localizedDescription)")
+                }
+            }
         }
 
         let recorded = finish(outcome, record: record, tier: tier.rawValue, startedAt: startedAt, tokens: tokens,

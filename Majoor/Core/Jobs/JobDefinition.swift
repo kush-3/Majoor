@@ -42,6 +42,57 @@ nonisolated enum JobDelivery: String, Sendable {
     case always
 }
 
+/// What a behavior's own code gets to see while a run is in progress: the
+/// row, the definition, the tier it runs on, the clock, and the stores it may
+/// read or write (its own row's `scratch`, other jobs' rows, past runs). A
+/// provider lookup lets a behavior make a second, differently tiered model
+/// call of its own (the brief: facts gathered in code, prose written on P).
+nonisolated struct JobContext: Sendable {
+    let record: AutomationRecord
+    let definition: JobDefinition
+    let tier: ProviderTier
+    let now: Date
+    let timeZone: TimeZone
+    /// `record.lastRunAt`; nil on the first run.
+    let since: Date?
+    let automations: AutomationStore
+    let runs: JobRunStore
+    let preset: PrivacyPreset
+    /// The provider for a tier, or nil when that tier has no endpoint.
+    let providerFor: @Sendable (ProviderTier) -> (any LLMProvider)?
+    /// Attribute tokens of an extra model call: model, input, output, tier.
+    let recordUsage: @Sendable (String, Int, Int, ProviderTier) -> Void
+
+    /// This job's own persisted state (`automations.scratch`), decoded.
+    func scratch<T: Decodable>(as type: T.Type) -> T? {
+        guard let text = record.scratch, let data = text.data(using: .utf8) else { return nil }
+        return try? JSONDecoder.wire.decode(T.self, from: data)
+    }
+
+    /// Replaces this job's own persisted state.
+    func saveScratch<T: Encodable>(_ value: T) throws {
+        let data = try JSONEncoder.wire.encode(value)
+        automations.setScratch(id: record.id, String(decoding: data, as: UTF8.self))
+    }
+
+    /// Another job's persisted state, by job name (the brief reads triage's held items).
+    func scratch<T: Decodable>(ofJob name: String, as type: T.Type) -> T? {
+        guard let text = automations.jobRecord(named: name)?.scratch, let data = text.data(using: .utf8) else { return nil }
+        return try? JSONDecoder.wire.decode(T.self, from: data)
+    }
+}
+
+/// Extra prompt sections a behavior assembles in code (calendar windows,
+/// reminders, health, another job's state). Appended after the hub events.
+/// Text that came from outside must already be framed with `UntrustedContent`.
+typealias JobGather = @Sendable (JobContext) async throws -> [String]
+
+/// What a behavior does with the model's answer after the runner mapped it:
+/// store state, apply merges, keep a draft. Returns the outcome the runner
+/// records and delivers, which may differ from the mapped one. A throw is a
+/// recorded failure. `object` is `.null` for a model-free job.
+typealias JobApply = @Sendable (_ object: JSONValue, _ mapped: JobOutcome, _ context: JobContext) async throws -> JobOutcome
+
 nonisolated struct JobDefinition: Sendable {
     let name: String
     let title: String
@@ -63,10 +114,14 @@ nonisolated struct JobDefinition: Sendable {
     /// else. The `hello` heartbeat proves the scheduler → runner → table path
     /// without a model server.
     let modelFree: Bool
+    /// Sections the behavior assembles in code; see `JobGather`.
+    let gather: JobGather?
+    /// What the behavior does with the answer; see `JobApply`.
+    let apply: JobApply?
 
     init(name: String, title: String, summary: String, tier: ProviderTier, inputs: [JobInput], instructions: String,
          outputSchema: String = "", urgencyCeiling: Int = 2, riskCeiling: String = "R0", delivery: JobDelivery = .ladder,
-         defaultCron: String, modelFree: Bool = false) {
+         defaultCron: String, modelFree: Bool = false, gather: JobGather? = nil, apply: JobApply? = nil) {
         self.name = name
         self.title = title
         self.summary = summary
@@ -79,6 +134,8 @@ nonisolated struct JobDefinition: Sendable {
         self.delivery = delivery
         self.defaultCron = defaultCron
         self.modelFree = modelFree
+        self.gather = gather
+        self.apply = apply
     }
 
     /// Every data class the job touches; the runner checks each against the
@@ -124,7 +181,8 @@ nonisolated enum JobOutcome: Sendable, Equatable {
 }
 
 /// The jobs Majoor knows how to run. Settings lists them; a row in
-/// `automations` schedules one. Step 6 adds the §8 behaviors here.
+/// `automations` schedules one. Each §8 behavior lives in its own file under
+/// `Core/Jobs/Behaviors/` and contributes its definitions to `all`.
 nonisolated enum JobCatalog {
 
     /// A heartbeat: no inputs, no model, always `no_change`. Exists so the
@@ -144,6 +202,9 @@ nonisolated enum JobCatalog {
         modelFree: true)
 
     static let all: [JobDefinition] = [hello]
+        + TriageJob.definitions + MorningBriefJob.definitions + VIPNudgeJob.definitions
+        + CostReportJob.definitions + MemoryConsolidationJob.definitions + LocationJob.definitions
+        + ProposalsJob.definitions
 
     static func definition(named name: String) -> JobDefinition? {
         all.first { $0.name == name }

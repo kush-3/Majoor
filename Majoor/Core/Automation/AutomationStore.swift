@@ -238,6 +238,13 @@ nonisolated final class AutomationStore: @unchecked Sendable {
     }
 
     /// What the last run concluded, for the row's `lastResult` column.
+    /// A job's own persisted state, as JSON text (`JobContext.saveScratch`).
+    func setScratch(id: String, _ scratch: String?) {
+        _ = try? db.write { db in
+            try db.execute(sql: "UPDATE automations SET scratch = ? WHERE id = ?", arguments: [scratch, id])
+        }
+    }
+
     func setLastResult(id: String, _ result: String) {
         update(id: id) { record in record.lastResult = String(result.prefix(500)) }
     }
