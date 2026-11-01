@@ -42,7 +42,20 @@ nonisolated struct ClassificationResult: Sendable {
 nonisolated struct TaskClassifier: Sendable {
 
     /// Minimum keyword score to be considered "confident" (skip LLM classification)
-    private static let confidenceThreshold = 2
+    static let confidenceThreshold = 2
+
+    /// Words that name a personal source. A task routed to the frontier tier
+    /// that mentions one is downgraded to the private tier (plan §3b): "fix the
+    /// bug and summarize my inbox" must not send the inbox to Claude.
+    private static let personalSourceKeywords = [
+        "email", "e-mail", "gmail", "inbox", "mailbox", "calendar", "my schedule", "appointment",
+        "my meeting", "my meetings", "contact", "imessage", "text message", "my messages", "slack",
+    ]
+
+    static func mentionsPersonalSource(_ input: String) -> Bool {
+        let lower = input.lowercased()
+        return personalSourceKeywords.contains { lower.contains($0) }
+    }
 
     // Keyword groups with associated categories
     private static let patterns: [(keywords: [String], category: TaskCategory)] = [
