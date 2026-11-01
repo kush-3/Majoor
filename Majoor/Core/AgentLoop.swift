@@ -10,8 +10,10 @@
 import Foundation
 import CryptoKit
 
-/// Picks the provider and MCP tool sets for a task. The default is the
-/// hybrid router; tests inject a scripted provider.
+/// Picks the provider and MCP tool sets for a task. Tests inject a scripted
+/// provider through it; the app itself routes through `TierRoutingRouter`
+/// (`Core/Router/TierRouter.swift`), which also carries the tier and the tool
+/// gate.
 typealias ProviderRouter = @Sendable (String) async -> (provider: any LLMProvider, toolSets: [String])
 
 /// Pipeline plan state for one run: which numbered step each tool call
@@ -56,7 +58,7 @@ nonisolated final class PipelineState: @unchecked Sendable {
 final nonisolated class AgentLoop: @unchecked Sendable {
 
     private let tools: [any AgentTool]
-    private let route: ProviderRouter
+    private let route: TierRoutingRouter
     private let maxIterations = 75
     /// How many times one run may recover from an output-limit cut before giving up
     /// honestly. Bounded because each attempt costs a full turn.
@@ -65,9 +67,10 @@ final nonisolated class AgentLoop: @unchecked Sendable {
     private let maxToolResultChars = 30_000
     private let maxResponseTextLength = 1000
 
-    static let defaultRouter: ProviderRouter = { input in
-        let routed = await ModelRouter.routeHybrid(input)
-        return (routed.provider, routed.toolSets)
+    /// Router v2 (Phase 2 step 3): tier, provider and tool gate from the
+    /// privacy preset.
+    static let defaultRouter: TierRoutingRouter = { input in
+        await TierRouter.shared.route(input)
     }
 
     private let systemPrompt = """
@@ -101,6 +104,7 @@ final nonisolated class AgentLoop: @unchecked Sendable {
     14. Memory — when the user tells you something durable about themselves (a preference, a correction, a personal fact, a project detail) or explicitly asks you to remember something, save it with save_memory. First use search_memory to check for an existing memory on the topic and update it via supersedes_id instead of saving a duplicate. Use search_memory when a task likely depends on personal context that is not already in CONTEXT FROM MEMORY. Do not save task minutiae or transient state.
     15. Confirmations — sensitive tools (sending email, deleting files or events, git push/PR, running scripts) automatically show the user an approve/deny prompt when their settings require it. Never ask for permission in a text response before calling a tool: call it, and the app will ask the user if needed. If the user denies, the tool result says so (often with feedback) — adapt and continue rather than retrying the same call.
     16. Reminders — for "remind me …" use create_reminder. Prefer delay_minutes for relative times ("in 20 minutes", "in 2 hours"); use 'when' only for an absolute local time, computed from the current date and time zone given below. Never create a calendar event for a reminder unless the user asks for a calendar event. Use list_reminders / cancel_reminder to show or cancel them.
+    17. Questions — when you are genuinely blocked on a decision only the user can make, call ask_owner once for that blocker, with concrete options when there are a few; it waits for their reply. Never use it to ask permission (the app asks for permission itself) and never ask in a text response.
 
     PIPELINE BEHAVIOR:
     When the user describes a completed action, decision, or status change that implies work across 3 or more tools/services, DO NOT immediately start executing. Instead:
@@ -121,9 +125,18 @@ final nonisolated class AgentLoop: @unchecked Sendable {
     Use this context to make your plan specific. Instead of "Create a PR on GitHub", show "Create a PR 'Add JWT auth middleware' on kush/majoor (3 files, +142 -28)".
     """
 
-    init(tools: [any AgentTool], route: @escaping ProviderRouter = AgentLoop.defaultRouter) {
+    init(tools: [any AgentTool], routing: @escaping TierRoutingRouter = AgentLoop.defaultRouter) {
         self.tools = tools
-        self.route = route
+        self.route = routing
+    }
+
+    /// Tests: a provider and tool sets, with no tier and no tool gate.
+    init(tools: [any AgentTool], route: @escaping ProviderRouter) {
+        self.tools = tools
+        self.route = { input in
+            let routed = await route(input)
+            return RoutingDecision(provider: routed.provider, toolSets: routed.toolSets)
+        }
     }
 
     // MARK: - Run
@@ -137,7 +150,10 @@ final nonisolated class AgentLoop: @unchecked Sendable {
         let historySnapshot = host.history.snapshot(thread: thread)
         let recentContext = historySnapshot.suffix(3).map { $0.userInput }.joined(separator: " | ")
         let routingInput = recentContext.isEmpty ? userInput : "\(userInput) [recent context: \(recentContext)]"
-        let (provider, routedToolSets) = await route(routingInput)
+        let decision = await route(routingInput)
+        let provider = decision.provider
+        let routedToolSets = decision.toolSets
+        let usageTier = decision.tier ?? .frontier
 
         // Merge tool sets from recent conversations so follow-ups retain access
         var toolSets = routedToolSets
@@ -146,7 +162,12 @@ final nonisolated class AgentLoop: @unchecked Sendable {
         }
 
         // 2. Retrieve relevant memories, inject current date, and MCP summary
-        let memoryContext = MemoryRetriever.relevantContext(for: userInput)
+        // Memories are Majoor's own state (PRD §6). When the privacy preset
+        // keeps that class off this tier they stay out of the prompt, not only
+        // out of the tool list.
+        let memoryAllowed = decision.gate?.allows(.majoorState) ?? true
+        let memoryContext = memoryAllowed ? MemoryRetriever.relevantContext(for: userInput) : ""
+        if !memoryAllowed { MajoorLogger.log("🔒 Memory context withheld on tier \(usageTier.letter)") }
         let dateFormatter = DateFormatter()
         dateFormatter.dateFormat = "EEEE, MMMM d, yyyy 'at' h:mm a"
         let dateContext = "\n\nCurrent date and time: \(dateFormatter.string(from: Date())) (\(TimeZone.current.identifier))"
@@ -173,6 +194,20 @@ final nonisolated class AgentLoop: @unchecked Sendable {
             if !filteredMcpTools.isEmpty {
                 activeTools.append(contentsOf: filteredMcpTools)
                 MajoorLogger.log("🔌 Loaded \(filteredMcpTools.count)/\(allMcpTools.count) MCP tool(s) [sets: \(toolSets)]")
+            }
+        }
+        // Router v2: offer only the tools whose data class the privacy preset
+        // allows on this tier. A call to anything else is answered, never run.
+        var withheldTools: [String: String] = [:]
+        if let gate = decision.gate {
+            // ask_owner is exempt: it sends nothing anywhere but the owner's own
+            // thread, and the owner decides what to answer.
+            for tool in activeTools where !gate.allows(tool) && tool.name != AskOwnerTool.toolName {
+                withheldTools[tool.name] = gate.refusal(toolName: tool.name, dataClass: tool.dataClass)
+            }
+            if !withheldTools.isEmpty {
+                activeTools.removeAll { withheldTools[$0.name] != nil }
+                MajoorLogger.log("🔒 \(withheldTools.count) tool(s) withheld on tier \(gate.tier.letter): \(withheldTools.keys.sorted().joined(separator: ", "))")
             }
         }
         let anthropicTools = activeTools.map { $0.toAnthropicTool() }
@@ -274,14 +309,15 @@ final nonisolated class AgentLoop: @unchecked Sendable {
                 UsageStore.shared.recordUsage(
                     model: provider.model,
                     inputTokens: usage.inputTokens,
-                    outputTokens: usage.outputTokens
+                    outputTokens: usage.outputTokens,
+                    tier: usageTier
                 )
                 // Keep attribution current every iteration, not only on the success path.
                 await host.recorder.addUsage(input: usage.inputTokens, output: usage.outputTokens, model: provider.model)
             }
 
             let totalTokens = totalInputTokens + totalOutputTokens
-            let sessionUSD = CostConfig.estimateCost(model: provider.model, inputTokens: totalInputTokens, outputTokens: totalOutputTokens)
+            let sessionUSD = CostConfig.estimateCost(model: provider.model, inputTokens: totalInputTokens, outputTokens: totalOutputTokens, tier: usageTier)
             await host.emit(.cost(id: host.sessionId, tokensIn: totalInputTokens, tokensOut: totalOutputTokens,
                                   sessionUSD: sessionUSD, dayUSD: UsageStore.shared.todayUsage().totalCost))
             if host.budget.isExceeded(by: totalTokens) || TokenBudget.dailyCapExceeded() {
@@ -409,7 +445,7 @@ final nonisolated class AgentLoop: @unchecked Sendable {
                 // The model moved on to tool work, so any salvaged partial belongs to
                 // an abandoned draft — dropping it keeps it out of the final summary.
                 truncatedPrefix = ""
-                let (aMsg, rMsg, summaries) = try await handleToolCalls(calls, host: host, pipeline: pipeline, assistantContent: rawContent, activeTools: activeTools, userInput: userInput)
+                let (aMsg, rMsg, summaries) = try await handleToolCalls(calls, host: host, pipeline: pipeline, assistantContent: rawContent, activeTools: activeTools, withheld: withheldTools, userInput: userInput)
                 messages.append(aMsg)
                 messages.append(rMsg)
                 toolSummaries.append(contentsOf: summaries)
@@ -424,7 +460,7 @@ final nonisolated class AgentLoop: @unchecked Sendable {
                 }
 
                 MajoorLogger.log("📝 \(text.prefix(100))...")
-                let (aMsg, rMsg, summaries) = try await handleToolCalls(calls, host: host, pipeline: pipeline, assistantContent: rawContent, activeTools: activeTools, userInput: userInput)
+                let (aMsg, rMsg, summaries) = try await handleToolCalls(calls, host: host, pipeline: pipeline, assistantContent: rawContent, activeTools: activeTools, withheld: withheldTools, userInput: userInput)
                 messages.append(aMsg)
                 messages.append(rMsg)
                 toolSummaries.append(contentsOf: summaries)
@@ -563,11 +599,12 @@ final nonisolated class AgentLoop: @unchecked Sendable {
         pipeline: PipelineState,
         assistantContent: [AnthropicContentBlock],
         activeTools: [any AgentTool],
+        withheld: [String: String],
         userInput: String
     ) async throws -> (assistant: AnthropicMessage, result: AnthropicMessage, toolSummaries: [String]) {
         do {
             return try await performToolCalls(toolCalls, host: host, pipeline: pipeline, assistantContent: assistantContent,
-                                              activeTools: activeTools, userInput: userInput)
+                                              activeTools: activeTools, withheld: withheld, userInput: userInput)
         } catch {
             _ = await fail(host, error is CancellationError ? .cancelled : .toolPhaseFailure)
             throw error
@@ -575,12 +612,15 @@ final nonisolated class AgentLoop: @unchecked Sendable {
     }
 
     /// `assistantContent` is the model's response content blocks verbatim.
+    /// `withheld` maps the tools the privacy preset kept off this tier to the
+    /// tool result the model gets if it asks for one anyway.
     private func performToolCalls(
         _ toolCalls: [ToolCall],
         host: any AgentLoopHost,
         pipeline: PipelineState,
         assistantContent: [AnthropicContentBlock],
         activeTools: [any AgentTool],
+        withheld: [String: String],
         userInput: String
     ) async throws -> (assistant: AnthropicMessage, result: AnthropicMessage, toolSummaries: [String]) {
 
@@ -600,13 +640,29 @@ final nonisolated class AgentLoop: @unchecked Sendable {
             // the next (uncancellable, synchronous) tool call.
             try Task.checkCancellation()
             MajoorLogger.log("🔧 Tool: \(call.toolName)")
-            await record(TaskStep(timestamp: Date(), type: .toolCall, description: "Calling \(call.toolName)",
+            // ask_owner is answered by the session's origin channel, not executed.
+            let isQuestion = call.toolName == AskOwnerTool.toolName && activeTools.contains { $0.name == AskOwnerTool.toolName }
+            let questionText = isQuestion ? AskOwnerTool.question(from: call.arguments) : nil
+            await record(TaskStep(timestamp: Date(), type: .toolCall,
+                                  description: isQuestion ? "Asked you: \(questionText ?? "(no question)")" : "Calling \(call.toolName)",
                                   detail: String(call.arguments.map { "\($0.key): \($0.value)" }.joined(separator: ", ").prefix(1000))), host: host)
             await updatePipeline(pipeline, host: host, toolName: call.toolName, arguments: call.arguments, status: .running, addCall: true)
 
             let output: String
+            var resultTitle = "Result from \(call.toolName)"
             var confirmFeedback: String? = nil  // User feedback from confirmation (if any)
-            if let tool = activeTools.first(where: { $0.name == call.toolName }) {
+            if isQuestion {
+                if let questionText {
+                    let options = AskOwnerTool.options(from: call.arguments["options"])
+                    let minutes = AskOwnerTool.timeoutMinutes(from: call.arguments["timeout_minutes"])
+                    MajoorLogger.log("❓ Asking the owner (\(minutes) min): \(questionText.prefix(120))")
+                    let answer = await host.ask(question: questionText, options: options, timeout: .seconds(minutes * 60))
+                    try Task.checkCancellation()
+                    (output, resultTitle) = AskOwnerTool.describe(answer, timeoutMinutes: minutes)
+                } else {
+                    output = "Error: ask_owner needs a non-empty question"
+                }
+            } else if let tool = activeTools.first(where: { $0.name == call.toolName }) {
                 // Normalize aliases BEFORE the policy gate — the model emits
                 // keys like "cmd" for "command", and gating on raw keys would
                 // let an aliased interpreter invocation dodge the prompt.
@@ -704,6 +760,10 @@ final nonisolated class AgentLoop: @unchecked Sendable {
                 } catch {
                     output = "Error: \(error.localizedDescription)"
                 }
+            } else if let refusal = withheld[call.toolName] {
+                // The tool exists but the privacy preset keeps it off this tier.
+                MajoorLogger.log("🔒 Withheld: \(call.toolName)")
+                output = refusal
             } else {
                 output = "Error: Tool '\(call.toolName)' not found"
             }
@@ -723,7 +783,7 @@ final nonisolated class AgentLoop: @unchecked Sendable {
             let argsPreview = call.arguments.map { "\($0.key): \($0.value)" }.joined(separator: ", ")
             summaries.append("• \(call.toolName)(\(String(argsPreview.prefix(100)))) → \(String(output.prefix(150)))")
 
-            await record(TaskStep(timestamp: Date(), type: .toolResult, description: "Result from \(call.toolName)", detail: String(output.prefix(500))), host: host)
+            await record(TaskStep(timestamp: Date(), type: .toolResult, description: resultTitle, detail: String(output.prefix(500))), host: host)
             let isError = output.lowercased().hasPrefix("error")
             await updatePipeline(pipeline, host: host, toolName: call.toolName, arguments: call.arguments,
                                  status: isError ? .failed : .completed,

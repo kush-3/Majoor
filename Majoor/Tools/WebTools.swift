@@ -9,6 +9,7 @@ import Foundation
 
 nonisolated struct WebSearchTool: AgentTool {
     let name = "web_search"
+    let dataClass: DataClass = .web
     let description = "Search the web using Tavily API. Returns relevant results with extracted content, optimized for AI agents."
     let parameters = [
         ToolParameter(name: "query", description: "Search query (e.g., 'best project management tools 2026')"),
@@ -92,6 +93,7 @@ nonisolated struct WebSearchTool: AgentTool {
 
 nonisolated struct FetchWebpageTool: AgentTool {
     let name = "fetch_webpage"
+    let dataClass: DataClass = .web
     let description = "Fetch a webpage URL and extract its text content. Strips HTML tags to return readable text."
     let parameters = [
         ToolParameter(name: "url", description: "The URL to fetch (e.g., 'https://example.com/article')"),
@@ -213,6 +215,7 @@ private nonisolated final class RedirectGuard: NSObject, URLSessionTaskDelegate,
 
 nonisolated struct FetchMultipleURLsTool: AgentTool {
     let name = "fetch_multiple_urls"
+    let dataClass: DataClass = .web
     let description = "Fetch multiple URLs in parallel for comparison research. Returns extracted text from each."
     let parameters = [
         ToolParameter(name: "urls", description: "Comma-separated list of URLs to fetch"),

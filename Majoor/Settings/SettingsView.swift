@@ -18,6 +18,12 @@ struct SettingsView: View {
                 .tabItem { Label("Integrations", systemImage: "puzzlepiece.extension") }
             MemorySettingsView()
                 .tabItem { Label("Memory", systemImage: "brain") }
+            if AppMode.current != .client {
+                AutomationsSettingsView()
+                    .tabItem { Label("Automations", systemImage: "clock.arrow.2.circlepath") }
+                ContactsSettingsView()
+                    .tabItem { Label("Contacts", systemImage: "person.2") }
+            }
             UsageSettingsView()
                 .tabItem { Label("Usage", systemImage: "chart.bar") }
             if AppMode.current == .client {
@@ -30,6 +36,8 @@ struct SettingsView: View {
             if AppMode.current == .runtime {
                 ChannelsSettingsView()
                     .tabItem { Label("Channels", systemImage: "message") }
+                LocationSettingsView()
+                    .tabItem { Label("Location", systemImage: "location") }
             }
             AboutTab()
                 .tabItem { Label("About", systemImage: "info.circle") }

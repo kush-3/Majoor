@@ -15,6 +15,9 @@ nonisolated struct AutomationRecord: Codable, Sendable, Equatable, FetchableReco
 
     static let reminderKind = "reminder"
     static let onceSchedule = "once"
+    /// Phase 2: a scheduled job from the `JobCatalog`, named after its definition.
+    static let jobKind = "job"
+    static let cronSchedule = "cron"
 
     var id: String
     var name: String
@@ -50,6 +53,21 @@ nonisolated struct AutomationRecord: Codable, Sendable, Equatable, FetchableReco
             enabled: true, nextRunAt: runAt, claimedAt: nil, createdAt: now, createdBySession: createdBySession?.uuidString,
             lastRunAt: nil, lastResult: nil)
     }
+
+    /// A scheduled job row for a catalog definition. `name` is the definition's
+    /// name; the prompt lives in code, so `prompt` only labels the row.
+    static func job(name: String, cron: String, tier: ProviderTier, delivery: ChannelRef, activeHours: String? = nil,
+                    urgencyCeiling: Int? = nil, riskCeiling: String? = nil, enabled: Bool = true, nextRunAt: Date?,
+                    now: Date = Date()) -> AutomationRecord {
+        AutomationRecord(
+            id: UUID().uuidString, name: name, kind: jobKind, scheduleKind: cronSchedule,
+            runAt: nil, cron: cron, activeHours: activeHours, inputSources: nil, prompt: name, scratch: nil, tier: tier.rawValue,
+            deliveryChannel: delivery.channelId, deliveryThread: delivery.threadKey, urgencyCeiling: urgencyCeiling,
+            riskCeiling: riskCeiling, enabled: enabled, nextRunAt: nextRunAt, claimedAt: nil, createdAt: now,
+            createdBySession: nil, lastRunAt: nil, lastResult: nil)
+    }
+
+    var isJob: Bool { kind == Self.jobKind }
 }
 
 nonisolated final class AutomationStore: @unchecked Sendable {
@@ -160,6 +178,75 @@ nonisolated final class AutomationStore: @unchecked Sendable {
             }
             return stale.count
         }) ?? 0
+    }
+
+    // MARK: Scheduled jobs (Phase 2 step 5)
+
+    /// Every row, jobs first, then by name. For Settings ▸ Automations.
+    func all(limit: Int = 200) -> [AutomationRecord] {
+        (try? db.read { db in
+            try AutomationRecord.order(Column("kind"), Column("name"), Column("createdAt")).limit(limit).fetchAll(db)
+        }) ?? []
+    }
+
+    /// The job row for a catalog definition, if one was ever created.
+    func jobRecord(named name: String) -> AutomationRecord? {
+        try? db.read { db in
+            try AutomationRecord.filter(Column("kind") == AutomationRecord.jobKind && Column("name") == name).fetchOne(db)
+        }
+    }
+
+    /// A cron row fired: remember when, and when it is next due. The claim is
+    /// kept until the job has run; `releaseClaim(id:retryAt: nil)` ends it.
+    func markCronFired(id: String, at now: Date, nextRunAt: Date?) {
+        update(id: id) { record in
+            record.lastRunAt = now
+            record.nextRunAt = nextRunAt
+        }
+    }
+
+    /// Makes the row due at `date` ("Run now"). A row that is claimed right now
+    /// keeps running; it is picked up again once its claim is released.
+    func setNextRun(id: String, at date: Date) {
+        update(id: id) { record in record.nextRunAt = date }
+    }
+
+    func setEnabled(id: String, _ enabled: Bool, nextRunAt: Date?) {
+        update(id: id) { record in
+            record.enabled = enabled
+            record.nextRunAt = enabled ? nextRunAt : record.nextRunAt
+            if !enabled { record.claimedAt = nil }
+        }
+    }
+
+    func setCron(id: String, cron: String, nextRunAt: Date?) {
+        update(id: id) { record in
+            record.cron = cron
+            record.nextRunAt = nextRunAt
+        }
+    }
+
+    func setActiveHours(id: String, _ text: String?) {
+        update(id: id) { record in record.activeHours = text }
+    }
+
+    func setDelivery(id: String, _ delivery: ChannelRef) {
+        update(id: id) { record in
+            record.deliveryChannel = delivery.channelId
+            record.deliveryThread = delivery.threadKey
+        }
+    }
+
+    /// What the last run concluded, for the row's `lastResult` column.
+    /// A job's own persisted state, as JSON text (`JobContext.saveScratch`).
+    func setScratch(id: String, _ scratch: String?) {
+        _ = try? db.write { db in
+            try db.execute(sql: "UPDATE automations SET scratch = ? WHERE id = ?", arguments: [scratch, id])
+        }
+    }
+
+    func setLastResult(id: String, _ result: String) {
+        update(id: id) { record in record.lastResult = String(result.prefix(500)) }
     }
 
     private func update(id: String, _ change: (inout AutomationRecord) -> Void) {

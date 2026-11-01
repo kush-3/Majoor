@@ -1,6 +1,6 @@
 # Majoor 2.0, Phase 2 implementation plan ("Proactive")
 
-**Status:** Draft v1, 2026-10-31. Source of requirements: `docs/MAJOOR-2.0-PRD.md` v0.3 (§5.3, §5.6, §5.7, §5.8, §6, §7, §8, §9, §12, §13).
+**Status:** Draft v1, 2026-10-31; **code for steps 2–6 done 2026-10-31 on branch `phase-2-proactive`** (step 2 merged as PR #17; 3, 4, 5, 6a–6f, 6h, 6i built in parallel subagent worktrees and merged; 6g needs Phase 3). Each step's status block below lists its deviations and what is still by hand; step 1 (the Phase 1 close-out on the Mac mini) and every exit-criterion measurement remain. Source of requirements: `docs/MAJOOR-2.0-PRD.md` v0.3 (§5.3, §5.6, §5.7, §5.8, §6, §7, §8, §9, §12, §13).
 **Scope of this document:** plan only. Written against the code as it stands at the end of Phase 1 (branch `phase-1-swift6`, commit `47d354e`, PR kush-3/Majoor#16).
 
 Phase 2 goal, from PRD §12: the automations table and event sources; the local tier through an MLX server and an `OpenAICompatibleProvider` (which also serves tier P); router v2 with data classes under Strict; the morning brief, triage, the VIP nudge, the cost report, memory consolidation, the location job, and the escalation ladder's text rungs.
@@ -108,6 +108,17 @@ Unit: translation round trips (a tool loop of three turns survives Anthropic→O
 
 **Size:** ~400 new, ~150 changed lines, 2 days. **Depends on:** step 2.
 
+> **Status (2026-10-31): code done** on a branch off `phase-2-providers`; 20 tests in `MajoorTests/RouterTests.swift` (preset table, tool classes, every routing branch with injected settings and a scripted tier-L classifier, the loop answering a withheld tool, the usage migration and price table). Differences from the text below, all deliberate:
+> - The tier enum is step 2's `ProviderTier` (`local`, `privateCloud`, `frontier`); no second `ModelTier` was added.
+> - A second preset, **Claude for everything** (every class → F, the 1.x behaviour), sits beside Strict in Settings ▸ Models, because a Mac with no tier P endpoint would otherwise refuse every email and calendar task on merge. Strict stays the default (D4). Under Strict with no P endpoint, the task still runs on Claude but with every tool the preset keeps off F withheld, and the model is told why in the tool result.
+> - The allow-list is computed by **data class, not tool name** (`ToolGate.allowedClasses`): MCP tools are only known inside the loop, so the loop filters `activeTools` by class and answers a withheld call itself. `ProviderRouter` (tests) is unchanged; the app uses `TierRoutingRouter` → `RoutingDecision {provider, toolSets, tier, gate}`.
+> - Coding and code-review tasks on F keep the `.files` tools ("file-in-repo"): a file tool cannot know statically whether a path is in a repository, so the exception is per task category. "Organize my Downloads" is file management and stays on P.
+> - Memory injection into the system prompt is gated like the memory tools: under a preset that keeps `.majoorState` off the tier, no `CONTEXT FROM MEMORY` is sent. Not in the plan text, but the alternative was stripping `search_memory` while still injecting memories.
+> - `usageStats` keeps its `(date, model)` key; `tier` is a plain column (migration `v8_usage_tier`, default `frontier`). Rows without a caller-supplied tier infer it from the model name (`claude*` → F, the configured L model → L, anything else → P). The feed's model chip shows the tier letter for non-Claude models; Claude rows keep their names.
+> - `ModelRouter.classify(_:with:)` takes the provider; nothing in routing constructs an `AnthropicProvider` except `ModelRouter.provider(for:)` for tier F. The Auto-mode consent judge (`PermissionMode.swift`) and chat mode still use Haiku/Sonnet directly (open question 5).
+>
+> Still by hand (3d): with Strict and a P endpoint, "summarize my last 5 emails" shows tier P in the feed and the Anthropic key is never used (check `usageStats`).
+
 ### 3a. Data classes and tiers
 
 `Core/Router/DataClass.swift`: `nonisolated enum DataClass { emailMeta, emailBody, contacts, calendar, messages, location, finance, files, web, code, repoContext, majoorState }` and `nonisolated enum ModelTier { local, private, frontier }`. `nonisolated struct PrivacyPreset` with `static let strict` mapping each class to its ceiling: `code`, `repoContext`, `web` → frontier allowed; `emailMeta`, `emailBody`, `contacts`, `calendar`, `messages`, `files` → private; `location`, `finance`, `majoorState` → local. One table, tested, read-only in Settings.
@@ -134,6 +145,16 @@ Unit: preset table; allow-list per tier; downgrade rule; classifier never calls 
 
 **Size:** ~900 new lines, 3 days. **Depends on:** nothing (uses existing Gmail/EventKit/MCP code).
 
+> **Status (2026-10-31): code done** on the step-4 branch, built in parallel with step 2's PR; tests in `MajoorTests/SourceTests.swift` (frame, hub fan-out/ring/restart ladder, Gmail cursor paths with a scripted reader, calendar debounce with a gated clock, Slack cursors, the location endpoint over loopback, `source_state` on a throwaway database). Differences from the text below, all deliberate:
+> - `EventSource.start()` runs until the source fails or is stopped and the hub restarts it; `events` is one stream per instance, so the hub never resubscribes. `SourceEvent.kind` is a `String`-backed enum (`newEmail`, `calendarChanged`, `slackMessage`, `locationFix`).
+> - Header fields (from, subject, Slack author, event titles) are cleaned and capped in payloads rather than wrapped; bodies and message text are wrapped; the job runner frames everything again when it assembles a prompt.
+> - Gmail's first poll backfills a day of mail marked `backfill: true`; Slack's first poll of a channel only anchors (fifty old messages are not "new"). Sent, draft, chat, spam and trash never become `newEmail`.
+> - The calendar source never prompts for access: until the owner's first calendar task grants it, the source throws `noAccess` and the hub's ladder shows it in Settings ▸ Location.
+> - The location endpoint drains an over-long body (up to 64 KB) before answering 413 so the phone sees a status, not a reset. `requestFix()` returns nil (D10 open). Settings ▸ Location also holds the Slack channel list and the four sources' health.
+> - `GmailAPI` in `Tools/EmailTools.swift` is internal instead of private; nothing else there changed.
+>
+> Still by hand (4d): send yourself an email and see `newEmail` within 3 minutes; change a calendar event and see `calendarChanged`; a Shortcut POST over Tailscale with a minted token; Slack through the MCP server with a listed channel.
+
 ### 4a. Protocol and hub
 
 `Core/Sources/EventSource.swift`: `nonisolated protocol EventSource: Sendable { var id: String { get }; var dataClass: DataClass { get }; func start() async throws; func stop() async; var events: AsyncStream<SourceEvent> { get } }`. `nonisolated struct SourceEvent: Sendable, Codable { id, sourceId, kind (newEmail, calendarChanged, slackMessage, locationFix, …), at, payload: JSONValue }`. `actor EventHub` starts and supervises sources (restart with backoff like the iMessage helper), fans events out to subscribers, and keeps a bounded recent-event ring per source so a job can "gather since last run" without each source re-fetching. `source_state` table (migration v8): `sourceId PK, cursor TEXT, updatedAt`.
@@ -159,6 +180,18 @@ Unit: wrapper; hub fan-out and restart; Gmail cursor re-anchoring with a scripte
 ## Step 5. Scheduled jobs: cron, active hours, `JobRunner`
 
 **Size:** ~700 new lines, 3 days. **Depends on:** steps 3 and 4.
+
+> **Status (2026-10-31): code done** on the step-5 branch off the merged steps 2–4; tests in `MajoorTests/CronTests.swift` (a 43-row cron table in America/New_York with both DST transitions, invalid expressions, active hours, the scheduler's cron handling with the fake clock), `JobRunnerTests.swift` (every outcome with a capturing provider, the retry on prose, the ceiling clamp, the preset refusal, the unconfigured tier, serialization, the runs table) and `EscalationLadderTests.swift` (every urgency, deferral, repeat, the call rung, acknowledgement, the hourly limit, send failure, the timer, the router hook). Differences from the text below, all deliberate:
+> - The migration is `v9_jobs` (v8 was taken twice by steps 3 and 4). `escalations` also carries `jobName`, `deliveryChannel`, `deferredUntil` and `resolvedAt`.
+> - The only shipped definition is `hello`, a **model-free** heartbeat (`JobDefinition.modelFree`): it records `no_change` without a provider so the scheduler → runner → `automation_runs` path can be watched on a Mac with no tier L. Step 6's jobs are ordinary entries.
+> - A job's tier comes from its row (`automations.tier`) and falls back to the definition; an unconfigured L/P tier is a recorded `failed`, never a fallback to Claude. The preset check uses every input's `DataClass` plus `.emailBody` when the job may fetch bodies, and happens before anything is gathered.
+> - `JobDelivery.always` (for the brief) delivers a `no_change` summary at urgency 1; `ladder` jobs stay silent on `no_change`.
+> - Rungs: urgency 2 reaches rung 2 only (no repeat); urgency 3 repeats once after 30 minutes and then reaches the call rung, a log line until Phase 3. The hourly limit counts any sent message of that job, including an urgency-3 one. A failed iMessage send falls back to a local notification plus panel toast and still counts as sent.
+> - Acknowledgement is a hook on `ChannelRouter` (`setOwnerMessageHandler`) rather than a change to its routing: every owner message after the approval check reaches it, and only an exact `ok` with something pending is consumed.
+> - `activeHours` on a row overrides the default; `ActiveHoursStore` keeps the default (`activeHoursDefault`). "Run now" sets the row due and fires it; a row that is running finishes first and runs again.
+> - Settings ▸ Automations lists the catalog with toggles, an editable cron field with a plain-English summary, tier, next/last run, last result and Run now; the delivery picker (panel or the owner's iMessage thread) and the active-hours default; upcoming reminders; the last 20 runs.
+>
+> Still by hand (5e): switch `hello` on in Settings ▸ Automations with `*/5 * * * *`, wait 25 minutes, and see five `no_change` rows under Recent runs and nothing sent.
 
 ### 5a. Schedule
 
@@ -191,20 +224,38 @@ Each is a `JobDefinition` plus its prompt and schema, a test with scripted input
 ### 6a. Inbox and Slack urgency triage (tier L, every 30 min, R0)
 Inputs: `newEmail` meta (no bodies unless the subject or sender is VIP), `slackMessage`. Output: `[{item, urgency 0–3, reason}]`. Only urgency ≥ 2 notifies; the rest waits for the brief; `no_change` otherwise. Test: 10 scripted emails, exactly the two urgent ones notify.
 
+> **Status (2026-10-31): done** (`Core/Jobs/Behaviors/TriageJob.swift`, 5 tests in `TriageJobTests.swift`). Tier L, `*/30 * * * *`, headers only (no bodies at all; VIP bodies are 6c's). The model returns `items` with the event's `messageId`/`ts` as id; `apply` sends one message for everything at urgency 2–3 (highest urgency wins, five lines plus "(+N more)"), holds urgency 1 in the job's `scratch` as `TriageState` for the brief (dedupe by id, first-seen time kept, dropped after 48 h, at most 50), drops 0. A plain `no_change` without `items` leaves the scratch untouched. By hand: a real run against Ollama with a few new emails.
+
 ### 6b. Morning brief (L gathers, P writes; daily at an owner-set time; R0)
 Inputs: today's calendar, unreplied VIP threads (from 6c's state), open reminders and running sessions, Majoor health (sources up, last errors, yesterday's cost), triage items held since the last brief, contradictions from 6e. Tier L produces the structured facts; tier P writes the four-line text in the owner's voice. Delivered on rung 2 at the set time regardless of `no_change` (an empty brief says so in one line).
+
+> **Status (2026-10-31): done** in `Core/Jobs/Behaviors/MorningBriefJob.swift` (`JobNames.morningBrief`, tier P, `30 7 * * *`), 4 tests in `MajoorTests/MorningBriefJobTests.swift`. Differences: the facts are gathered in code, not by tier L (calendar through the hub's `CalendarSource.upcoming`, VIP threads / held items / contradictions from the sibling jobs' `scratch`, reminders, running sessions, source health, last 24 h of job failures, usage since yesterday), so the brief makes one model call on P; `apply` always returns `notify` at urgency 2 with the model's text, the mapped text, or a fixed empty-day line; a calendar outage is a note in the prompt, not a failure. Under Strict, Majoor's own state (reminders, sessions, contradictions) reaches P as counts only, since `majoorState` stops at L; the detail stays in the panel. "Yesterday's cost" is `UsageStore.usageByModel(days: 1)`, which is since yesterday's date, not the calendar day. By hand: a week of real briefs (PRD exit criterion), and with tier P unconfigured the run is recorded as `failed`.
 
 ### 6c. Unreplied-email nudge with drafts (L detects, P drafts; every 2 h; VIP-gated) — **the exit criterion**
 Settings ▸ Contacts: VIP toggle per handle/email (writes `contacts_policy.isVIP`). Detection: VIP threads where the last message is inbound and older than N hours with no reply from the owner (Gmail meta + thread state in `source_state`). Draft: tier P, in the owner's voice, from the thread body (wrapped), with memory context about the sender. Delivery: iMessage "Alice (VIP) has waited 6 h. Draft: … Reply `send K7Q2` to send, `edit K7Q2 <changes>` to redraft, `skip K7Q2`." Sending spawns a task session that calls `reply_to_email`, which always prompts (R3) with the nonce; the approval already works over iMessage. Test: scripted thread → draft → `send` → the session's approval fires with the right body.
 
+> **Status (2026-10-31): done** in `Core/Jobs/Behaviors/VIPNudgeJob.swift`, `Settings/ContactsSettingsView.swift` (tab "Contacts": owner handles read-only, contacts with a VIP toggle, the threshold in hours and the weekend rule, UserDefaults `nudgeThresholdHours` / `nudgeSkipWeekends`), `ContactPolicyStore.vips()` / `setVIP`, and a `send`/`edit`/`skip` hook in `ChannelRouter`. 18 tests in `MajoorTests/VIPNudgeJobTests.swift`. Differences from the text above, all deliberate:
+> - Detection is code behind a `NudgeMailbox` seam (`LiveNudgeMailbox` over `GmailAPI`: one `newer_than:3d` list plus metadata per message, `internalDate` for age, the SENT label for the owner's replies), not tier L, and its state is the job's own `scratch` row (a `NudgeScratch` whose first two fields are `NudgeState`, so the brief decodes it), not `source_state`. Threads: last message inbound from a VIP address, older than the threshold (default 6 h), no owner message since; quiet on weekends by default; at most 3 per run; a thread is nudged at most once in 24 h and rests 7 days after send, edit or skip.
+> - Memory context about the sender joins the prompt only when the preset lets `majoorState` reach the job's tier, which Strict on P does not; the comment in `gather` says so.
+> - The nudge job still makes one tier-P call when nothing is waiting (the runner has no "skip the model" seam); the model is told to answer `no_change` and `apply` ignores it. Cheap, every two hours.
+> - `send`/`edit` spawn the task with `trust: .remoteText` from a remote thread (Auto mode never applies) and tell the model to call `reply_to_email` with the stored message id and the exact draft; codes expire after 24 h; the handler is injectable (`NudgeReplyHandler`), the router's default points at the production one.
+>
+> **Proven by test:** a scripted VIP thread 7 h old with no owner reply → the body reaches the model framed (`<untrusted source="gmail">`, headers inside), one draft with a minted code, `.notify(urgency 2)` with the exact "Alice Example (VIP) has waited 7 h … `send K7Q2`" text, `NudgeState` in scratch; an owner reply suppresses; non-VIP, fresh, weekend, 24-hour and 7-day guards; the 3-per-run cap; a missing draft is a recorded failure; memory only under `claudeOnly`; `send K7Q2` through a real `ChannelRouter` and `SessionManager` submits a session whose input carries the draft and `email_id "m1"`, `edit` carries the changes, `skip` rests the thread, a wrong or expired code replies once and submits nothing, a bare "send it" is still a task, a stranger's reply is ignored. **By hand (the exit criterion):** mark a real sender VIP in Settings ▸ Contacts, let a thread from them wait past the threshold, see the draft arrive over iMessage, reply `send <code>`, and approve the `reply_to_email` prompt with its nonce; the mail goes out with exactly the draft.
+
 ### 6d. Weekly cost and activity report (L, Sunday, R0)
 From `usageStats` by tier, `sessions`, `approvals`, `automation_runs`: tokens and dollars per tier, sessions by origin, approvals by decision, jobs by outcome. Tier L writes the summary; delivered on rung 2.
+
+> **Status (2026-10-31): done** (`Core/Jobs/Behaviors/CostReportJob.swift`, 5 tests in `CostReportJobTests.swift`). `WeeklyFacts.collect` gathers the seven days in code (usage per tier from `UsageStore.usageByModel`, sessions by origin, approvals by decision through GRDB, runs by outcome, plus the failed/refused runs for 6i) and renders them as plain lines, unframed because they are Majoor's own state; tier L writes at most 8 lines (12 enforced) and `apply` always returns `notify` at urgency 2 with a "Weekly report" header, so delivery is `.ladder`, not `.always`. Sunday 18:00. The usage window is "today minus 7 days" by calendar date, as `usageByModel` counts. By hand: a Sunday run on the mini.
 
 ### 6e. Nightly memory consolidation (L, nightly, R1 on Majoor's own state)
 Reads memories touched in the last 30 days plus their nearest neighbors by FTS; asks for `{merges: [[ids], mergedText], contradictions: [[ids], note], stale: [ids]}`; applies merges through the supersede path, decays stale, and queues contradictions for the brief. Hard caps: 200 memories per night, 20 merges.
 
+> **Status (2026-10-31): done** in `Core/Jobs/Behaviors/MemoryConsolidationJob.swift` (tier L, `30 3 * * *`, R1, no hub inputs). The store sits behind a `MemoryMaintenance` protocol (`LiveMemoryMaintenance` over `MemoryStore`: recent 30 days plus FTS neighbours, capped at 200). The model's object carries `merges`/`contradictions`/`stale` beside the usual `outcome`; `apply` updates the first id of each merge in place (content, score 1.0, re-affirmed) and deletes the rest, skips ids it did not show the model, caps at 20 merges, halves the score of stale ids down to 0.1 (never deletes), and keeps the newest 20 contradictions in the row's `scratch` as `ConsolidationState` for the brief. Always `no_change`; nothing is sent. Tests: `MajoorTests/MemoryConsolidationJobTests.swift`. By hand: one real nightly run against tier L on the mini.
+
 ### 6f. Location: "where you should be" (L, 15 min before located events, R0)
 Needs D10 settled. For each calendar event with a location in the next 30 minutes: request a fix if the last one is older than 10 minutes; `MKDirections` from the fix to the event (automobile and walking; the owner picks the default); if ETA exceeds the time left, text "You won't make your 3pm at Blue Bottle (ETA 22 min, starts in 15)". Urgency 2, or 3 if the event is marked important (a calendar keyword the owner sets). Location rows never reach tier P or F: the job runs on tier L only and the prompt carries the ETA, not the coordinates.
+
+> **Status (2026-10-31): done, pending D10** in `Core/Jobs/Behaviors/LocationJob.swift` (tier L, `*/5 * * * *`, urgency ceiling 3, R0). Deviation: the job is **model-free**; the decision is arithmetic and coordinates never reach any model. `apply` reads upcoming events and fixes through a `LocationPlanning` protocol and the ETA through `RouteEstimating` (`MapKitRouteEstimator`: `CLGeocoder` for the place, `MKDirections.calculateETA`, automobile or walking from UserDefaults `locationTravelMode`). A fix older than 10 minutes triggers `requestFix()`, which returns nil until D10; the latest stored fix is then used if under an hour old, otherwise the run records `no fresh location; location is stale` for the brief to read. Late → urgency 2 with "You won't make your 3pm at Blue Bottle (ETA 22 min, starts in 15)"; urgency 3 when the title contains the marker from UserDefaults `importantEventMarker` (default `!`; open question 7 still stands). Each event is warned about once a day (`scratch`). Tests: `MajoorTests/LocationJobTests.swift` with fake planner and estimator. By hand: a real `MKDirections` ETA, and the exit criterion's one real "you won't make your 3pm" needs D10.
 
 ### 6g. Escalation to a call
 Phase 3 provides the call rung; Phase 2 ships rungs 1–3 (6c's "repeat if unacknowledged" uses it). Nothing else to do here.
@@ -212,8 +263,12 @@ Phase 3 provides the call rung; Phase 2 ships rungs 1–3 (6c's "repeat if unack
 ### 6h. "I'm blocked" questions (`ask` over iMessage)
 `IMessageChannel.ask(threadKey:question:options:timeout:)` replaces the default no-answer implementation: send the question with a short code, keep a pending-question table keyed by thread, resolve on the next owner message that matches an option or starts with the code, time out after the given duration. The loop gets one tool, `ask_owner` (R0, tier-agnostic), which `AgentLoop` answers by awaiting `host.ask(...)` on the session's origin channel. Test with the fake transport.
 
+> **Status (2026-10-31): done** (`Tools/AskOwnerTool.swift`, `AgentLoopHost.ask`, `IMessageChannel.ask`; 7 tests across `IMessageTests.swift` and `SessionLoopTests.swift`). The pending-question table is in the channel actor's memory, not a database table, so a question does not survive a relaunch (the loop then gets the timeout answer). A free-text answer must start with the code; only an option's number or text matches without it, so an unrelated message while a question is pending is still a task. `ask_owner` is exempt from the privacy tool gate. The panel keeps the default no-answer `ask` (a prompt UI is more than a few lines); the Auto-mode permission rule is unchanged. By hand: one real question over `imsg`.
+
 ### 6i. Weekly self-improvement proposals
 Listed in §8 as Phase 2 by schedule but its pipeline is Phase 4; in Phase 2 it is a job that writes three proposals from `automation_runs` failures and the cost report to the brief, and does nothing else.
+
+> **Status (2026-10-31): done** (`Core/Jobs/Behaviors/ProposalsJob.swift`, 2 tests in `ProposalsJobTests.swift`). Sunday 19:00 on tier L, sharing `WeeklyFacts` with 6d plus the week's failed and refused runs (at most 30 lines). The model returns `proposals`; one to three are accepted (more are trimmed, none is a recorded failure), delivered at urgency 1 (the ladder only logs it) and kept in the job's `scratch` as `ProposalsState {proposals, at}` for the brief to read with `JobContext.scratch(ofJob: JobNames.proposals, as:)`.
 
 ---
 
@@ -244,6 +299,7 @@ Listed in §8 as Phase 2 by schedule but its pipeline is Phase 4; in Phase 2 it 
 6. Slack: which channels, and is a 30-minute poll through the MCP server acceptable until Phase 3's native connector?
 7. "Important event" marker for 6f: a calendar keyword, a calendar name, or an attendee rule?
 8. Nudge threshold: how many hours before a VIP thread counts as unreplied, and should it skip weekends?
+9. Routing by decision model: should the slow-path classifier (and later the urgency triage) sit behind a `DecisionModel` protocol with Jev (TypeSafe AI, cloud-only, so tier P until its retention terms are verified), tier-L and keyword implementations, chosen by the 20-case eval? The seam is marked in `TierRouter.route`.
 
 ## Exit criteria (PRD §12) mapped to steps
 

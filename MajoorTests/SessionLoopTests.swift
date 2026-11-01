@@ -88,16 +88,18 @@ func withPermissionMode<T>(_ mode: PermissionMode, _ body: () async throws -> T)
 
 func makeManager(route: @escaping ProviderRouter, tool: EchoTool = EchoTool(), maxConcurrent: Int = 3,
                  approvalTimeout: TimeInterval = 600, persist: SnapshotBox? = nil,
-                 permissionMode: PermissionMode = .standard, budget: TokenBudget? = nil) async -> SessionManager {
+                 permissionMode: PermissionMode = .standard, budget: TokenBudget? = nil,
+                 extraTools: [any AgentTool] = [],
+                 channelForOrigin: (@Sendable (ChannelRef) async -> (any Channel)?)? = nil) async -> SessionManager {
     let manager = SessionManager()
-    let loop = AgentLoop(tools: [tool], route: route)
+    let loop = AgentLoop(tools: [tool] + extraTools, route: route)
     var persistClosure: (@Sendable (TaskSnapshot) -> Void)? = nil
     if let persist {
         persistClosure = { snapshot in persist.append(snapshot) }
     }
     await manager.configure(loop: loop, store: nil, persistTask: persistClosure,
                             notify: nil, maxConcurrent: maxConcurrent, approvalTimeout: approvalTimeout,
-                            permissionMode: permissionMode, sessionBudget: budget)
+                            permissionMode: permissionMode, sessionBudget: budget, channelForOrigin: channelForOrigin)
     return manager
 }
 
@@ -306,5 +308,101 @@ struct InboundCommandTests {
     ] as [(String, InboundCommand)])
     func parse(input: String, expected: InboundCommand) {
         #expect(InboundCommand.parse(input) == expected)
+    }
+}
+
+// MARK: - ask_owner (Phase 2 step 6h)
+
+/// A channel that records the question and answers from a script.
+nonisolated final class FakeAskChannel: Channel, @unchecked Sendable {
+    let id = "fake"
+    let trust: ChannelTrust = .remoteText
+    let inbound: AsyncStream<InboundMessage>
+    private let lock = NSLock()
+    private var asked: [(question: String, options: [String], timeout: Duration)] = []
+    private let answer: Answer
+
+    init(answer: Answer) {
+        self.answer = answer
+        (inbound, _) = AsyncStream.makeStream(of: InboundMessage.self)
+    }
+
+    var questions: [(question: String, options: [String], timeout: Duration)] { lock.withLock { asked } }
+
+    func send(to threadKey: String, text: String, attachments: [URL]) async throws {}
+
+    func ask(threadKey: String, question: String, options: [String], timeout: Duration) async -> Answer {
+        lock.withLock { asked.append((question, options, timeout)) }
+        return answer
+    }
+}
+
+nonisolated func askCall(_ question: String, options: String? = nil, timeout: String? = nil) -> LLMResponse {
+    let id = "call-" + UUID().uuidString
+    var args = ["question": question]
+    if let options { args["options"] = options }
+    if let timeout { args["timeout_minutes"] = timeout }
+    return .toolCalls(
+        [ToolCall(id: id, toolName: AskOwnerTool.toolName, arguments: args, rawInputJSON: nil)],
+        rawContent: [AnthropicContentBlock(type: "tool_use", text: nil, id: id, name: AskOwnerTool.toolName, input: nil, toolUseId: nil, content: nil, isError: nil)])
+}
+
+@Suite("ask_owner over the loop", .serialized)
+struct AskOwnerLoopTests {
+
+    private let origin = ChannelRef(channelId: "fake", threadKey: "fake:owner")
+
+    @Test("the question reaches the origin channel and the answer comes back as the tool result")
+    func answered() async throws {
+        let channel = FakeAskChannel(answer: Answer(text: "Blue", option: "Blue", timedOut: false))
+        let box = SnapshotBox()
+        let provider = ScriptedProvider([askCall("Which color?", options: "Red, Blue", timeout: "500"), .text("Painted it blue.")])
+        let manager = await makeManager(route: { _ in (provider, []) }, persist: box, extraTools: [AskOwnerTool()],
+                                        channelForOrigin: { ref in ref.channelId == "fake" ? channel : nil })
+        let info = try #require(await manager.submit(input: "paint the fence", origin: origin, trust: .remoteText))
+        let final = try #require(await terminal(manager, info.id))
+        #expect(final.state == .completed)
+        #expect(final.summary == "Painted it blue")
+        #expect(channel.questions.count == 1)
+        #expect(channel.questions.first?.question == "Which color?")
+        #expect(channel.questions.first?.options == ["Red", "Blue"])
+        #expect(channel.questions.first?.timeout == .seconds(120 * 60))   // capped at 120 minutes
+        let steps = box.all.first?.steps ?? []
+        #expect(steps.contains { $0.type == "toolCall" && $0.description == "Asked you: Which color?" })
+        #expect(steps.contains { $0.type == "toolResult" && $0.description == "Your answer" && $0.detail == "The user chose: Blue" })
+        #expect(provider.calls == 2)
+    }
+
+    @Test("no answer in time is reported as such and the task goes on")
+    func timedOut() async throws {
+        let channel = FakeAskChannel(answer: .unanswered)
+        let box = SnapshotBox()
+        let provider = ScriptedProvider([askCall("Delete the old backups?"), .text("Left them alone.")])
+        let manager = await makeManager(route: { _ in (provider, []) }, persist: box, extraTools: [AskOwnerTool()],
+                                        channelForOrigin: { _ in channel })
+        let info = try #require(await manager.submit(input: "clean up", origin: origin, trust: .remoteText))
+        let final = try #require(await terminal(manager, info.id))
+        #expect(final.state == .completed)
+        #expect(channel.questions.first?.timeout == .seconds(10 * 60))
+        let result = box.all.first?.steps.first { $0.type == "toolResult" }
+        #expect(result?.description == "No answer within 10 minutes")
+        #expect(result?.detail?.hasPrefix("No answer within 10 minutes.") == true)
+    }
+
+    @Test("without a channel for the origin the question is unanswered at once; without the tool it is unknown")
+    func noChannel() async throws {
+        let box = SnapshotBox()
+        let provider = ScriptedProvider([askCall("Anyone there?"), .text("Moving on.")])
+        let manager = await makeManager(route: { _ in (provider, []) }, persist: box, extraTools: [AskOwnerTool()], channelForOrigin: { _ in nil })
+        let info = try #require(await manager.submit(input: "ask", origin: .panel, trust: .local))
+        _ = try #require(await terminal(manager, info.id))
+        #expect(box.all.first?.steps.first { $0.type == "toolResult" }?.description == "No answer within 10 minutes")
+
+        let plain = ScriptedProvider([askCall("Anyone?"), .text("Moving on.")])
+        let box2 = SnapshotBox()
+        let manager2 = await makeManager(route: { _ in (plain, []) }, persist: box2)   // no AskOwnerTool registered
+        let info2 = try #require(await manager2.submit(input: "ask", origin: .panel, trust: .local))
+        _ = try #require(await terminal(manager2, info2.id))
+        #expect(box2.all.first?.steps.first { $0.type == "toolResult" }?.detail == "Error: Tool 'ask_owner' not found")
     }
 }

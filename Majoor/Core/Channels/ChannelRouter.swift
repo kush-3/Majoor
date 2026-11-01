@@ -49,12 +49,35 @@ actor ChannelRouter {
     private var manager: SessionManager?
     private var owners: @Sendable () -> [String] = { [] }
 
+    /// Sees every owner message (origin, text, when) after the approval
+    /// check; returns true when it consumed the message. The escalation
+    /// ladder uses it: any reply acknowledges what was sent to that thread,
+    /// and a bare "ok" is swallowed instead of becoming a task.
+    typealias OwnerMessageHandler = @Sendable (ChannelRef, String, Date) async -> Bool
+    private var ownerMessageHandler: OwnerMessageHandler?
+
+    /// `send K7Q2` / `edit K7Q2 <changes>` / `skip K7Q2`: the owner acting on
+    /// a VIP nudge draft (Phase 2 step 6c). Returns the text to send back.
+    /// Defaults to the nudge job's handler; tests substitute one.
+    typealias NudgeReplyHandling = @Sendable (ChannelRef, NudgeReply.Parsed) async -> String
+    private var nudgeReplyHandler: NudgeReplyHandling = { origin, reply in
+        await VIPNudgeJob.handleReply(action: reply.action, code: reply.code, changes: reply.changes, origin: origin)
+    }
+
     init() {}
 
     func configure(manager: SessionManager, owners: @escaping @Sendable () -> [String]) {
         self.manager = manager
         self.owners = owners
         if forwarder == nil { forwarder = Task { [weak self] in await self?.forwardEvents() } }
+    }
+
+    func setOwnerMessageHandler(_ handler: OwnerMessageHandler?) {
+        ownerMessageHandler = handler
+    }
+
+    func setNudgeReplyHandler(_ handler: @escaping NudgeReplyHandling) {
+        nudgeReplyHandler = handler
     }
 
     func register(_ channel: any Channel) {
@@ -102,6 +125,16 @@ actor ChannelRouter {
         if let reply = ApprovalReply.parse(message.text) {
             let text = await answer(reply, origin: origin, manager: manager)
             await deliver(to: origin, text: text)
+            return
+        }
+
+        if let reply = NudgeReply.parse(message.text) {
+            await deliver(to: origin, text: await nudgeReplyHandler(origin, reply))
+            return
+        }
+
+        if let handler = ownerMessageHandler, await handler(origin, message.text, Date()) {
+            await deliver(to: origin, text: "Noted.")
             return
         }
 

@@ -8,7 +8,9 @@ import Foundation
 
 // MARK: - Gmail API Helper
 
-private nonisolated struct GmailAPI {
+/// Internal (not private) since Phase 2 step 4: `GmailSource` reuses the
+/// authenticated request path and the body extraction.
+nonisolated struct GmailAPI {
 
     static let baseURL = "https://gmail.googleapis.com/gmail/v1/users/me"
 
@@ -221,6 +223,7 @@ private nonisolated func isValidEmailId(_ id: String) -> Bool {
 
 nonisolated struct FetchEmailsTool: AgentTool {
     let name = "fetch_emails"
+    let dataClass: DataClass = .emailMeta
     let description = "Fetch recent emails from Gmail. Supports Gmail search queries like 'is:unread', 'from:john@example.com', 'newer_than:2d'."
     let parameters: [ToolParameter] = [
         ToolParameter(name: "query", description: "Gmail search query (e.g., 'is:unread', 'from:sarah@', 'subject:invoice'). Defaults to inbox."),
@@ -285,6 +288,7 @@ nonisolated struct FetchEmailsTool: AgentTool {
 
 nonisolated struct ReadEmailTool: AgentTool {
     let name = "read_email"
+    let dataClass: DataClass = .emailBody
     let description = "Read the full content of a specific email by its ID."
     let parameters: [ToolParameter] = [
         ToolParameter(name: "email_id", description: "The email ID (from fetch_emails or search_emails)"),
@@ -321,6 +325,7 @@ nonisolated struct ReadEmailTool: AgentTool {
 
 nonisolated struct SearchEmailsTool: AgentTool {
     let name = "search_emails"
+    let dataClass: DataClass = .emailMeta
     let description = "Search emails using Gmail's search syntax. Returns matching emails with snippets."
     let parameters: [ToolParameter] = [
         ToolParameter(name: "query", description: "Gmail search query (e.g., 'from:john subject:meeting has:attachment')"),
@@ -340,6 +345,7 @@ nonisolated struct SearchEmailsTool: AgentTool {
 
 nonisolated struct DraftEmailTool: AgentTool {
     let name = "draft_email"
+    let dataClass: DataClass = .emailBody
     let description = "Create a Gmail draft (does NOT send). Returns the draft ID."
     let parameters: [ToolParameter] = [
         ToolParameter(name: "to", description: "Recipient email address"),
@@ -376,6 +382,7 @@ nonisolated struct DraftEmailTool: AgentTool {
 
 nonisolated struct SendEmailTool: AgentTool {
     let name = "send_email"
+    let dataClass: DataClass = .emailBody
     let description = "Send an email via Gmail. Requires user confirmation via notification before sending."
     let parameters: [ToolParameter] = [
         ToolParameter(name: "to", description: "Recipient email address"),
@@ -409,6 +416,7 @@ nonisolated struct SendEmailTool: AgentTool {
 
 nonisolated struct ReplyToEmailTool: AgentTool {
     let name = "reply_to_email"
+    let dataClass: DataClass = .emailBody
     let description = "Reply to an existing email thread. Requires user confirmation before sending."
     let parameters: [ToolParameter] = [
         ToolParameter(name: "email_id", description: "The email ID to reply to (from fetch_emails)"),

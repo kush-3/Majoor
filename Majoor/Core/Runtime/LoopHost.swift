@@ -22,6 +22,11 @@ nonisolated protocol AgentLoopHost: Sendable {
 
     func emit(_ event: SessionEvent) async
     func requestApproval(_ draft: ApprovalDraft) async -> ApprovalDecision
+    /// The `ask_owner` tool: puts a question to the owner on the session's
+    /// origin channel and waits for the answer, the timeout, or a stop. A
+    /// channel that cannot ask (the panel, today) answers at once with
+    /// `Answer.unanswered`.
+    func ask(question: String, options: [String], timeout: Duration) async -> Answer
 }
 
 extension AgentLoopHost {

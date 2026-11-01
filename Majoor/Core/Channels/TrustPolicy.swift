@@ -51,6 +51,8 @@ nonisolated final class ContactPolicyStore: @unchecked Sendable {
 
     static let shared = ContactPolicyStore(db: DatabaseManager.shared.dbQueue)
     static let ownerTrust = "owner"
+    /// A handle the owner listed without giving it command trust (a VIP, say).
+    static let contactTrust = "contact"
 
     private let db: DatabaseQueue
 
@@ -85,6 +87,31 @@ nonisolated final class ContactPolicyStore: @unchecked Sendable {
     func remove(handle: String) {
         let normalized = TrustPolicy.normalize(handle: handle)
         _ = try? db.write { db in try ContactPolicyRecord.deleteOne(db, key: normalized) }
+    }
+
+    /// Handles flagged VIP (Phase 2 step 6c: the unreplied-email nudge).
+    func vips() -> [ContactPolicyRecord] {
+        (try? db.read { db in
+            try ContactPolicyRecord.filter(Column("isVIP") == true).order(Column("createdAt")).fetchAll(db)
+        }) ?? []
+    }
+
+    /// Flags or unflags a handle, inserting it as a plain contact when new.
+    func setVIP(handle: String, _ isVIP: Bool) {
+        let normalized = TrustPolicy.normalize(handle: handle)
+        guard !normalized.isEmpty else { return }
+        do {
+            try db.write { db in
+                if var existing = try ContactPolicyRecord.fetchOne(db, key: normalized) {
+                    existing.isVIP = isVIP
+                    try existing.update(db)
+                } else {
+                    try ContactPolicyRecord(handle: normalized, trust: Self.contactTrust, isVIP: isVIP, createdAt: Date()).insert(db)
+                }
+            }
+        } catch {
+            MajoorLogger.error("Failed to set VIP for \(normalized): \(error)")
+        }
     }
 
     func all() -> [ContactPolicyRecord] {

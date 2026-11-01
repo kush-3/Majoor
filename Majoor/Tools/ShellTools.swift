@@ -10,6 +10,7 @@ import Foundation
 
 nonisolated struct ExecuteShellTool: AgentTool {
     let name = "execute_shell"
+    let dataClass: DataClass = .code
     let description = "Execute a shell command and return its output. Use for git, build tools, scripts, etc. Dangerous commands are blocked."
     let parameters = [
         ToolParameter(name: "command", description: "The shell command to execute (e.g., 'ls -la', 'git status', 'python3 script.py')"),
@@ -63,6 +64,7 @@ nonisolated struct ExecuteShellTool: AgentTool {
 
 nonisolated struct ExecuteScriptTool: AgentTool {
     let name = "execute_script"
+    let dataClass: DataClass = .code
     let description = "Execute a script in Python, Node.js, Ruby, or Bash. Writes code to a temp file and runs it."
     let parameters = [
         ToolParameter(name: "language", description: "Script language: python, node, ruby, bash", enumValues: ["python", "node", "ruby", "bash"]),
@@ -140,6 +142,7 @@ nonisolated struct ExecuteScriptTool: AgentTool {
 
 nonisolated struct ReadProjectStructureTool: AgentTool {
     let name = "read_project_structure"
+    let dataClass: DataClass = .code
     let description = "Get an overview of a project/codebase directory tree. Respects .gitignore and skips common non-essential directories."
     let parameters = [
         ToolParameter(name: "path", description: "Root path of the project"),
@@ -212,6 +215,7 @@ nonisolated struct ReadProjectStructureTool: AgentTool {
 
 nonisolated struct RunTestsTool: AgentTool {
     let name = "run_tests"
+    let dataClass: DataClass = .code
     let description = "Run a project's test suite. Auto-detects the test command or you can specify one."
     let parameters = [
         ToolParameter(name: "path", description: "Project root directory"),

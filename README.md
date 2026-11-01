@@ -6,13 +6,14 @@ A native macOS AI agent that lives in your menu bar. It runs tasks autonomously,
 
 - **Autonomous Task Execution** — Describe what you need, Majoor figures out the steps and executes them
 - **Streaming Chat** — Interactive conversation mode with real-time streaming responses
-- **40 Built-in Tools** — File management, shell execution, git/GitHub, web search, email (Gmail), calendar (Apple Calendar), long-term memory
+- **41 Built-in Tools** — File management, shell execution, git/GitHub, web search, email (Gmail), calendar (Apple Calendar), long-term memory, questions back to you
 - **MCP Integrations** — Connect GitHub, Slack, Notion, and Linear for cross-service workflows
 - **Pipeline Plans** — Complex multi-step tasks are proposed as plans you can review, edit, and approve
 - **Interactive Confirmations** — Every sensitive action (email send, file delete) requires your approval with optional feedback
 - **Memory System** — Majoor remembers context from past tasks to work smarter over time
 - **Smart Routing** — Automatically picks the right model (Opus for complex tasks, Sonnet for quick ones)
 - **Local and private models** — Point tiers L and P at any OpenAI-compatible server (Ollama, LM Studio, a zero-retention cloud endpoint) in Settings → Models; Claude stays tier F
+- **Proactive jobs** — Scheduled behaviors in Settings → Automations: inbox and Slack triage, a morning brief, VIP unreplied-email nudges with drafts, weekly cost and activity reports, nightly memory consolidation, and "you won't make your 3pm" location checks, all delivered over iMessage or as notifications
 
 ## Requirements
 
@@ -116,7 +117,7 @@ Majoor/
 │   ├── MCP/                      # MCP client, server manager, tool bridge
 │   ├── OAuth/                    # Google OAuth 2.0 loopback flow
 │   └── Database/                 # GRDB database manager
-├── Tools/                        # 40 tools: File, Shell, Git, Web, Calendar, Email, Memory, Reminders
+├── Tools/                        # 41 tools: File, Shell, Git, Web, Calendar, Email, Memory, Reminders, ask_owner
 ├── UI/
 │   ├── MainPanelView.swift       # Dropdown panel (tasks, chat, confirmations, pipeline)
 │   ├── ChatView.swift            # Streaming chat with message bubbles

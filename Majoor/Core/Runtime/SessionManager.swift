@@ -37,6 +37,11 @@ actor SessionManager {
     private(set) var approvalTimeout: TimeInterval = 600
     private var permissionMode: PermissionMode?
     private var sessionBudget: TokenBudget?
+    /// Where a session's `ask_owner` question goes: the registered channel for
+    /// its origin. Production asks the ChannelRouter; tests inject a fake.
+    private var channelForOrigin: @Sendable (ChannelRef) async -> (any Channel)? = { ref in
+        await ChannelRouter.shared.channel(ref.channelId)
+    }
 
     init() {}
 
@@ -44,10 +49,12 @@ actor SessionManager {
     /// own loop, store and hooks.
     func configure(loop: AgentLoop, store: SessionStore?, persistTask: (@Sendable (TaskSnapshot) -> Void)?,
                    notify: (@Sendable (ApprovalRequest) -> Void)?, maxConcurrent: Int = 3, approvalTimeout: TimeInterval = 600,
-                   permissionMode: PermissionMode? = nil, sessionBudget: TokenBudget? = nil) {
+                   permissionMode: PermissionMode? = nil, sessionBudget: TokenBudget? = nil,
+                   channelForOrigin: (@Sendable (ChannelRef) async -> (any Channel)?)? = nil) {
         self.loop = loop
         self.permissionMode = permissionMode
         self.sessionBudget = sessionBudget
+        if let channelForOrigin { self.channelForOrigin = channelForOrigin }
         self.store = store
         self.persistTask = persistTask
         self.notify = notify
@@ -69,7 +76,7 @@ actor SessionManager {
         let session = AgentSession(
             shortId: nextShortId, kind: kind, input: input, origin: origin, trust: trust, budget: sessionBudget ?? TokenBudget.perSession,
             bus: bus, history: history, store: store, loop: loop, approvalTimeout: approvalTimeout,
-            persist: persistTask, notify: notify, modeOverride: permissionMode,
+            persist: persistTask, notify: notify, modeOverride: permissionMode, channelForOrigin: channelForOrigin,
             onFinished: { [weak self] id in await self?.sessionFinished(id) })
         nextShortId += 1
         let id = session.sessionId

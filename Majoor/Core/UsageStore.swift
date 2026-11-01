@@ -7,7 +7,7 @@ import GRDB
 // MARK: - Cost Configuration
 
 nonisolated struct CostConfig: Sendable {
-    // Per 1M tokens (input / output) — Opus 5 $5/$25, Sonnet 5 $3/$15, Haiku 4.5 $1/$5.
+    // Claude, per 1M tokens (input / output) — Opus 5 $5/$25, Sonnet 5 $3/$15, Haiku 4.5 $1/$5.
     // Sonnet 5 has introductory pricing ($2/$10) through 2026-08-31; sticker rates used here.
     static let opusInput = 5.0
     static let opusOutput = 25.0
@@ -16,20 +16,32 @@ nonisolated struct CostConfig: Sendable {
     static let haikuInput = 1.0
     static let haikuOutput = 5.0
 
-    static func estimateCost(model: String, inputTokens: Int, outputTokens: Int) -> Double {
-        // This table prices Claude only. A tier L or P model (Phase 2 step 2)
-        // is recorded at zero rather than at Sonnet's rate; step 3c adds the
-        // per-tier price table and the `tier` column on usage rows.
-        guard model.hasPrefix("claude") else { return 0 }
-        let (inputRate, outputRate): (Double, Double)
-        if model.contains("opus") {
-            (inputRate, outputRate) = (opusInput, opusOutput)
-        } else if model.contains("haiku") {
-            (inputRate, outputRate) = (haikuInput, haikuOutput)
-        } else {
-            (inputRate, outputRate) = (sonnetInput, sonnetOutput)
+    /// Claude's rates for a frontier model name.
+    static func frontierRates(for model: String) -> (input: Double, output: Double) {
+        if model.contains("opus") { return (opusInput, opusOutput) }
+        if model.contains("haiku") { return (haikuInput, haikuOutput) }
+        return (sonnetInput, sonnetOutput)
+    }
+
+    /// Per-tier pricing (plan §3c). Tier L costs nothing; tier P costs what the
+    /// owner entered in Settings ▸ Models (0 until set, so an unpriced endpoint
+    /// under-reports rather than inventing a number); tier F uses Claude's
+    /// table by model name. Callers that know the tier pass it; the rest get
+    /// it from the model name through the tier settings.
+    static func estimateCost(model: String, inputTokens: Int, outputTokens: Int,
+                             tier: ProviderTier? = nil,
+                             privateRates: (input: Double, output: Double)? = nil) -> Double {
+        let resolved = tier ?? TierSettingsStore.shared.tier(forModel: model)
+        let rates: (input: Double, output: Double)
+        switch resolved {
+        case .local:
+            return 0
+        case .privateCloud:
+            rates = privateRates ?? TierSettingsStore.shared.privateRates
+        case .frontier:
+            rates = frontierRates(for: model)
         }
-        return Double(inputTokens) / 1_000_000 * inputRate + Double(outputTokens) / 1_000_000 * outputRate
+        return Double(inputTokens) / 1_000_000 * rates.input + Double(outputTokens) / 1_000_000 * rates.output
     }
 }
 
@@ -41,6 +53,8 @@ nonisolated struct UsageRecord: Codable, Sendable, FetchableRecord, PersistableR
     var id: Int64?
     let date: String
     let model: String
+    /// `ProviderTier` raw value; "frontier" for every row before migration v8.
+    var tier: String
     var inputTokens: Int
     var outputTokens: Int
     var cost: Double
@@ -51,10 +65,14 @@ nonisolated struct UsageRecord: Codable, Sendable, FetchableRecord, PersistableR
 
 nonisolated final class UsageStore: @unchecked Sendable {
 
-    static let shared = UsageStore()
-    private let db = DatabaseManager.shared.dbQueue
+    static let shared = UsageStore(db: DatabaseManager.shared.dbQueue)
 
-    private init() {}
+    private let db: DatabaseQueue
+
+    /// Tests pass a throwaway queue from `DatabaseManager.openAndMigrate(path:)`.
+    init(db: DatabaseQueue) {
+        self.db = db
+    }
 
     private static let _dateFormatter: DateFormatter = {
         let f = DateFormatter()
@@ -66,24 +84,29 @@ nonisolated final class UsageStore: @unchecked Sendable {
         Self._dateFormatter.string(from: date)
     }
 
-    func recordUsage(model: String, inputTokens: Int, outputTokens: Int) {
+    /// Adds one call's tokens to today's row for the model. The tier is
+    /// recorded alongside; when the caller does not know it, the model name
+    /// decides (`TierSettingsStore.tier(forModel:)`).
+    func recordUsage(model: String, inputTokens: Int, outputTokens: Int, tier: ProviderTier? = nil) {
+        let resolved = tier ?? TierSettingsStore.shared.tier(forModel: model)
         let today = formatDate(Date())
-        let cost = CostConfig.estimateCost(model: model, inputTokens: inputTokens, outputTokens: outputTokens)
+        let cost = CostConfig.estimateCost(model: model, inputTokens: inputTokens, outputTokens: outputTokens, tier: resolved)
 
         do {
             try db.write { db in
                 // Atomic upsert via SQL to avoid race conditions
                 try db.execute(
                     sql: """
-                        INSERT INTO usageStats (date, model, inputTokens, outputTokens, cost, taskCount)
-                        VALUES (?, ?, ?, ?, ?, 1)
+                        INSERT INTO usageStats (date, model, tier, inputTokens, outputTokens, cost, taskCount)
+                        VALUES (?, ?, ?, ?, ?, ?, 1)
                         ON CONFLICT(date, model) DO UPDATE SET
+                            tier = excluded.tier,
                             inputTokens = inputTokens + excluded.inputTokens,
                             outputTokens = outputTokens + excluded.outputTokens,
                             cost = cost + excluded.cost,
                             taskCount = taskCount + 1
                         """,
-                    arguments: [today, model, inputTokens, outputTokens, cost]
+                    arguments: [today, model, resolved.rawValue, inputTokens, outputTokens, cost]
                 )
             }
         } catch {
@@ -95,6 +118,15 @@ nonisolated final class UsageStore: @unchecked Sendable {
         let totalTokens: Int
         let totalCost: Double
         let taskCount: Int
+    }
+
+    /// One row of the per-model breakdown.
+    struct UsageByModel: Sendable, Identifiable {
+        let model: String
+        let tier: ProviderTier
+        let tokens: Int
+        let cost: Double
+        var id: String { "\(tier.rawValue)|\(model)" }
     }
 
     func todayUsage() -> UsageSummary {
@@ -111,7 +143,7 @@ nonisolated final class UsageStore: @unchecked Sendable {
         return usage(since: monthAgo)
     }
 
-    func usageByModel(days: Int = 30) -> [(model: String, tokens: Int, cost: Double)] {
+    func usageByModel(days: Int = 30) -> [UsageByModel] {
         let since = Calendar.current.date(byAdding: .day, value: -days, to: Date())!
         let sinceStr = formatDate(since)
 
@@ -119,14 +151,17 @@ nonisolated final class UsageStore: @unchecked Sendable {
             let records = try db.read { db in
                 try UsageRecord.filter(Column("date") >= sinceStr).fetchAll(db)
             }
-            // Group by model
-            var grouped: [String: (tokens: Int, cost: Double)] = [:]
+            // Group by model and tier
+            var grouped: [String: UsageByModel] = [:]
             for r in records {
-                let existing = grouped[r.model] ?? (tokens: 0, cost: 0)
-                grouped[r.model] = (existing.tokens + r.inputTokens + r.outputTokens, existing.cost + r.cost)
+                let tier = ProviderTier(rawValue: r.tier) ?? .frontier
+                let key = "\(tier.rawValue)|\(r.model)"
+                let existing = grouped[key]
+                grouped[key] = UsageByModel(model: r.model, tier: tier,
+                                            tokens: (existing?.tokens ?? 0) + r.inputTokens + r.outputTokens,
+                                            cost: (existing?.cost ?? 0) + r.cost)
             }
-            return grouped.map { (model: $0.key, tokens: $0.value.tokens, cost: $0.value.cost) }
-                .sorted { $0.cost > $1.cost }
+            return grouped.values.sorted { $0.cost > $1.cost || ($0.cost == $1.cost && $0.tokens > $1.tokens) }
         } catch {
             return []
         }

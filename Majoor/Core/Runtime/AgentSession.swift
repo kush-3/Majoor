@@ -39,6 +39,9 @@ actor AgentSession: AgentLoopHost {
     private let approvalTimeout: TimeInterval
     private let notify: (@Sendable (ApprovalRequest) -> Void)?
     private let onFinished: @Sendable (SessionID) async -> Void
+    /// The channel a question to the owner goes out on; nil means no channel
+    /// is registered for the origin and questions get no answer.
+    private let channelForOrigin: @Sendable (ChannelRef) async -> (any Channel)?
     /// Tests pin the mode; production reads the setting on every call.
     private nonisolated let modeOverride: PermissionMode?
 
@@ -56,9 +59,11 @@ actor AgentSession: AgentLoopHost {
          bus: EventBus, history: ThreadHistory, store: SessionStore?, loop: AgentLoop, approvalTimeout: TimeInterval = 600,
          persist: (@Sendable (TaskSnapshot) -> Void)?, notify: (@Sendable (ApprovalRequest) -> Void)?,
          modeOverride: PermissionMode? = nil,
+         channelForOrigin: @escaping @Sendable (ChannelRef) async -> (any Channel)? = { _ in nil },
          onFinished: @escaping @Sendable (SessionID) async -> Void) {
         let id = UUID()
         self.modeOverride = modeOverride
+        self.channelForOrigin = channelForOrigin
         let now = Date()
         self.sessionId = id
         self.shortId = shortId
@@ -193,6 +198,28 @@ actor AgentSession: AgentLoopHost {
         }
         MajoorLogger.log(decision.approved ? "✅ Approved: \(draft.title)" : "❌ Denied: \(draft.title)")
         return decision
+    }
+
+    /// A question for the owner, on the channel the task came from. The
+    /// session shows as waiting meanwhile; a stop cancels the loop's task, and
+    /// the channel's `ask` resolves on cancellation.
+    func ask(question: String, options: [String], timeout: Duration) async -> Answer {
+        if stopped || Task.isCancelled { return .unanswered }
+        guard let channel = await channelForOrigin(origin) else {
+            MajoorLogger.log("❓ No channel registered for \(origin.channelId); the question gets no answer")
+            return .unanswered
+        }
+        await recorder.setWaiting(true)
+        state = .waitingApproval
+        await bus.publish(.state(id: sessionId, state: .waitingApproval))
+        let answer = await channel.ask(threadKey: origin.threadKey, question: question, options: options, timeout: timeout)
+        await recorder.setWaiting(false)
+        if !stopped {
+            state = .running
+            await bus.publish(.state(id: sessionId, state: .running))
+        }
+        MajoorLogger.log(answer.timedOut ? "❓ No answer from the owner" : "❓ Owner answered")
+        return answer
     }
 
     // MARK: - Answering

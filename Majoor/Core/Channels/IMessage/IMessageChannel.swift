@@ -8,6 +8,12 @@
 // gives up after five quick crashes. Messages that arrived more than ten
 // minutes ago (configurable) are summarized, never executed: an unattended
 // agent must not run an hours-old "delete the build folder".
+//
+// Questions (Phase 2 step 6h): `ask` texts the owner a question with a short
+// code and optional numbered options, and the next owner message in that
+// thread that names an option or starts with the code is the answer. It is
+// consumed here and never reaches the router as a task. One question per
+// thread at a time; nothing survives a relaunch.
 
 import Foundation
 
@@ -85,6 +91,17 @@ actor IMessageChannel: Channel {
     private var notifiedDatabase = false
     private var statusSubscribers: [UUID: AsyncStream<Status>.Continuation] = [:]
 
+    private struct PendingQuestion {
+        let code: String
+        let options: [String]
+        let continuation: CheckedContinuation<Answer, Never>
+        let expiry: Task<Void, Never>
+    }
+    /// Keyed by thread. In memory only: a question does not outlive the process.
+    private var pendingQuestions: [String: PendingQuestion] = [:]
+    /// Owner messages consumed as answers, never yielded as tasks.
+    private(set) var answeredQuestions = 0
+
     private(set) var helperVersion: String?
     private(set) var databaseReady = false
     /// Counts by policy decision; never the content (PRD T1).
@@ -132,6 +149,7 @@ actor IMessageChannel: Channel {
     func stop() async {
         runTask?.cancel()
         runTask = nil
+        for threadKey in Array(pendingQuestions.keys) { resolveQuestion(threadKey, with: .unanswered) }
         await transport.stop()
         status = .stopped
     }
@@ -300,9 +318,18 @@ actor IMessageChannel: Channel {
                 return nil
             }
             acceptedCount += 1
-            continuation.yield(InboundMessage(channelId: id, threadKey: Self.threadKey(for: handle), sender: message.sender,
-                                              text: message.text.trimmingCharacters(in: .whitespacesAndNewlines),
-                                              receivedAt: message.createdAt ?? now))
+            let threadKey = Self.threadKey(for: handle)
+            let text = message.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            // A reply to a pending question is consumed here. STOP is never an
+            // answer: it must reach the router whatever is pending.
+            if let pending = pendingQuestions[threadKey], InboundCommand.parse(text) != .stopAll,
+               let answer = Self.matchAnswer(text, code: pending.code, options: pending.options) {
+                answeredQuestions += 1
+                resolveQuestion(threadKey, with: answer)
+                return nil
+            }
+            continuation.yield(InboundMessage(channelId: id, threadKey: threadKey, sender: message.sender,
+                                              text: text, receivedAt: message.createdAt ?? now))
             return nil
         case .stale:
             return message
@@ -361,6 +388,99 @@ actor IMessageChannel: Channel {
             let params: JSONValue = .object(["to": .string(target), "text": .string(chunk), "service": .string("imessage"), "allow_sms_fallback": .bool(false)])
             _ = try await transport.call("send", params: params, timeout: .seconds(60))
         }
+    }
+
+    // MARK: Questions
+
+    /// Texts the question with a code and the options, then waits for the
+    /// owner's reply in that thread (see `matchAnswer`), the timeout, or
+    /// cancellation (the session was stopped). A second question on a thread
+    /// that already has one pending is refused at once with no answer.
+    func ask(threadKey: String, question: String, options: [String], timeout: Duration) async -> Answer {
+        guard pendingQuestions[threadKey] == nil else {
+            MajoorLogger.log("❓ A question is already pending on \(threadKey); refusing another")
+            return .unanswered
+        }
+        let code = AgentSession.makeNonce()
+        let cleanOptions = options.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+        do {
+            try await send(to: threadKey, text: Self.questionText(question, options: cleanOptions, code: code, timeout: timeout), attachments: [])
+        } catch {
+            MajoorLogger.log("❓ Could not send the question on \(threadKey): \(error)")
+            return .unanswered
+        }
+        guard pendingQuestions[threadKey] == nil else { return .unanswered }   // raced with another ask while sending
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Answer, Never>) in
+                let expiry = Task { [weak self] in
+                    try? await Task.sleep(for: timeout)
+                    await self?.expireQuestion(threadKey, code: code)
+                }
+                pendingQuestions[threadKey] = PendingQuestion(code: code, options: cleanOptions, continuation: continuation, expiry: expiry)
+            }
+        } onCancel: {
+            Task { await self.cancelQuestion(threadKey, code: code) }
+        }
+    }
+
+    static func questionText(_ question: String, options: [String], code: String, timeout: Duration) -> String {
+        var text = "Question [\(code)]: \(question.trimmingCharacters(in: .whitespacesAndNewlines))"
+        if !options.isEmpty {
+            text += "\n" + options.enumerated().map { "\($0.offset + 1). \($0.element)" }.joined(separator: "\n")
+            text += "\nReply with a number or an option, or start a free answer with \(code)."
+        } else {
+            text += "\nStart your reply with \(code)."
+        }
+        let minutes = max(1, Int(timeout.components.seconds / 60))
+        text += " I will wait \(minutes) min."
+        return text
+    }
+
+    /// The owner's text as an answer, or nil when it is not one. A reply that
+    /// starts with the code is a free answer (an option name after it counts as
+    /// that option); otherwise only an option's number or text matches, so an
+    /// unrelated message while a question is pending is still a task.
+    static func matchAnswer(_ text: String, code: String, options: [String]) -> Answer? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        if let first = trimmed.split(whereSeparator: { $0.isWhitespace || $0 == ":" }).first,
+           AgentSession.nonceMatches(String(first).trimmingCharacters(in: .punctuationCharacters), code) {
+            var rest = String(trimmed.dropFirst(first.count)).trimmingCharacters(in: .whitespacesAndNewlines)
+            while let lead = rest.first, ":-–".contains(lead) {
+                rest.removeFirst()
+                rest = rest.trimmingCharacters(in: .whitespaces)
+            }
+            let option = option(matching: rest, in: options)
+            return Answer(text: rest.isEmpty ? nil : rest, option: option, timedOut: false)
+        }
+        if let option = option(matching: trimmed, in: options) {
+            return Answer(text: option, option: option, timedOut: false)
+        }
+        return nil
+    }
+
+    static func option(matching text: String, in options: [String]) -> String? {
+        guard !options.isEmpty else { return nil }
+        let cleaned = text.trimmingCharacters(in: .whitespacesAndNewlines).trimmingCharacters(in: CharacterSet(charactersIn: ".)"))
+        if let number = Int(cleaned), (1...options.count).contains(number) { return options[number - 1] }
+        return options.first { $0.compare(cleaned, options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame }
+    }
+
+    private func resolveQuestion(_ threadKey: String, with answer: Answer) {
+        guard let pending = pendingQuestions.removeValue(forKey: threadKey) else { return }
+        pending.expiry.cancel()
+        pending.continuation.resume(returning: answer)
+    }
+
+    private func expireQuestion(_ threadKey: String, code: String) {
+        guard pendingQuestions[threadKey]?.code == code else { return }
+        MajoorLogger.log("❓ No answer on \(threadKey) in time")
+        resolveQuestion(threadKey, with: .unanswered)
+    }
+
+    private func cancelQuestion(_ threadKey: String, code: String) {
+        guard pendingQuestions[threadKey]?.code == code else { return }
+        resolveQuestion(threadKey, with: .unanswered)
     }
 
     /// Settings ▸ Channels "Send test message".
