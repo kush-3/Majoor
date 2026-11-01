@@ -17,6 +17,10 @@ nonisolated struct CostConfig: Sendable {
     static let haikuOutput = 5.0
 
     static func estimateCost(model: String, inputTokens: Int, outputTokens: Int) -> Double {
+        // This table prices Claude only. A tier L or P model (Phase 2 step 2)
+        // is recorded at zero rather than at Sonnet's rate; step 3c adds the
+        // per-tier price table and the `tier` column on usage rows.
+        guard model.hasPrefix("claude") else { return 0 }
         let (inputRate, outputRate): (Double, Double)
         if model.contains("opus") {
             (inputRate, outputRate) = (opusInput, opusOutput)

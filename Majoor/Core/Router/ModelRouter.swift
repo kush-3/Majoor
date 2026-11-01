@@ -4,6 +4,7 @@
 // Hybrid approach:
 // - Keyword classifier handles obvious cases (instant, free)
 // - Haiku LLM classifies ambiguous inputs (model + tool sets)
+// - Settings ▸ Models can override both and pin every task to tier L or P
 
 import Foundation
 
@@ -31,8 +32,18 @@ nonisolated struct ModelRouter: Sendable {
 
     /// Hybrid routing: use keywords if confident, otherwise ask Haiku.
     /// Returns (provider, toolSets) where toolSets determines which MCP tools to include.
-    static func routeHybrid(_ input: String) async -> (provider: AnthropicProvider, toolSets: [String]) {
+    static func routeHybrid(_ input: String) async -> (provider: any LLMProvider, toolSets: [String]) {
         let (category, score) = TaskClassifier.classifyWithConfidence(input)
+
+        // Settings ▸ Models can pin every task to tier L or P (Phase 2 step 2).
+        // The Haiku classification below is skipped too: under Strict it would
+        // send the owner's text to Anthropic. Router v2 (step 3) replaces this
+        // with routing by data class.
+        if let forced = TierSettingsStore.shared.overrideProvider() {
+            let toolSets = defaultToolSets(for: category, input: input)
+            MajoorLogger.log("📌 Routing override: tier \(forced.tier.letter) (\(forced.model)) → tools: \(toolSets)")
+            return (forced, toolSets)
+        }
 
         // Fast path: keyword classifier is confident
         if score >= 2 {
