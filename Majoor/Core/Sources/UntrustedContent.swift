@@ -49,7 +49,7 @@ nonisolated enum UntrustedContent {
 
     /// The content cannot open or close a frame of its own.
     static func neutralizeTags(_ text: String) -> String {
-        guard let regex = try? NSRegularExpression(pattern: "<(/?)\\s*untrusted", options: [.caseInsensitive]) else { return text }
+        guard let regex = try? NSRegularExpression(pattern: "<\\s*(/?)\\s*untrusted", options: [.caseInsensitive]) else { return text }
         let range = NSRange(text.startIndex..., in: text)
         return regex.stringByReplacingMatches(in: text, options: [], range: range, withTemplate: "&lt;$1untrusted")
     }
