@@ -56,6 +56,14 @@ actor ChannelRouter {
     typealias OwnerMessageHandler = @Sendable (ChannelRef, String, Date) async -> Bool
     private var ownerMessageHandler: OwnerMessageHandler?
 
+    /// `send K7Q2` / `edit K7Q2 <changes>` / `skip K7Q2`: the owner acting on
+    /// a VIP nudge draft (Phase 2 step 6c). Returns the text to send back.
+    /// Defaults to the nudge job's handler; tests substitute one.
+    typealias NudgeReplyHandling = @Sendable (ChannelRef, NudgeReply.Parsed) async -> String
+    private var nudgeReplyHandler: NudgeReplyHandling = { origin, reply in
+        await VIPNudgeJob.handleReply(action: reply.action, code: reply.code, changes: reply.changes, origin: origin)
+    }
+
     init() {}
 
     func configure(manager: SessionManager, owners: @escaping @Sendable () -> [String]) {
@@ -66,6 +74,10 @@ actor ChannelRouter {
 
     func setOwnerMessageHandler(_ handler: OwnerMessageHandler?) {
         ownerMessageHandler = handler
+    }
+
+    func setNudgeReplyHandler(_ handler: @escaping NudgeReplyHandling) {
+        nudgeReplyHandler = handler
     }
 
     func register(_ channel: any Channel) {
@@ -113,6 +125,11 @@ actor ChannelRouter {
         if let reply = ApprovalReply.parse(message.text) {
             let text = await answer(reply, origin: origin, manager: manager)
             await deliver(to: origin, text: text)
+            return
+        }
+
+        if let reply = NudgeReply.parse(message.text) {
+            await deliver(to: origin, text: await nudgeReplyHandler(origin, reply))
             return
         }
 
