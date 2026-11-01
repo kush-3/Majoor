@@ -8,7 +8,9 @@ import Foundation
 
 // MARK: - Gmail API Helper
 
-private nonisolated struct GmailAPI {
+/// Internal (not private) since Phase 2 step 4: `GmailSource` reuses the
+/// authenticated request path and the body extraction.
+nonisolated struct GmailAPI {
 
     static let baseURL = "https://gmail.googleapis.com/gmail/v1/users/me"
 
