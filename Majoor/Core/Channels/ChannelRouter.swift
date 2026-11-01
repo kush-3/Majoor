@@ -49,12 +49,23 @@ actor ChannelRouter {
     private var manager: SessionManager?
     private var owners: @Sendable () -> [String] = { [] }
 
+    /// Sees every owner message (origin, text, when) after the approval
+    /// check; returns true when it consumed the message. The escalation
+    /// ladder uses it: any reply acknowledges what was sent to that thread,
+    /// and a bare "ok" is swallowed instead of becoming a task.
+    typealias OwnerMessageHandler = @Sendable (ChannelRef, String, Date) async -> Bool
+    private var ownerMessageHandler: OwnerMessageHandler?
+
     init() {}
 
     func configure(manager: SessionManager, owners: @escaping @Sendable () -> [String]) {
         self.manager = manager
         self.owners = owners
         if forwarder == nil { forwarder = Task { [weak self] in await self?.forwardEvents() } }
+    }
+
+    func setOwnerMessageHandler(_ handler: OwnerMessageHandler?) {
+        ownerMessageHandler = handler
     }
 
     func register(_ channel: any Channel) {
@@ -102,6 +113,11 @@ actor ChannelRouter {
         if let reply = ApprovalReply.parse(message.text) {
             let text = await answer(reply, origin: origin, manager: manager)
             await deliver(to: origin, text: text)
+            return
+        }
+
+        if let handler = ownerMessageHandler, await handler(origin, message.text, Date()) {
+            await deliver(to: origin, text: "Noted.")
             return
         }
 

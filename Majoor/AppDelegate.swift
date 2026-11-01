@@ -240,20 +240,51 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         }
     }
 
-    /// Reminders fire in local and runtime modes, never in client mode (the
-    /// runtime owns them). Delivery goes to the channel the reminder came
-    /// from when that channel can carry it (iMessage); the panel is
-    /// ephemeral, so panel and control-client reminders also post a local
-    /// notification, and the job session's events reach any connected client.
+    /// Reminders and scheduled jobs fire in local and runtime modes, never in
+    /// client mode (the runtime owns them). Reminder delivery goes to the
+    /// channel the reminder came from when that channel can carry it
+    /// (iMessage); the panel is ephemeral, so panel and control-client
+    /// reminders also post a local notification. Jobs (Phase 2 step 5) run
+    /// through `JobRunner`; their messages climb the `EscalationLadder`, which
+    /// sends over iMessage or falls back to a notification plus panel toast,
+    /// and any owner reply in the thread acknowledges them.
     private func startScheduler() {
         Task {
+            await JobRunner.shared.configure(
+                automations: AutomationStore.shared, runs: JobRunStore.shared,
+                notify: { record, definition, urgency, text in
+                    _ = await EscalationLadder.shared.escalate(
+                        automationId: record.id, jobName: definition.name, urgency: urgency, text: text,
+                        delivery: record.delivery, activeHours: ActiveHoursStore.shared.hours(for: record))
+                },
+                spawn: { prompt, origin in
+                    _ = await SessionManager.shared.submit(input: prompt, origin: origin, trust: .local)
+                })
+            await EscalationLadder.shared.configure(
+                store: EscalationStore.shared,
+                send: { ref, text in
+                    if ref.channelId == IMessageChannel.channelId {
+                        try await ChannelRouter.shared.send(to: ref, text: text)
+                    } else {
+                        NotificationManager.shared.sendSimple(title: "Majoor", body: text)
+                        await ChannelRouter.shared.deliver(to: ref, text: text)
+                    }
+                },
+                fallback: { title, body in
+                    NotificationManager.shared.sendSimple(title: title, body: body)
+                    await ChannelRouter.shared.deliver(to: .panel, text: body)
+                })
+            await EscalationLadder.shared.start()
+            await ChannelRouter.shared.setOwnerMessageHandler { origin, text, at in
+                await EscalationLadder.shared.acknowledge(threadKey: origin.threadKey, text: text, at: at)
+            }
             await AutomationScheduler.shared.configure(
                 store: AutomationStore.shared,
                 recordJob: { input, origin, summary in
                     await SessionManager.shared.recordJob(input: input, origin: origin, summary: summary)
                 },
                 deliver: { record, message in
-                    if record.deliveryChannel == "imessage" {
+                    if record.deliveryChannel == IMessageChannel.channelId {
                         try await ChannelRouter.shared.send(to: record.delivery, text: message)
                     } else {
                         NotificationManager.shared.sendSimple(title: "Reminder", body: message)
@@ -262,14 +293,23 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
                 },
                 onDeliveryFailed: { record, _ in
                     NotificationManager.shared.sendSimple(title: "Reminder could not be delivered", body: record.prompt)
+                },
+                runJob: { record in
+                    _ = await JobRunner.shared.run(record)
                 })
             await AutomationScheduler.shared.start()
         }
         NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: nil) { _ in
-            Task { await AutomationScheduler.shared.wake() }
+            Task {
+                await AutomationScheduler.shared.wake()
+                await EscalationLadder.shared.wake()
+            }
         }
         NotificationCenter.default.addObserver(forName: .NSSystemClockDidChange, object: nil, queue: nil) { _ in
-            Task { await AutomationScheduler.shared.wake() }
+            Task {
+                await AutomationScheduler.shared.wake()
+                await EscalationLadder.shared.wake()
+            }
         }
     }
 

@@ -18,6 +18,10 @@ struct SettingsView: View {
                 .tabItem { Label("Integrations", systemImage: "puzzlepiece.extension") }
             MemorySettingsView()
                 .tabItem { Label("Memory", systemImage: "brain") }
+            if AppMode.current != .client {
+                AutomationsSettingsView()
+                    .tabItem { Label("Automations", systemImage: "clock.arrow.2.circlepath") }
+            }
             UsageSettingsView()
                 .tabItem { Label("Usage", systemImage: "chart.bar") }
             if AppMode.current == .client {
