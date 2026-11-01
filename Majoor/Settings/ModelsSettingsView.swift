@@ -29,16 +29,21 @@ final class ModelsSettingsModel: ObservableObject {
     @Published var privateKey = ""
     @Published var hasPrivateKey = false
     @Published var retentionVerified = false
+    @Published var privateInputRate = ""
+    @Published var privateOutputRate = ""
     @Published var privateProbe: Probe = .idle
 
     /// "" for normal routing, else a `ProviderTier` raw value.
     @Published var override = ""
+    @Published var presetId = PrivacyPreset.strict.id
 
     private let store: TierSettingsStore
+    private let presets: PrivacyPresetStore
     private var loaded = false
 
-    init(store: TierSettingsStore = .shared) {
+    init(store: TierSettingsStore = .shared, presets: PrivacyPresetStore = .shared) {
         self.store = store
+        self.presets = presets
     }
 
     func load() {
@@ -54,7 +59,34 @@ final class ModelsSettingsModel: ObservableObject {
         }
         hasPrivateKey = store.hasPrivateKey
         retentionVerified = store.privateRetentionVerified
+        let rates = store.privateRates
+        privateInputRate = rates.input == 0 ? "" : Self.formatRate(rates.input)
+        privateOutputRate = rates.output == 0 ? "" : Self.formatRate(rates.output)
         override = store.routingOverride?.rawValue ?? ""
+        presetId = presets.preset.id
+    }
+
+    var preset: PrivacyPreset { PrivacyPreset.named(presetId) ?? .strict }
+
+    func setPreset(_ id: String) {
+        guard let preset = PrivacyPreset.named(id) else { return }
+        presetId = preset.id
+        presets.preset = preset
+    }
+
+    /// Both fields are dollars per million tokens; blank or unparsable means 0.
+    func savePrivateRates() {
+        guard loaded else { return }
+        store.privateRates = (Self.parseRate(privateInputRate), Self.parseRate(privateOutputRate))
+    }
+
+    private static func parseRate(_ text: String) -> Double {
+        let cleaned = text.trimmingCharacters(in: .whitespaces).replacingOccurrences(of: "$", with: "").replacingOccurrences(of: ",", with: ".")
+        return max(0, Double(cleaned) ?? 0)
+    }
+
+    private static func formatRate(_ value: Double) -> String {
+        value == value.rounded() ? String(Int(value)) : String(value)
     }
 
     func saveLocal() {
@@ -125,14 +157,6 @@ final class ModelsSettingsModel: ObservableObject {
 struct ModelsSettingsView: View {
     @StateObject private var model = ModelsSettingsModel()
 
-    /// PRD §6, the Strict preset: the highest tier each class may reach.
-    /// Display only; `PrivacyPreset` (Phase 2 step 3) becomes the source.
-    private static let strictTable: [(dataClass: String, tier: String)] = [
-        ("Code, repository context, web pages", "F · Claude"),
-        ("Email, contacts, calendar, messages, files", "P · Private"),
-        ("Location, finance, Majoor's own state", "L · Local"),
-    ]
-
     var body: some View {
         Form {
             frontierSection
@@ -202,6 +226,21 @@ struct ModelsSettingsView: View {
             Text("A reminder, not a control: Majoor cannot check the vendor's terms. Under Strict, personal data goes to this endpoint and never to Claude, so read them.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+            HStack {
+                TextField("Input $ per million tokens", text: $model.privateInputRate, prompt: Text("Input $/M"))
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 130)
+                    .onSubmit { model.savePrivateRates() }
+                    .onChange(of: model.privateInputRate) { _, _ in model.savePrivateRates() }
+                TextField("Output $ per million tokens", text: $model.privateOutputRate, prompt: Text("Output $/M"))
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 130)
+                    .onSubmit { model.savePrivateRates() }
+                    .onChange(of: model.privateOutputRate) { _, _ in model.savePrivateRates() }
+                Text("Price per million tokens, for the Usage tab. Blank means 0.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
             probeRow(model.privateProbe, tier: .privateCloud)
         } header: {
             Text(ProviderTier.privateCloud.displayName)
@@ -212,15 +251,26 @@ struct ModelsSettingsView: View {
 
     private var privacySection: some View {
         Section {
-            LabeledContent("Preset", value: "Strict")
-            ForEach(Self.strictTable, id: \.dataClass) { row in
-                LabeledContent(row.dataClass, value: row.tier)
-                    .font(.callout)
+            Picker("Preset", selection: Binding(get: { model.presetId }, set: { model.setPreset($0) })) {
+                ForEach(PrivacyPreset.all, id: \.id) { preset in
+                    Text(preset.displayName).tag(preset.id)
+                }
+            }
+            .pickerStyle(.segmented)
+            Text(model.preset.blurb)
+                .font(.caption)
+                .foregroundStyle(model.preset == .claudeOnly ? Color.orange : Color.secondary)
+            ForEach(ProviderTier.allCases.reversed(), id: \.rawValue) { tier in
+                let classes = DataClass.allCases.filter { model.preset.ceiling(for: $0) == tier }
+                if !classes.isEmpty {
+                    LabeledContent(classes.map(\.displayName).joined(separator: ", "), value: "up to \(tier.letter)")
+                        .font(.callout)
+                }
             }
         } header: {
             Text("Privacy")
         } footer: {
-            Text("Which tier may see each kind of data. Read-only in 2.0; enforced by the router once Phase 2 step 3 lands. Until then every task runs on Claude unless the override below is set.")
+            Text("The highest tier each kind of data may reach. The router gives a task only the tools its tier may use; a task that needs a tier you have not configured gets an explanation instead of a leak.")
         }
     }
 
@@ -243,7 +293,7 @@ struct ModelsSettingsView: View {
         } header: {
             Text("Routing override")
         } footer: {
-            Text("For trying a local or private model end to end. Routing by data class replaces this in Phase 2 step 3.")
+            Text("For trying a local or private model end to end. The privacy preset still decides which tools that tier may use.")
         }
     }
 
