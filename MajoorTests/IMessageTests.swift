@@ -388,6 +388,109 @@ struct IMessageChannelTests {
         #expect(await waitUntil { box.texts.last == "later" })
         await channel.stop()
     }
+
+    // MARK: Questions (Phase 2 step 6h)
+
+    private func startedChannel(transport: FakeIMessageTransport, box: InboundBox) async -> (IMessageChannel, Task<Void, Never>) {
+        let channel = makeChannel(transport: transport, clock: TestClock(start), cursor: LockedValue(0))
+        let consumer = Task { for await message in channel.inbound { box.append(message) } }
+        await channel.start()
+        _ = await waitUntil { await channel.status == .running && transport.methods.contains("watch.subscribe") }
+        return (channel, consumer)
+    }
+
+    private func questionCode(in texts: [String]) -> String? {
+        for text in texts {
+            if let open = text.range(of: "Question ["), let close = text[open.upperBound...].firstIndex(of: "]") {
+                return String(text[open.upperBound..<close])
+            }
+        }
+        return nil
+    }
+
+    @Test("a question goes out with a code and options; the owner's number answers it and is never a task")
+    func askByOption() async throws {
+        let transport = readyTransport()
+        let box = InboundBox()
+        let (channel, consumer) = await startedChannel(transport: transport, box: box)
+        defer { consumer.cancel() }
+        let thread = "imessage:+15551234567"
+        let asking = Task { await channel.ask(threadKey: thread, question: "Which color?", options: ["Red", "Blue"], timeout: .seconds(60)) }
+        #expect(await waitUntil { transport.sentTexts.contains { $0.hasPrefix("Question [") } })
+        let sent = try #require(transport.sentTexts.last)
+        #expect(sent.contains("Which color?") && sent.contains("1. Red") && sent.contains("2. Blue") && sent.contains("1 min"))
+        let code = try #require(questionCode(in: transport.sentTexts))
+        #expect(code.count == 4)
+
+        transport.notify("message", .object(["subscription": .number(1), "message": message(id: 201, text: "hello there", at: start)]))
+        #expect(await waitUntil { box.texts == ["hello there"] })            // unrelated: still a task
+        transport.notify("message", .object(["subscription": .number(1), "message": message(id: 202, text: "2", at: start)]))
+        let answer = await asking.value
+        #expect(answer == Answer(text: "Blue", option: "Blue", timedOut: false))
+        #expect(box.texts == ["hello there"])                                  // the answer was consumed
+        #expect(await channel.answeredQuestions == 1)
+        transport.notify("message", .object(["subscription": .number(1), "message": message(id: 203, text: "1", at: start)]))
+        #expect(await waitUntil { box.texts == ["hello there", "1"] })          // nothing pending: a task again
+        await channel.stop()
+    }
+
+    @Test("a reply that starts with the code is a free answer; a stranger's reply and STOP are not answers")
+    func askFreeText() async throws {
+        let transport = readyTransport()
+        let box = InboundBox()
+        let (channel, consumer) = await startedChannel(transport: transport, box: box)
+        defer { consumer.cancel() }
+        let thread = "imessage:+15551234567"
+        let asking = Task { await channel.ask(threadKey: thread, question: "Where should the file go?", options: [], timeout: .seconds(60)) }
+        #expect(await waitUntil { transport.sentTexts.contains { $0.hasPrefix("Question [") } })
+        let code = try #require(questionCode(in: transport.sentTexts))
+        #expect(transport.sentTexts.last?.contains("Start your reply with \(code)") == true)
+        transport.notify("message", .object(["subscription": .number(1), "message": message(id: 301, text: "\(code) nowhere", sender: "+15559999999", at: start)]))
+        transport.notify("message", .object(["subscription": .number(1), "message": message(id: 302, text: "stop", at: start)]))
+        #expect(await waitUntil { box.texts == ["stop"] })
+        transport.notify("message", .object(["subscription": .number(1), "message": message(id: 303, text: "\(code.lowercased()): ~/Desktop/out", at: start)]))
+        let answer = await asking.value
+        #expect(answer == Answer(text: "~/Desktop/out", option: nil, timedOut: false))
+        #expect(box.texts == ["stop"])
+        await channel.stop()
+    }
+
+    @Test("a second question on a busy thread is refused, a cancelled question resolves, a quiet owner times out")
+    func askTimeoutAndConcurrency() async throws {
+        let transport = readyTransport()
+        let box = InboundBox()
+        let (channel, consumer) = await startedChannel(transport: transport, box: box)
+        defer { consumer.cancel() }
+        let thread = "imessage:+15551234567"
+        let first = Task { await channel.ask(threadKey: thread, question: "First?", options: ["A"], timeout: .seconds(30)) }
+        #expect(await waitUntil { transport.sentTexts.contains { $0.contains("First?") } })
+        let second = await channel.ask(threadKey: thread, question: "Second?", options: [], timeout: .seconds(30))
+        #expect(second == .unanswered)
+        #expect(!transport.sentTexts.contains { $0.contains("Second?") })
+        first.cancel()
+        #expect(await first.value == .unanswered)
+        transport.notify("message", .object(["subscription": .number(1), "message": message(id: 401, text: "A", at: start)]))
+        #expect(await waitUntil { box.texts == ["A"] })                          // nothing pending any more
+
+        let quick = await channel.ask(threadKey: thread, question: "Quick?", options: [], timeout: .milliseconds(200))
+        #expect(quick.timedOut)
+        await channel.stop()
+    }
+
+    @Test("answers match by number, option text, or code prefix; anything else is a task")
+    func matchAnswer() {
+        let options = ["Keep the draft", "Delete it"]
+        #expect(IMessageChannel.matchAnswer("2", code: "Q7K2", options: options)?.option == "Delete it")
+        #expect(IMessageChannel.matchAnswer("1.", code: "Q7K2", options: options)?.option == "Keep the draft")
+        #expect(IMessageChannel.matchAnswer("delete IT", code: "Q7K2", options: options)?.option == "Delete it")
+        #expect(IMessageChannel.matchAnswer("3", code: "Q7K2", options: options) == nil)
+        #expect(IMessageChannel.matchAnswer("please delete it", code: "Q7K2", options: options) == nil)
+        #expect(IMessageChannel.matchAnswer("q7k2 keep the draft", code: "Q7K2", options: options) == Answer(text: "keep the draft", option: "Keep the draft", timedOut: false))
+        #expect(IMessageChannel.matchAnswer("Q7K2: neither, ask tomorrow", code: "Q7K2", options: options) == Answer(text: "neither, ask tomorrow", option: nil, timedOut: false))
+        #expect(IMessageChannel.matchAnswer("Q7K2", code: "Q7K2", options: []) == Answer(text: nil, option: nil, timedOut: false))
+        #expect(IMessageChannel.matchAnswer("yes Q7K2", code: "Q7K2", options: []) == nil)
+        #expect(IMessageChannel.matchAnswer("", code: "Q7K2", options: options) == nil)
+    }
 }
 
 @Suite("JSONRPCLineClient over a child process", .serialized)
