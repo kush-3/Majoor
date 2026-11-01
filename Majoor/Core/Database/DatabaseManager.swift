@@ -354,6 +354,39 @@ nonisolated final class DatabaseManager: @unchecked Sendable {
             try db.create(index: "location_fixes_at", on: "location_fixes", columns: ["at"], options: [.ifNotExists])
         }
 
+        // Phase 2 step 5: what each scheduled job run concluded, and the
+        // escalation ladder's pending messages.
+        migrator.registerMigration("v9_jobs") { db in
+            try db.create(table: "automation_runs", ifNotExists: true) { t in
+                t.primaryKey("id", .text)
+                t.column("automationId", .text).notNull().indexed()
+                t.column("jobName", .text).notNull()
+                t.column("startedAt", .datetime).notNull().indexed()
+                t.column("endedAt", .datetime)
+                t.column("tier", .text).notNull()
+                t.column("tokensIn", .integer).notNull().defaults(to: 0)
+                t.column("tokensOut", .integer).notNull().defaults(to: 0)
+                t.column("outcome", .text).notNull()
+                t.column("summary", .text).notNull().defaults(to: "")
+            }
+            try db.create(table: "escalations", ifNotExists: true) { t in
+                t.primaryKey("id", .text)
+                t.column("automationId", .text).notNull().indexed()
+                t.column("jobName", .text).notNull()
+                t.column("deliveryChannel", .text).notNull()
+                t.column("threadKey", .text).notNull().indexed()
+                t.column("urgency", .integer).notNull()
+                t.column("text", .text).notNull()
+                t.column("rung", .integer).notNull()
+                t.column("sentAt", .datetime)
+                t.column("repeatAt", .datetime)
+                t.column("deferredUntil", .datetime)
+                t.column("acknowledgedAt", .datetime)
+                t.column("resolvedAt", .datetime)
+                t.column("createdAt", .datetime).notNull()
+            }
+        }
+
         try migrator.migrate(dbQueue)
     }
 }
