@@ -318,6 +318,16 @@ nonisolated final class DatabaseManager: @unchecked Sendable {
             try db.create(index: "automations_due", on: "automations", columns: ["enabled", "nextRunAt"], options: [.ifNotExists])
         }
 
+        // Phase 2 step 3: usage is attributed to a tier (frontier / private /
+        // local) so the cost report can price each one. Every row before this
+        // was Claude. The upsert key stays (date, model); tier is a plain
+        // column because a model name belongs to one tier at a time.
+        migrator.registerMigration("v8_usage_tier") { db in
+            try db.alter(table: "usageStats") { t in
+                t.add(column: "tier", .text).notNull().defaults(to: "frontier")
+            }
+        }
+
         try migrator.migrate(dbQueue)
     }
 }

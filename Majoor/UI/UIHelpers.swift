@@ -9,7 +9,7 @@ func friendlyModel(_ model: String) -> String {
     if model.contains("opus") { return "Opus" }
     if model.contains("haiku") { return "Haiku" }
     if model.contains("sonnet") { return "Sonnet" }
-    return model
+    return "\(TierSettingsStore.shared.tier(forModel: model).letter) · \(model)"   // a local or private model: its tier letter
 }
 
 /// Formats a raw token count into a compact display string.
