@@ -181,6 +181,18 @@ Unit: wrapper; hub fan-out and restart; Gmail cursor re-anchoring with a scripte
 
 **Size:** ~700 new lines, 3 days. **Depends on:** steps 3 and 4.
 
+> **Status (2026-10-31): code done** on the step-5 branch off the merged steps 2–4; tests in `MajoorTests/CronTests.swift` (a 43-row cron table in America/New_York with both DST transitions, invalid expressions, active hours, the scheduler's cron handling with the fake clock), `JobRunnerTests.swift` (every outcome with a capturing provider, the retry on prose, the ceiling clamp, the preset refusal, the unconfigured tier, serialization, the runs table) and `EscalationLadderTests.swift` (every urgency, deferral, repeat, the call rung, acknowledgement, the hourly limit, send failure, the timer, the router hook). Differences from the text below, all deliberate:
+> - The migration is `v9_jobs` (v8 was taken twice by steps 3 and 4). `escalations` also carries `jobName`, `deliveryChannel`, `deferredUntil` and `resolvedAt`.
+> - The only shipped definition is `hello`, a **model-free** heartbeat (`JobDefinition.modelFree`): it records `no_change` without a provider so the scheduler → runner → `automation_runs` path can be watched on a Mac with no tier L. Step 6's jobs are ordinary entries.
+> - A job's tier comes from its row (`automations.tier`) and falls back to the definition; an unconfigured L/P tier is a recorded `failed`, never a fallback to Claude. The preset check uses every input's `DataClass` plus `.emailBody` when the job may fetch bodies, and happens before anything is gathered.
+> - `JobDelivery.always` (for the brief) delivers a `no_change` summary at urgency 1; `ladder` jobs stay silent on `no_change`.
+> - Rungs: urgency 2 reaches rung 2 only (no repeat); urgency 3 repeats once after 30 minutes and then reaches the call rung, a log line until Phase 3. The hourly limit counts any sent message of that job, including an urgency-3 one. A failed iMessage send falls back to a local notification plus panel toast and still counts as sent.
+> - Acknowledgement is a hook on `ChannelRouter` (`setOwnerMessageHandler`) rather than a change to its routing: every owner message after the approval check reaches it, and only an exact `ok` with something pending is consumed.
+> - `activeHours` on a row overrides the default; `ActiveHoursStore` keeps the default (`activeHoursDefault`). "Run now" sets the row due and fires it; a row that is running finishes first and runs again.
+> - Settings ▸ Automations lists the catalog with toggles, an editable cron field with a plain-English summary, tier, next/last run, last result and Run now; the delivery picker (panel or the owner's iMessage thread) and the active-hours default; upcoming reminders; the last 20 runs.
+>
+> Still by hand (5e): switch `hello` on in Settings ▸ Automations with `*/5 * * * *`, wait 25 minutes, and see five `no_change` rows under Recent runs and nothing sent.
+
 ### 5a. Schedule
 
 `Core/Automation/CronSchedule.swift`: a five-field cron parser (`min hour dom mon dow`, lists, ranges, steps, names for months and weekdays) with `next(after: Date, in: TimeZone) -> Date?`; tests against a table of 30 expressions. `AutomationScheduler.fire` handles `scheduleKind == "cron"`: compute the next run, write it to `nextRunAt`, run the job, and never re-claim the same minute (the claim row plus `lastRunAt` guard it).
