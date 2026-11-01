@@ -51,7 +51,7 @@ The agent loop is `nonisolated` and runs off the main thread inside an `AgentSes
 
 ### Tool System (`Tools/`)
 
-40 tools across 8 files, registered via `ToolRegistry.defaultTools()`.
+41 tools across 9 files, registered via `ToolRegistry.defaultTools()`.
 
 All tools conform to `AgentTool` protocol (`ToolProtocol.swift`):
 - `name`, `description`, `parameters` → converted to Anthropic tool schema automatically
@@ -127,7 +127,7 @@ One binary, three roles, chosen in Settings ▸ General ▸ Mode (UserDefaults `
 
 ### Channels (`Core/Channels/`)
 
-A `Channel` yields `InboundMessage`s and sends text to a thread; `ChannelRouter` consumes every registered channel, applies `TrustPolicy` (remote-text senders must match an owner handle in `contacts_policy`, normalized E.164/lower-case email), recognizes coded approval replies (`yes K7Q2`, `no K7Q2 note`; a bare "yes" is a task), submits through `SessionManager.handleInbound`, and sends results and approval prompts back to the originating thread. `PanelChannel` is the command bar. `IMessageChannel` (`Channels/IMessage/`, runtime mode) drives one `imsg rpc` child (`brew install steipete/tap/imsg`; Majoor.app needs Full Disk Access and Automation for Messages) through `JSONRPCLineClient` (newline JSON-RPC, `NewlineJSONFramer`, notifications stream; `MCPClient` is untouched): initialize → replay `messages.after` from the saved row id → `watch.subscribe`. `IMessageInboundPolicy` accepts only the owner, only in a direct iMessage chat, drops our own echoes, reactions, edits, groups and SMS, rate-limits to 10/min, and after an outage summarizes rather than runs messages older than the stale window (default 10 min; a trailing `stop` is still honored). Replies are chunked at ~1,500 characters, max 6. The helper is restarted with 5→80 s backoff and given up after five quick exits.
+A `Channel` yields `InboundMessage`s and sends text to a thread; `ChannelRouter` consumes every registered channel, applies `TrustPolicy` (remote-text senders must match an owner handle in `contacts_policy`, normalized E.164/lower-case email), recognizes coded approval replies (`yes K7Q2`, `no K7Q2 note`; a bare "yes" is a task), submits through `SessionManager.handleInbound`, and sends results and approval prompts back to the originating thread. `PanelChannel` is the command bar. `IMessageChannel` (`Channels/IMessage/`, runtime mode) drives one `imsg rpc` child (`brew install steipete/tap/imsg`; Majoor.app needs Full Disk Access and Automation for Messages) through `JSONRPCLineClient` (newline JSON-RPC, `NewlineJSONFramer`, notifications stream; `MCPClient` is untouched): initialize → replay `messages.after` from the saved row id → `watch.subscribe`. `IMessageInboundPolicy` accepts only the owner, only in a direct iMessage chat, drops our own echoes, reactions, edits, groups and SMS, rate-limits to 10/min, and after an outage summarizes rather than runs messages older than the stale window (default 10 min; a trailing `stop` is still honored). Replies are chunked at ~1,500 characters, max 6. The helper is restarted with 5→80 s backoff and given up after five quick exits. `IMessageChannel.ask` (the `ask_owner` tool, `Tools/AskOwnerTool.swift`, answered through `AgentLoopHost.ask` → the session's origin channel) texts a question with a 4-character code and numbered options; the next owner message in that thread that names an option or starts with the code is consumed as the answer and never becomes a task, STOP always passes through, one question per thread, nothing survives a relaunch. `PanelChannel` still answers "no answer" at once.
 
 ### Event sources (`Core/Sources/`)
 
@@ -424,7 +424,7 @@ Location:
 Tools/
 ```
 
-40 tools across 8 files.
+41 tools across 9 files.
 
 All tools conform to:
 

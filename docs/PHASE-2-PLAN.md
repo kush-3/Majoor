@@ -233,6 +233,8 @@ Phase 3 provides the call rung; Phase 2 ships rungs 1–3 (6c's "repeat if unack
 ### 6h. "I'm blocked" questions (`ask` over iMessage)
 `IMessageChannel.ask(threadKey:question:options:timeout:)` replaces the default no-answer implementation: send the question with a short code, keep a pending-question table keyed by thread, resolve on the next owner message that matches an option or starts with the code, time out after the given duration. The loop gets one tool, `ask_owner` (R0, tier-agnostic), which `AgentLoop` answers by awaiting `host.ask(...)` on the session's origin channel. Test with the fake transport.
 
+> **Status (2026-10-31): done** (`Tools/AskOwnerTool.swift`, `AgentLoopHost.ask`, `IMessageChannel.ask`; 7 tests across `IMessageTests.swift` and `SessionLoopTests.swift`). The pending-question table is in the channel actor's memory, not a database table, so a question does not survive a relaunch (the loop then gets the timeout answer). A free-text answer must start with the code; only an option's number or text matches without it, so an unrelated message while a question is pending is still a task. `ask_owner` is exempt from the privacy tool gate. The panel keeps the default no-answer `ask` (a prompt UI is more than a few lines); the Auto-mode permission rule is unchanged. By hand: one real question over `imsg`.
+
 ### 6i. Weekly self-improvement proposals
 Listed in §8 as Phase 2 by schedule but its pipeline is Phase 4; in Phase 2 it is a job that writes three proposals from `automation_runs` failures and the cost report to the brief, and does nothing else.
 
