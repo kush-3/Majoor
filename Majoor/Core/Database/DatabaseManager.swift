@@ -318,6 +318,32 @@ nonisolated final class DatabaseManager: @unchecked Sendable {
             try db.create(index: "automations_due", on: "automations", columns: ["enabled", "nextRunAt"], options: [.ifNotExists])
         }
 
+        // Phase 2 step 4: event-source cursors and the location endpoint's
+        // devices and fixes. Sources persist where they got to, never content.
+        migrator.registerMigration("v8_sources") { db in
+            try db.create(table: "source_state", ifNotExists: true) { t in
+                t.primaryKey("sourceId", .text)
+                t.column("cursor", .text)
+                t.column("updatedAt", .datetime).notNull()
+            }
+            try db.create(table: "location_devices", ifNotExists: true) { t in
+                t.primaryKey("deviceId", .text)
+                t.column("name", .text).notNull()
+                t.column("tokenHash", .text).notNull()
+                t.column("createdAt", .datetime).notNull()
+            }
+            try db.create(table: "location_fixes", ifNotExists: true) { t in
+                t.autoIncrementedPrimaryKey("id")
+                t.column("at", .datetime).notNull()
+                t.column("latitude", .double).notNull()
+                t.column("longitude", .double).notNull()
+                t.column("accuracy", .double)
+                t.column("place", .text)
+                t.column("event", .text).notNull()
+            }
+            try db.create(index: "location_fixes_at", on: "location_fixes", columns: ["at"], options: [.ifNotExists])
+        }
+
         try migrator.migrate(dbQueue)
     }
 }
