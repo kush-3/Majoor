@@ -6,12 +6,13 @@ A native macOS AI agent that lives in your menu bar. It runs tasks autonomously,
 
 - **Autonomous Task Execution** — Describe what you need, Majoor figures out the steps and executes them
 - **Streaming Chat** — Interactive conversation mode with real-time streaming responses
-- **37 Built-in Tools** — File management, shell execution, git/GitHub, web search, email (Gmail), calendar (Apple Calendar), long-term memory
+- **40 Built-in Tools** — File management, shell execution, git/GitHub, web search, email (Gmail), calendar (Apple Calendar), long-term memory
 - **MCP Integrations** — Connect GitHub, Slack, Notion, and Linear for cross-service workflows
 - **Pipeline Plans** — Complex multi-step tasks are proposed as plans you can review, edit, and approve
 - **Interactive Confirmations** — Every sensitive action (email send, file delete) requires your approval with optional feedback
 - **Memory System** — Majoor remembers context from past tasks to work smarter over time
 - **Smart Routing** — Automatically picks the right model (Opus for complex tasks, Sonnet for quick ones)
+- **Local and private models** — Point tiers L and P at any OpenAI-compatible server (Ollama, LM Studio, a zero-retention cloud endpoint) in Settings → Models; Claude stays tier F
 
 ## Requirements
 
@@ -109,6 +110,7 @@ Majoor/
 │   ├── ChatManager.swift         # Streaming chat session manager
 │   ├── ConfirmationManager.swift # Async confirmation flow with user feedback
 │   ├── TaskManager.swift         # Task state, toasts, confirmations, pipeline state
+│   ├── Providers/                # Tiers: OpenAI-compatible provider (L, P) and tier settings
 │   ├── Router/                   # Task classification + model routing
 │   ├── Memory/                   # SQLite memory storage + retrieval
 │   ├── MCP/                      # MCP client, server manager, tool bridge
@@ -123,7 +125,7 @@ Majoor/
 │   ├── ToastOverlay.swift        # In-app notification toasts
 │   ├── ConfirmationSheet.swift   # Interactive confirmation with feedback input
 │   └── StatusBarController.swift # Menu bar icon states
-├── Settings/                     # 6-tab preferences window
+├── Settings/                     # Preferences: General, Accounts, Models, Integrations, Memory, Usage, Remote, About
 └── Security/                     # Keychain + command sanitizer
 ```
 
