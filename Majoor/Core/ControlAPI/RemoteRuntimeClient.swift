@@ -473,15 +473,37 @@ actor RemoteRuntimeClient {
     static func pair(host: String, port: UInt16, code: String, deviceName: String,
                      timeout: Duration = RemoteRuntimeClient.connectTimeout) async throws -> PairOk {
         let peer = WebSocketPeer.client(host: host, port: port, queue: DispatchQueue(label: "ai.majoor.pairing"))
-        try await peer.start(timeout: timeout)
+        do {
+            try await peer.start(timeout: timeout)
+        } catch let error as RemoteClientError {
+            throw error
+        } catch {
+            throw RemoteClientError.notConnected
+        }
         defer { peer.close() }
-        try await peer.send(frame: try ControlFrame(type: .pair, body: PairRequest(code: code, deviceName: deviceName), id: "pair"))
+        do {
+            try await peer.send(frame: try ControlFrame(type: .pair, body: PairRequest(code: code, deviceName: deviceName), id: "pair"))
+        } catch let error as RemoteClientError {
+            throw error
+        } catch {
+            throw RemoteClientError.closed
+        }
         let incoming = peer.incoming
         let reply = try await withThrowingTaskGroup(of: ControlFrame.self) { group in
             group.addTask {
-                for try await data in incoming {
-                    let frame = try ControlFrame.decode(data)
-                    if frame.type == .pairOk || frame.type == .error { return frame }
+                // The runtime answers a bad code with an error frame and then
+                // closes. Under load the close can surface here as a transport
+                // error before the frame is read; every failure on this path
+                // is a `RemoteClientError`, never a raw socket error.
+                do {
+                    for try await data in incoming {
+                        let frame = try ControlFrame.decode(data)
+                        if frame.type == .pairOk || frame.type == .error { return frame }
+                    }
+                } catch let error as RemoteClientError {
+                    throw error
+                } catch {
+                    throw RemoteClientError.closed
                 }
                 throw RemoteClientError.closed
             }
