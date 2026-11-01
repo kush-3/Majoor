@@ -224,6 +224,8 @@ Each is a `JobDefinition` plus its prompt and schema, a test with scripted input
 ### 6a. Inbox and Slack urgency triage (tier L, every 30 min, R0)
 Inputs: `newEmail` meta (no bodies unless the subject or sender is VIP), `slackMessage`. Output: `[{item, urgency 0–3, reason}]`. Only urgency ≥ 2 notifies; the rest waits for the brief; `no_change` otherwise. Test: 10 scripted emails, exactly the two urgent ones notify.
 
+> **Status (2026-10-31): done** (`Core/Jobs/Behaviors/TriageJob.swift`, 5 tests in `TriageJobTests.swift`). Tier L, `*/30 * * * *`, headers only (no bodies at all; VIP bodies are 6c's). The model returns `items` with the event's `messageId`/`ts` as id; `apply` sends one message for everything at urgency 2–3 (highest urgency wins, five lines plus "(+N more)"), holds urgency 1 in the job's `scratch` as `TriageState` for the brief (dedupe by id, first-seen time kept, dropped after 48 h, at most 50), drops 0. A plain `no_change` without `items` leaves the scratch untouched. By hand: a real run against Ollama with a few new emails.
+
 ### 6b. Morning brief (L gathers, P writes; daily at an owner-set time; R0)
 Inputs: today's calendar, unreplied VIP threads (from 6c's state), open reminders and running sessions, Majoor health (sources up, last errors, yesterday's cost), triage items held since the last brief, contradictions from 6e. Tier L produces the structured facts; tier P writes the four-line text in the owner's voice. Delivered on rung 2 at the set time regardless of `no_change` (an empty brief says so in one line).
 
@@ -232,6 +234,8 @@ Settings ▸ Contacts: VIP toggle per handle/email (writes `contacts_policy.isVI
 
 ### 6d. Weekly cost and activity report (L, Sunday, R0)
 From `usageStats` by tier, `sessions`, `approvals`, `automation_runs`: tokens and dollars per tier, sessions by origin, approvals by decision, jobs by outcome. Tier L writes the summary; delivered on rung 2.
+
+> **Status (2026-10-31): done** (`Core/Jobs/Behaviors/CostReportJob.swift`, 5 tests in `CostReportJobTests.swift`). `WeeklyFacts.collect` gathers the seven days in code (usage per tier from `UsageStore.usageByModel`, sessions by origin, approvals by decision through GRDB, runs by outcome, plus the failed/refused runs for 6i) and renders them as plain lines, unframed because they are Majoor's own state; tier L writes at most 8 lines (12 enforced) and `apply` always returns `notify` at urgency 2 with a "Weekly report" header, so delivery is `.ladder`, not `.always`. Sunday 18:00. The usage window is "today minus 7 days" by calendar date, as `usageByModel` counts. By hand: a Sunday run on the mini.
 
 ### 6e. Nightly memory consolidation (L, nightly, R1 on Majoor's own state)
 Reads memories touched in the last 30 days plus their nearest neighbors by FTS; asks for `{merges: [[ids], mergedText], contradictions: [[ids], note], stale: [ids]}`; applies merges through the supersede path, decays stale, and queues contradictions for the brief. Hard caps: 200 memories per night, 20 merges.
@@ -249,6 +253,8 @@ Phase 3 provides the call rung; Phase 2 ships rungs 1–3 (6c's "repeat if unack
 
 ### 6i. Weekly self-improvement proposals
 Listed in §8 as Phase 2 by schedule but its pipeline is Phase 4; in Phase 2 it is a job that writes three proposals from `automation_runs` failures and the cost report to the brief, and does nothing else.
+
+> **Status (2026-10-31): done** (`Core/Jobs/Behaviors/ProposalsJob.swift`, 2 tests in `ProposalsJobTests.swift`). Sunday 19:00 on tier L, sharing `WeeklyFacts` with 6d plus the week's failed and refused runs (at most 30 lines). The model returns `proposals`; one to three are accepted (more are trimmed, none is a recorded failure), delivered at urgency 1 (the ladder only logs it) and kept in the job's `scratch` as `ProposalsState {proposals, at}` for the brief to read with `JobContext.scratch(ofJob: JobNames.proposals, as:)`.
 
 ---
 
