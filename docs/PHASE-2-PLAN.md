@@ -145,6 +145,16 @@ Unit: preset table; allow-list per tier; downgrade rule; classifier never calls 
 
 **Size:** ~900 new lines, 3 days. **Depends on:** nothing (uses existing Gmail/EventKit/MCP code).
 
+> **Status (2026-10-31): code done** on the step-4 branch, built in parallel with step 2's PR; tests in `MajoorTests/SourceTests.swift` (frame, hub fan-out/ring/restart ladder, Gmail cursor paths with a scripted reader, calendar debounce with a gated clock, Slack cursors, the location endpoint over loopback, `source_state` on a throwaway database). Differences from the text below, all deliberate:
+> - `EventSource.start()` runs until the source fails or is stopped and the hub restarts it; `events` is one stream per instance, so the hub never resubscribes. `SourceEvent.kind` is a `String`-backed enum (`newEmail`, `calendarChanged`, `slackMessage`, `locationFix`).
+> - Header fields (from, subject, Slack author, event titles) are cleaned and capped in payloads rather than wrapped; bodies and message text are wrapped; the job runner frames everything again when it assembles a prompt.
+> - Gmail's first poll backfills a day of mail marked `backfill: true`; Slack's first poll of a channel only anchors (fifty old messages are not "new"). Sent, draft, chat, spam and trash never become `newEmail`.
+> - The calendar source never prompts for access: until the owner's first calendar task grants it, the source throws `noAccess` and the hub's ladder shows it in Settings ▸ Location.
+> - The location endpoint drains an over-long body (up to 64 KB) before answering 413 so the phone sees a status, not a reset. `requestFix()` returns nil (D10 open). Settings ▸ Location also holds the Slack channel list and the four sources' health.
+> - `GmailAPI` in `Tools/EmailTools.swift` is internal instead of private; nothing else there changed.
+>
+> Still by hand (4d): send yourself an email and see `newEmail` within 3 minutes; change a calendar event and see `calendarChanged`; a Shortcut POST over Tailscale with a minted token; Slack through the MCP server with a listed channel.
+
 ### 4a. Protocol and hub
 
 `Core/Sources/EventSource.swift`: `nonisolated protocol EventSource: Sendable { var id: String { get }; var dataClass: DataClass { get }; func start() async throws; func stop() async; var events: AsyncStream<SourceEvent> { get } }`. `nonisolated struct SourceEvent: Sendable, Codable { id, sourceId, kind (newEmail, calendarChanged, slackMessage, locationFix, …), at, payload: JSONValue }`. `actor EventHub` starts and supervises sources (restart with backoff like the iMessage helper), fans events out to subscribers, and keeps a bounded recent-event ring per source so a job can "gather since last run" without each source re-fetching. `source_state` table (migration v8): `sourceId PK, cursor TEXT, updatedAt`.
