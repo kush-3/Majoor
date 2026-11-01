@@ -21,6 +21,8 @@ struct SettingsView: View {
             if AppMode.current != .client {
                 AutomationsSettingsView()
                     .tabItem { Label("Automations", systemImage: "clock.arrow.2.circlepath") }
+                ContactsSettingsView()
+                    .tabItem { Label("Contacts", systemImage: "person.2") }
             }
             UsageSettingsView()
                 .tabItem { Label("Usage", systemImage: "chart.bar") }
