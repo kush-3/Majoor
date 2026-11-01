@@ -14,10 +14,14 @@ nonisolated final class DatabaseManager: @unchecked Sendable {
     let dbQueue: DatabaseQueue
 
     /// MAJOOR_DB_PATH overrides the database file (tests point it at a temp
-    /// file so they never touch the real one).
+    /// file so they never touch the real one). `{pid}` in the value becomes
+    /// the process id, so two test runs at once (two worktrees, two Xcode
+    /// windows) never open the same SQLite file: a busy error during
+    /// migration would otherwise look like corruption to `openWithRecovery`.
     private static var overridePath: String? {
         let value = ProcessInfo.processInfo.environment["MAJOOR_DB_PATH"] ?? ""
-        return value.isEmpty ? nil : value
+        guard !value.isEmpty else { return nil }
+        return value.replacingOccurrences(of: "{pid}", with: String(ProcessInfo.processInfo.processIdentifier))
     }
 
     private static var dbDirectory: URL {

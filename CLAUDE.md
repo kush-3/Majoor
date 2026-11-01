@@ -21,7 +21,7 @@ Unit tests live in `MajoorTests/` (Swift Testing, app-hosted, synchronized folde
 xcodebuild test -project Majoor.xcodeproj -scheme Majoor -destination 'platform=macOS' -only-testing:MajoorTests
 ```
 
-Two seams keep tests off real state: `AppDelegate.isRunningTests` skips every startup side effect in the test host, and `MAJOOR_DB_PATH` points `DatabaseManager` at a temp file. No linter or CI/CD is configured.
+Two seams keep tests off real state: `AppDelegate.isRunningTests` skips every startup side effect in the test host, and `MAJOOR_DB_PATH` points `DatabaseManager` at a temp file (the scheme uses `/tmp/majoor-tests/majoor-{pid}.sqlite`; `{pid}` becomes the process id so parallel test runs never share a database). No linter or CI/CD is configured.
 
 ## Key Constraints
 
