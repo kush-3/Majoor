@@ -10,6 +10,7 @@ import Foundation
 
 nonisolated struct SaveMemoryTool: AgentTool {
     let name = "save_memory"
+    let dataClass: DataClass = .majoorState
     let description = "Save a durable fact, preference, habit, or project context about the user to long-term memory so future tasks can recall it. Use for information with lasting value (stated preferences, corrections, personal facts, project details) — not task minutiae or transient state. To correct or update an existing memory, pass its id as 'supersedes_id' (find it with search_memory) instead of saving a duplicate."
     let parameters = [
         ToolParameter(name: "content", description: "The memory as one self-contained sentence (e.g., 'User's GitHub handle is kush-3')"),
@@ -58,6 +59,7 @@ nonisolated struct SaveMemoryTool: AgentTool {
 
 nonisolated struct SearchMemoryTool: AgentTool {
     let name = "search_memory"
+    let dataClass: DataClass = .majoorState
     let description = "Search the user's long-term memories (facts, preferences, habits, project context) by keyword. Returns matching memories with their ids. Matching is keyword-based, not semantic — retry with different phrasings if the first search misses. Use before save_memory to find an existing memory to update, and whenever a task might depend on personal context not already shown in CONTEXT FROM MEMORY."
     let parameters = [
         ToolParameter(name: "query", description: "Keywords to search for (e.g., 'github handle')"),

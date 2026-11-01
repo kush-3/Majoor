@@ -7,7 +7,7 @@ struct UsageSettingsView: View {
     @State private var todayUsage: UsageStore.UsageSummary?
     @State private var weekUsage: UsageStore.UsageSummary?
     @State private var monthUsage: UsageStore.UsageSummary?
-    @State private var modelBreakdown: [(model: String, tokens: Int, cost: Double)] = []
+    @State private var modelBreakdown: [UsageStore.UsageByModel] = []
 
     var body: some View {
         Form {
@@ -35,7 +35,7 @@ struct UsageSettingsView: View {
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 12)
                 } else {
-                    ForEach(modelBreakdown, id: \.model) { entry in
+                    ForEach(modelBreakdown) { entry in
                         LabeledContent {
                             HStack(spacing: 16) {
                                 Text(formatTokens(entry.tokens))
@@ -47,12 +47,21 @@ struct UsageSettingsView: View {
                                     .frame(width: 64, alignment: .trailing)
                             }
                         } label: {
-                            Text(friendlyModel(entry.model))
+                            HStack(spacing: 6) {
+                                Text(entry.tier.letter)
+                                    .font(.system(size: 10, weight: .semibold, design: .rounded))
+                                    .foregroundStyle(.secondary)
+                                    .frame(width: 16, height: 16)
+                                    .background(Circle().fill(.primary.opacity(0.06)))
+                                Text(friendlyModel(entry.model))
+                            }
                         }
                     }
                 }
             } header: {
-                Text("Usage by Model (30 days)")
+                Text("Usage by Model and Tier (30 days)")
+            } footer: {
+                Text("F is Claude, P the private endpoint, L the local model. Tier L costs nothing; tier P is priced at the rate in Settings ▸ Models.")
             }
         }
         .formStyle(.grouped)

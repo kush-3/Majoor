@@ -108,6 +108,17 @@ Unit: translation round trips (a tool loop of three turns survives Anthropic→O
 
 **Size:** ~400 new, ~150 changed lines, 2 days. **Depends on:** step 2.
 
+> **Status (2026-10-31): code done** on a branch off `phase-2-providers`; 20 tests in `MajoorTests/RouterTests.swift` (preset table, tool classes, every routing branch with injected settings and a scripted tier-L classifier, the loop answering a withheld tool, the usage migration and price table). Differences from the text below, all deliberate:
+> - The tier enum is step 2's `ProviderTier` (`local`, `privateCloud`, `frontier`); no second `ModelTier` was added.
+> - A second preset, **Claude for everything** (every class → F, the 1.x behaviour), sits beside Strict in Settings ▸ Models, because a Mac with no tier P endpoint would otherwise refuse every email and calendar task on merge. Strict stays the default (D4). Under Strict with no P endpoint, the task still runs on Claude but with every tool the preset keeps off F withheld, and the model is told why in the tool result.
+> - The allow-list is computed by **data class, not tool name** (`ToolGate.allowedClasses`): MCP tools are only known inside the loop, so the loop filters `activeTools` by class and answers a withheld call itself. `ProviderRouter` (tests) is unchanged; the app uses `TierRoutingRouter` → `RoutingDecision {provider, toolSets, tier, gate}`.
+> - Coding and code-review tasks on F keep the `.files` tools ("file-in-repo"): a file tool cannot know statically whether a path is in a repository, so the exception is per task category. "Organize my Downloads" is file management and stays on P.
+> - Memory injection into the system prompt is gated like the memory tools: under a preset that keeps `.majoorState` off the tier, no `CONTEXT FROM MEMORY` is sent. Not in the plan text, but the alternative was stripping `search_memory` while still injecting memories.
+> - `usageStats` keeps its `(date, model)` key; `tier` is a plain column (migration `v8_usage_tier`, default `frontier`). Rows without a caller-supplied tier infer it from the model name (`claude*` → F, the configured L model → L, anything else → P). The feed's model chip shows the tier letter for non-Claude models; Claude rows keep their names.
+> - `ModelRouter.classify(_:with:)` takes the provider; nothing in routing constructs an `AnthropicProvider` except `ModelRouter.provider(for:)` for tier F. The Auto-mode consent judge (`PermissionMode.swift`) and chat mode still use Haiku/Sonnet directly (open question 5).
+>
+> Still by hand (3d): with Strict and a P endpoint, "summarize my last 5 emails" shows tier P in the feed and the Anthropic key is never used (check `usageStats`).
+
 ### 3a. Data classes and tiers
 
 `Core/Router/DataClass.swift`: `nonisolated enum DataClass { emailMeta, emailBody, contacts, calendar, messages, location, finance, files, web, code, repoContext, majoorState }` and `nonisolated enum ModelTier { local, private, frontier }`. `nonisolated struct PrivacyPreset` with `static let strict` mapping each class to its ceiling: `code`, `repoContext`, `web` → frontier allowed; `emailMeta`, `emailBody`, `contacts`, `calendar`, `messages`, `files` → private; `location`, `finance`, `majoorState` → local. One table, tested, read-only in Settings.
@@ -133,6 +144,16 @@ Unit: preset table; allow-list per tier; downgrade rule; classifier never calls 
 ## Step 4. Event sources and the untrusted-content wrapper
 
 **Size:** ~900 new lines, 3 days. **Depends on:** nothing (uses existing Gmail/EventKit/MCP code).
+
+> **Status (2026-10-31): code done** on the step-4 branch, built in parallel with step 2's PR; tests in `MajoorTests/SourceTests.swift` (frame, hub fan-out/ring/restart ladder, Gmail cursor paths with a scripted reader, calendar debounce with a gated clock, Slack cursors, the location endpoint over loopback, `source_state` on a throwaway database). Differences from the text below, all deliberate:
+> - `EventSource.start()` runs until the source fails or is stopped and the hub restarts it; `events` is one stream per instance, so the hub never resubscribes. `SourceEvent.kind` is a `String`-backed enum (`newEmail`, `calendarChanged`, `slackMessage`, `locationFix`).
+> - Header fields (from, subject, Slack author, event titles) are cleaned and capped in payloads rather than wrapped; bodies and message text are wrapped; the job runner frames everything again when it assembles a prompt.
+> - Gmail's first poll backfills a day of mail marked `backfill: true`; Slack's first poll of a channel only anchors (fifty old messages are not "new"). Sent, draft, chat, spam and trash never become `newEmail`.
+> - The calendar source never prompts for access: until the owner's first calendar task grants it, the source throws `noAccess` and the hub's ladder shows it in Settings ▸ Location.
+> - The location endpoint drains an over-long body (up to 64 KB) before answering 413 so the phone sees a status, not a reset. `requestFix()` returns nil (D10 open). Settings ▸ Location also holds the Slack channel list and the four sources' health.
+> - `GmailAPI` in `Tools/EmailTools.swift` is internal instead of private; nothing else there changed.
+>
+> Still by hand (4d): send yourself an email and see `newEmail` within 3 minutes; change a calendar event and see `calendarChanged`; a Shortcut POST over Tailscale with a minted token; Slack through the MCP server with a listed channel.
 
 ### 4a. Protocol and hub
 
@@ -244,6 +265,7 @@ Listed in §8 as Phase 2 by schedule but its pipeline is Phase 4; in Phase 2 it 
 6. Slack: which channels, and is a 30-minute poll through the MCP server acceptable until Phase 3's native connector?
 7. "Important event" marker for 6f: a calendar keyword, a calendar name, or an attendee rule?
 8. Nudge threshold: how many hours before a VIP thread counts as unreplied, and should it skip weekends?
+9. Routing by decision model: should the slow-path classifier (and later the urgency triage) sit behind a `DecisionModel` protocol with Jev (TypeSafe AI, cloud-only, so tier P until its retention terms are verified), tier-L and keyword implementations, chosen by the 20-case eval? The seam is marked in `TierRouter.route`.
 
 ## Exit criteria (PRD §12) mapped to steps
 

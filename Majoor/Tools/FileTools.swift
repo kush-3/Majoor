@@ -11,6 +11,7 @@ import Foundation
 
 nonisolated struct ListDirectoryTool: AgentTool {
     let name = "list_directory"
+    let dataClass: DataClass = .files
     let description = "List the contents of a directory. Returns file names, types, and sizes."
     let parameters = [
         ToolParameter(name: "path", description: "The directory path to list (e.g., ~/Downloads)"),
@@ -60,6 +61,7 @@ nonisolated struct ListDirectoryTool: AgentTool {
 
 nonisolated struct ReadFileTool: AgentTool {
     let name = "read_file"
+    let dataClass: DataClass = .files
     let description = "Read the contents of a text file."
     let parameters = [
         ToolParameter(name: "path", description: "The file path to read"),
@@ -128,6 +130,7 @@ nonisolated struct ReadFileTool: AgentTool {
 
 nonisolated struct WriteFileTool: AgentTool {
     let name = "write_file"
+    let dataClass: DataClass = .files
     let description = "Write content to a file. Creates if missing, overwrites if exists."
     let parameters = [
         ToolParameter(name: "path", description: "File path to write to"),
@@ -159,6 +162,7 @@ nonisolated struct WriteFileTool: AgentTool {
 
 nonisolated struct MoveFileTool: AgentTool {
     let name = "move_file"
+    let dataClass: DataClass = .files
     let description = "Move or rename a file/directory."
     let parameters = [
         ToolParameter(name: "source", description: "Current path"),
@@ -194,6 +198,7 @@ nonisolated struct MoveFileTool: AgentTool {
 
 nonisolated struct CopyFileTool: AgentTool {
     let name = "copy_file"
+    let dataClass: DataClass = .files
     let description = "Copy a file or directory."
     let parameters = [
         ToolParameter(name: "source", description: "Path to copy from"),
@@ -229,6 +234,7 @@ nonisolated struct CopyFileTool: AgentTool {
 
 nonisolated struct DeleteFileTool: AgentTool {
     let name = "delete_file"
+    let dataClass: DataClass = .files
     let description = "Delete a file by moving it to Trash (recoverable)."
     let parameters = [
         ToolParameter(name: "path", description: "Path of file to delete")
@@ -257,6 +263,7 @@ nonisolated struct DeleteFileTool: AgentTool {
 
 nonisolated struct SearchFilesTool: AgentTool {
     let name = "search_files"
+    let dataClass: DataClass = .files
     let description = "Search for files by name within a directory. Supports wildcards (*.pdf)."
     let parameters = [
         ToolParameter(name: "directory", description: "Directory to search in"),
@@ -348,6 +355,7 @@ nonisolated struct SearchFilesTool: AgentTool {
 
 nonisolated struct GetFileInfoTool: AgentTool {
     let name = "get_file_info"
+    let dataClass: DataClass = .files
     let description = "Get detailed info about a file: size, dates, type."
     let parameters = [
         ToolParameter(name: "path", description: "File path to inspect")
@@ -388,6 +396,7 @@ nonisolated struct GetFileInfoTool: AgentTool {
 
 nonisolated struct CreateDirectoryTool: AgentTool {
     let name = "create_directory"
+    let dataClass: DataClass = .files
     let description = "Create a new directory. Creates intermediate directories if needed."
     let parameters = [
         ToolParameter(name: "path", description: "Directory path to create")
@@ -477,6 +486,7 @@ import PDFKit
 
 nonisolated struct ReadPDFTool: AgentTool {
     let name = "read_pdf"
+    let dataClass: DataClass = .files
     let description = "Extract text content from a PDF file. Use this instead of read_file for .pdf files."
     let parameters = [
         ToolParameter(name: "path", description: "Path to the PDF file"),

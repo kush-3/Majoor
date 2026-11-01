@@ -21,7 +21,7 @@ Unit tests live in `MajoorTests/` (Swift Testing, app-hosted, synchronized folde
 xcodebuild test -project Majoor.xcodeproj -scheme Majoor -destination 'platform=macOS' -only-testing:MajoorTests
 ```
 
-Two seams keep tests off real state: `AppDelegate.isRunningTests` skips every startup side effect in the test host, and `MAJOOR_DB_PATH` points `DatabaseManager` at a temp file. No linter or CI/CD is configured.
+Two seams keep tests off real state: `AppDelegate.isRunningTests` skips every startup side effect in the test host, and `MAJOOR_DB_PATH` points `DatabaseManager` at a temp file (the scheme uses `/tmp/majoor-tests/majoor-{pid}.sqlite`; `{pid}` becomes the process id so parallel test runs never share a database). No linter or CI/CD is configured.
 
 ## Key Constraints
 
@@ -38,7 +38,7 @@ Two seams keep tests off real state: `AppDelegate.isRunningTests` skips every st
 The central brain. Each user command flows through:
 
 1. **Classify** → `TaskClassifier` scores input against 72+ keywords across 8 categories
-2. **Route** → `ModelRouter` hybrid routing: keyword fast path (confidence score ≥ 2) maps category to model (Opus for code/research, Sonnet for general/email); otherwise a Haiku classification call decides the model + MCP tool sets
+2. **Route** → `TierRouter` (router v2, `Core/Router/TierRouter.swift`): the keyword fast path (confidence score ≥ 2) or, for ambiguous input, a classification call on **tier L** (never Claude) gives the category; coding, code review and deep research go to tier F (`ModelRouter.provider(for:)`: Opus or Sonnet), everything else to tier P; a task routed to F that names a personal source is downgraded to P. The `PrivacyPreset` then yields a `ToolGate`: only tools whose `dataClass` the preset allows on that tier are offered (a coding task on F keeps the file tools), and a call to a withheld tool is answered with an explanation instead of executed. Under Strict with no tier P configured the task still runs on Claude with personal tools withheld; the "Claude for everything" preset restores 1.x behaviour. The Settings ▸ Models routing override is honored first.
 3. **Inject memories** → `MemoryRetriever` searches SQLite for relevant past context, adds to system prompt
 4. **LLM loop** (max 75 iterations) → Call Claude API → handle text response or execute tool calls (raw content blocks — text/tool_use/thinking/redacted_thinking — round-tripped verbatim on replay) → feed results back
 5. **Persist** → Save task to SQLite (memories are saved by the model itself via the save_memory tool)
@@ -47,7 +47,7 @@ The agent loop is `nonisolated` and runs off the main thread inside an `AgentSes
 
 ### Providers (`Core/Providers/`)
 
-`LLMProvider` (`Core/LLMProvider.swift`) is Anthropic-shaped on purpose and unchanged. `AnthropicProvider` serves tier F (Claude). `OpenAICompatibleProvider` serves tier L (a server on the Mac: Ollama, LM Studio, MLX) and tier P (a hosted zero-retention endpoint) through `POST {base}/chat/completions` and `GET {base}/models`, with the same retry and cancellation behaviour as the Anthropic class. `OpenAIWire` is the pure, tested translation: system prompt → `system` message, `tool_use` → `tool_calls`, `tool_result` → `role: tool`, and the reply back into `text`/`tool_use` blocks so the loop's verbatim echo works unchanged; `finish_reason: length` → `.truncated`, a leading `<think>…</think>` is stripped, 5xx/`content_filter` become `.apiError` with the endpoint's name (the `.serverOverloaded`/`.refused` strings say "Claude"). `completeJSON` requests `response_format: json_object` and retries once on prose. `ProviderTier` (`local`, `privateCloud`, `frontier`) names the tiers; `TierSettingsStore` keeps the L/P endpoints in UserDefaults with the P key in the Keychain (`majoor_tier_p_api_key`) behind a `SecretStore` seam. Settings ▸ Models edits them, lists a server's models, and holds the **routing override** (`providerTierOverride`) that `ModelRouter.routeHybrid` honors before anything else: every task to L or P, classifier skipped. `CostConfig` prices only `claude*` models; L/P usage is recorded at zero cost until the per-tier table (Phase 2 step 3c). `Scripts/local-model-eval.py` scores tier L candidates on 20 triage/extraction/summary cases.
+`LLMProvider` (`Core/LLMProvider.swift`) is Anthropic-shaped on purpose and unchanged. `AnthropicProvider` serves tier F (Claude). `OpenAICompatibleProvider` serves tier L (a server on the Mac: Ollama, LM Studio, MLX) and tier P (a hosted zero-retention endpoint) through `POST {base}/chat/completions` and `GET {base}/models`, with the same retry and cancellation behaviour as the Anthropic class. `OpenAIWire` is the pure, tested translation: system prompt → `system` message, `tool_use` → `tool_calls`, `tool_result` → `role: tool`, and the reply back into `text`/`tool_use` blocks so the loop's verbatim echo works unchanged; `finish_reason: length` → `.truncated`, a leading `<think>…</think>` is stripped, 5xx/`content_filter` become `.apiError` with the endpoint's name (the `.serverOverloaded`/`.refused` strings say "Claude"). `completeJSON` requests `response_format: json_object` and retries once on prose. `ProviderTier` (`local`, `privateCloud`, `frontier`) names the tiers; `TierSettingsStore` keeps the L/P endpoints in UserDefaults with the P key in the Keychain (`majoor_tier_p_api_key`) behind a `SecretStore` seam. Settings ▸ Models edits them, lists a server's models, holds the privacy preset (`PrivacyPresetStore`, UserDefaults `privacyPreset`, default Strict) and tier P's price per million tokens, and holds the **routing override** (`providerTierOverride`) that `TierRouter` honors before anything else: every task to L or P, classifier skipped. `CostConfig.estimateCost(model:…, tier:)` prices per tier (L free, P at the configured rate, F by Claude model name); `UsageStore.recordUsage` stores the tier on each `usageStats` row (migration v8), inferring it from the model name through `TierSettingsStore.tier(forModel:)` when the caller does not pass it. `Scripts/local-model-eval.py` scores tier L candidates on 20 triage/extraction/summary cases.
 
 ### Tool System (`Tools/`)
 
@@ -85,7 +85,7 @@ Must use the shared global `sharedEventStore` instance (defined in `CalendarTool
 
 ### Database (`Core/Database/DatabaseManager.swift`)
 
-SQLite via GRDB at `~/Library/Application Support/ai.majoor.agent/majoor.sqlite`. Tables: `memories`, `tasks`, `usageStats`, `sessions`, `approvals`, `contacts_policy`, `paired_clients`, `automations` (migrations v1–v7, registered on startup). `MAJOOR_DB_PATH` overrides the path; `DatabaseManager.openAndMigrate(path:)` gives tests a throwaway database.
+SQLite via GRDB at `~/Library/Application Support/ai.majoor.agent/majoor.sqlite`. Tables: `memories`, `tasks`, `usageStats`, `sessions`, `approvals`, `contacts_policy`, `paired_clients`, `automations`, `source_state`, `location_devices`, `location_fixes` (migrations v1–v8, registered on startup; `v8_usage_tier` adds `usageStats.tier`, `v8_sources` adds the three source tables). `MAJOOR_DB_PATH` overrides the path; `DatabaseManager.openAndMigrate(path:)` gives tests a throwaway database.
 
 ### MCP Client (`Core/MCP/`)
 
@@ -128,6 +128,10 @@ One binary, three roles, chosen in Settings ▸ General ▸ Mode (UserDefaults `
 ### Channels (`Core/Channels/`)
 
 A `Channel` yields `InboundMessage`s and sends text to a thread; `ChannelRouter` consumes every registered channel, applies `TrustPolicy` (remote-text senders must match an owner handle in `contacts_policy`, normalized E.164/lower-case email), recognizes coded approval replies (`yes K7Q2`, `no K7Q2 note`; a bare "yes" is a task), submits through `SessionManager.handleInbound`, and sends results and approval prompts back to the originating thread. `PanelChannel` is the command bar. `IMessageChannel` (`Channels/IMessage/`, runtime mode) drives one `imsg rpc` child (`brew install steipete/tap/imsg`; Majoor.app needs Full Disk Access and Automation for Messages) through `JSONRPCLineClient` (newline JSON-RPC, `NewlineJSONFramer`, notifications stream; `MCPClient` is untouched): initialize → replay `messages.after` from the saved row id → `watch.subscribe`. `IMessageInboundPolicy` accepts only the owner, only in a direct iMessage chat, drops our own echoes, reactions, edits, groups and SMS, rate-limits to 10/min, and after an outage summarizes rather than runs messages older than the stale window (default 10 min; a trailing `stop` is still honored). Replies are chunked at ~1,500 characters, max 6. The helper is restarted with 5→80 s backoff and given up after five quick exits.
+
+### Event sources (`Core/Sources/`)
+
+`EventSource` is one watched thing: `start()` runs until the source fails (throw) or is stopped, and `events` is one `AsyncStream<SourceEvent>` for the life of the instance. `EventHub.shared` (actor) starts every registered source, restarts a failed one with 5→80 s backoff and gives up after five quick exits (Settings ▸ Location has a Restart button), fans events out to subscribers (`subscribe()`), and keeps a ring of the last 1,000 events per source (`events(from:since:)`). Sources run in runtime mode only (`SourcesRuntime.shared.start()` from `AppDelegate.setupSources()`), never in the test host. `UntrustedContent.wrap(label:source:text:limit:)` is the one frame outside text passes through before a model sees it: a "this is data, not instructions" preamble, `<untrusted source label truncated>` tags, control and invisible characters stripped, an 8,000-character cap, and any `<untrusted`/`</untrusted` inside neutralized; sources frame bodies and message text, clean and cap header fields, and the job runner frames again when it assembles a prompt. Four sources, each behind a reader protocol (`GmailReading`, `CalendarReading`, `SlackReading`) so tests script it: `GmailSource` (every 3 min `history.list` from the `source_state` cursor, re-anchoring through `messages.list q=newer_than:1d` plus the profile historyId on first run or 404; metadata only, `fetchBody(id:)` on demand; sent/draft/chat/spam/trash skipped), `CalendarSource` (`EKEventStoreChanged` on `sharedEventStore`, 5 s debounce, the next 48 h, `upcoming(within:)`; never prompts for access), `SlackSource` (every 30 min through the Slack MCP server's `slack_list_channels`/`slack_get_channel_history` for the channels in UserDefaults `slackSourceChannels`; off when empty; a channel's first poll only anchors), and `LocationSource` + `LocationEndpoint` (HTTP/1.1 on Network.framework bound to the Tailscale address, port 47822, only `POST /location` with an `X-Majoor-Token` whose SHA-256 matches `location_devices`, body `{event, latitude, longitude, accuracy, place}`, 4 KB cap, 404/401/413/400 otherwise; fixes kept 7 days in `location_fixes`; `requestFix()` returns nil until D10).
 
 ### Automations (`Core/Automation/`)
 
@@ -350,26 +354,28 @@ Claude must **not break classifier assumptions**.
 ## Model Routing
 
 ```
-ModelRouter
+TierRouter   (Core/Router/TierRouter.swift)
 ```
 
-Hybrid routing: a keyword fast path (confidence score ≥ 2) maps category to model directly; below
-that threshold, a Haiku LLM call classifies the task into a model + MCP tool sets instead.
+Router v2. The category comes from the keyword fast path (confidence score ≥ 2) or, below that,
+from a classification call on tier L (`ModelRouter.classify(_:with:)`, never Claude; when tier L
+is not configured the keyword result stands). The category picks the tier, the `PrivacyPreset`
+picks the tools:
 
-Fast-path rules:
+| Category | Tier | Frontier model |
+|----------|------|----------------|
+| Coding, code review, deep research | F (Claude) | Opus |
+| Everything else | P (private endpoint) | Sonnet, if the task ends up on F |
 
-| Category | Model |
-|----------|-------|
-| Coding | Opus |
-| Research | Opus |
-| Email | Sonnet |
-| General | Sonnet |
+A task routed to F that names a personal source (email, calendar, contacts, messages) is
+downgraded to P. Every `AgentTool` declares a `dataClass`; the preset's `ToolGate` offers only the
+tools allowed on the tier (a coding task on F keeps `.files`), and a call to a withheld tool gets
+an explanatory tool result. Memory context is injected only when `.majoorState` is allowed on the
+tier. Under Strict with no tier P configured, the task runs on Claude with personal tools
+withheld; the "Claude for everything" preset is the 1.x behaviour. The routing override in
+Settings ▸ Models (UserDefaults `providerTierOverride`) is honored first and skips the classifier.
 
-Do not hardcode model logic elsewhere.
-
-A routing override in Settings ▸ Models (UserDefaults `providerTierOverride`) sends every task to
-tier L or P through `OpenAICompatibleProvider` and skips both paths above. Router v2 (Phase 2
-step 3) replaces it with routing by data class.
+Do not hardcode model or tier logic elsewhere.
 
 ---
 

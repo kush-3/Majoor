@@ -1,10 +1,12 @@
 // ModelRouter.swift
-// Majoor — Route Tasks to the Right LLM Model
+// Majoor — The frontier tier's model choice and the shared classification helpers
 //
-// Hybrid approach:
-// - Keyword classifier handles obvious cases (instant, free)
-// - Haiku LLM classifies ambiguous inputs (model + tool sets)
-// - Settings ▸ Models can override both and pin every task to tier L or P
+// Routing itself lives in `TierRouter` (Phase 2 step 3): it picks the tier,
+// the provider and the tool allow-list from the privacy preset. This file
+// keeps what the frontier tier needs (which Claude model for which category)
+// and the pieces every router shares: the default MCP tool sets and the LLM
+// classifier prompt, which runs on whatever provider the caller hands it and
+// never constructs a Claude provider of its own.
 
 import Foundation
 
@@ -14,7 +16,8 @@ nonisolated struct ModelRouter: Sendable {
     static let sonnetModel = "claude-sonnet-5"
     static let haikuModel = "claude-haiku-4-5"
 
-    /// Create an LLM provider for the given task category (keyword-based fast path)
+    /// The frontier provider for a category: Opus for code and deep research,
+    /// Sonnet for everything else.
     static func provider(for category: TaskCategory) -> AnthropicProvider {
         let model: String
         switch category.modelTier {
@@ -30,46 +33,6 @@ nonisolated struct ModelRouter: Sendable {
         return AnthropicProvider(apiKey: APIConfig.claudeAPIKey, model: model)
     }
 
-    /// Hybrid routing: use keywords if confident, otherwise ask Haiku.
-    /// Returns (provider, toolSets) where toolSets determines which MCP tools to include.
-    static func routeHybrid(_ input: String) async -> (provider: any LLMProvider, toolSets: [String]) {
-        let (category, score) = TaskClassifier.classifyWithConfidence(input)
-
-        // Settings ▸ Models can pin every task to tier L or P (Phase 2 step 2).
-        // The Haiku classification below is skipped too: under Strict it would
-        // send the owner's text to Anthropic. Router v2 (step 3) replaces this
-        // with routing by data class.
-        if let forced = TierSettingsStore.shared.overrideProvider() {
-            let toolSets = defaultToolSets(for: category, input: input)
-            MajoorLogger.log("📌 Routing override: tier \(forced.tier.letter) (\(forced.model)) → tools: \(toolSets)")
-            return (forced, toolSets)
-        }
-
-        // Fast path: keyword classifier is confident
-        if score >= 2 {
-            let toolSets = defaultToolSets(for: category, input: input)
-            MajoorLogger.log("🎯 Fast-path routing: \(category.rawValue) (score: \(score)) → tools: \(toolSets)")
-            return (provider(for: category), toolSets)
-        }
-
-        // Slow path: ask Haiku to classify
-        MajoorLogger.log("🤔 Ambiguous input (score: \(score)) — asking Haiku to classify...")
-        if let result = await classifyWithLLM(input) {
-            let model: String
-            switch result.modelTier {
-            case .opus: model = opusModel
-            case .sonnet: model = sonnetModel
-            case .haiku: model = haikuModel
-            }
-            MajoorLogger.log("🎯 LLM routing: \(result.modelTier.rawValue) → tools: \(result.toolSets)")
-            return (AnthropicProvider(apiKey: APIConfig.claudeAPIKey, model: model), result.toolSets)
-        }
-
-        // Fallback: use keyword result anyway
-        let toolSets = defaultToolSets(for: category, input: input)
-        return (provider(for: category), toolSets)
-    }
-
     /// Get a provider for the default model (Sonnet)
     static func defaultProvider() -> AnthropicProvider {
         return AnthropicProvider(apiKey: APIConfig.claudeAPIKey, model: sonnetModel)
@@ -77,45 +40,42 @@ nonisolated struct ModelRouter: Sendable {
 
     // MARK: - LLM Classification
 
-    /// Ask Haiku to classify the input and decide model + tool sets
-    private static func classifyWithLLM(_ input: String) async -> ClassificationResult? {
-        let classifierPrompt = """
-        You are a task classifier. Given the user's input, decide:
-        1. Which model should handle this task: "opus" (complex coding, deep research), "sonnet" (general tasks, email, calendar), or "haiku" (simple lookups, quick answers)
-        2. Which tool sets are needed: "local" (always included), "github", "slack", "linear", "notion"
+    static let classifierPrompt = """
+    You are a task classifier. Given the user's input, decide:
+    1. Which model should handle this task: "opus" (complex coding, deep research), "sonnet" (general tasks, email, calendar), or "haiku" (simple lookups, quick answers)
+    2. Which tool sets are needed: "local" (always included), "github", "slack", "linear", "notion"
 
-        Respond with ONLY a JSON object, no markdown, no explanation:
-        {"model": "opus|sonnet|haiku", "tools": ["local", ...]}
+    Respond with ONLY a JSON object, no markdown, no explanation:
+    {"model": "opus|sonnet|haiku", "tools": ["local", ...]}
 
-        Rules:
-        - Coding, debugging, code review, PR creation → opus + relevant services
-        - Email, calendar, scheduling → sonnet + local only
-        - Quick questions, simple lookups → haiku + local only
-        - Multi-service workflows (e.g., "I finished the auth feature") → opus or sonnet + all mentioned services
-        - If unsure, default to sonnet with local tools
-        """
+    Rules:
+    - Coding, debugging, code review, PR creation → opus + relevant services
+    - Email, calendar, scheduling → sonnet + local only
+    - Quick questions, simple lookups → haiku + local only
+    - Multi-service workflows (e.g., "I finished the auth feature") → opus or sonnet + all mentioned services
+    - If unsure, default to sonnet with local tools
+    """
 
-        let provider = AnthropicProvider(apiKey: APIConfig.claudeAPIKey, model: haikuModel)
+    /// Ask `provider` to classify the input into a model tier and tool sets.
+    /// `TierRouter` passes the tier-L model; nothing here reaches Claude.
+    static func classify(_ input: String, with provider: any LLMProvider) async -> ClassificationResult? {
         let messages = [AnthropicMessage(role: "user", content: .string(input))]
-
         do {
             let (response, _) = try await provider.complete(
                 systemPrompt: classifierPrompt,
                 messages: messages,
                 tools: [] // No tools needed for classification
             )
-
             if case .text(let text) = response {
                 return parseClassificationResponse(text)
             }
         } catch {
             MajoorLogger.error("LLM classification failed: \(error.localizedDescription)")
         }
-
         return nil
     }
 
-    private static func parseClassificationResponse(_ text: String) -> ClassificationResult? {
+    static func parseClassificationResponse(_ text: String) -> ClassificationResult? {
         // Extract JSON from response (handle potential markdown wrapping)
         let cleaned = text
             .replacingOccurrences(of: "```json", with: "")
@@ -150,7 +110,7 @@ nonisolated struct ModelRouter: Sendable {
     // MARK: - Default Tool Sets
 
     /// Determine which tool sets to include based on category and keyword detection
-    private static func defaultToolSets(for category: TaskCategory, input: String) -> [String] {
+    static func defaultToolSets(for category: TaskCategory, input: String) -> [String] {
         var sets = ["local"]
 
         // Always add explicitly mentioned services

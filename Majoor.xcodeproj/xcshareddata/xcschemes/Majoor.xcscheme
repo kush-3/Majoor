@@ -32,7 +32,7 @@
       <EnvironmentVariables>
          <EnvironmentVariable
             key = "MAJOOR_DB_PATH"
-            value = "/tmp/majoor-tests/majoor.sqlite"
+            value = "/tmp/majoor-tests/majoor-{pid}.sqlite"
             isEnabled = "YES">
          </EnvironmentVariable>
       </EnvironmentVariables>

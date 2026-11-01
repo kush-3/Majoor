@@ -163,6 +163,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             Task { await MCPServerManager.shared.stopAll() }
             Task { await ControlServer.shared.stop() }
             IMessageModel.shared.stopChannel()
+            Task { await SourcesRuntime.shared.stop() }
         }
         if let client = remoteClient { Task { await client.stop() } }
     }
@@ -205,7 +206,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         case .local, .runtime:
             ensureLocalRuntime()
             startScheduler()
-            if mode == .runtime { setupIMessage() }
+            if mode == .runtime {
+                setupIMessage()
+                setupSources()
+            }
             Task {
                 await ControlServer.shared.configure(
                     gateway: LocalSessionGateway(manager: SessionManager.shared, channelId: "control", trust: .authenticatedClient, tasks: TaskPersistence.shared),
@@ -271,6 +275,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
 
     /// Runtime mode: the owner's iMessage thread is a channel. The model
     /// owns the live channel so Settings can turn it on and off.
+    /// Phase 2 step 4: Gmail, Calendar, Slack and Location sources feeding
+    /// `EventHub.shared`. Runtime mode only; never in the test host.
+    private func setupSources() {
+        SourcesRuntime.shared.start()
+    }
+
     private func setupIMessage() {
         let version = appVersion
         IMessageModel.shared.configure {

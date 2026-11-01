@@ -130,6 +130,8 @@ nonisolated final class TierSettingsStore: @unchecked Sendable {
     static let privateModelKey = "tierPModel"
     static let privateRetentionVerifiedKey = "tierPRetentionVerified"
     static let routingOverrideKey = "providerTierOverride"
+    static let privateInputRateKey = "tierPInputRate"
+    static let privateOutputRateKey = "tierPOutputRate"
     static let keychainPrivateKey = "majoor_tier_p_api_key"
 
     private let defaults: UserDefaults
@@ -204,6 +206,28 @@ nonisolated final class TierSettingsStore: @unchecked Sendable {
                 defaults.removeObject(forKey: Self.routingOverrideKey)
             }
         }
+    }
+
+    /// Tier P's price per million tokens (input, output), as entered in
+    /// Settings ▸ Models. 0 until set: an unpriced endpoint under-reports
+    /// rather than inventing a number.
+    var privateRates: (input: Double, output: Double) {
+        get { (defaults.double(forKey: Self.privateInputRateKey), defaults.double(forKey: Self.privateOutputRateKey)) }
+        set {
+            defaults.set(newValue.input, forKey: Self.privateInputRateKey)
+            defaults.set(newValue.output, forKey: Self.privateOutputRateKey)
+        }
+    }
+
+    /// Which tier a model name belongs to, for usage rows and task cards that
+    /// arrive without one: `claude*` is Claude; a name matching the L or P
+    /// endpoint is that tier; anything else never came through
+    /// `AnthropicProvider`, so it is treated as P, the costlier guess.
+    func tier(forModel model: String) -> ProviderTier {
+        if model.hasPrefix("claude") { return .frontier }
+        let name = model.trimmingCharacters(in: .whitespaces)
+        if let local = endpoint(for: .local)?.model.trimmingCharacters(in: .whitespaces), !local.isEmpty, local == name { return .local }
+        return .privateCloud
     }
 
     /// A provider for L or P, or nil when that tier has no URL or model yet.

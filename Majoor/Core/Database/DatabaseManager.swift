@@ -14,10 +14,14 @@ nonisolated final class DatabaseManager: @unchecked Sendable {
     let dbQueue: DatabaseQueue
 
     /// MAJOOR_DB_PATH overrides the database file (tests point it at a temp
-    /// file so they never touch the real one).
+    /// file so they never touch the real one). `{pid}` in the value becomes
+    /// the process id, so two test runs at once (two worktrees, two Xcode
+    /// windows) never open the same SQLite file: a busy error during
+    /// migration would otherwise look like corruption to `openWithRecovery`.
     private static var overridePath: String? {
         let value = ProcessInfo.processInfo.environment["MAJOOR_DB_PATH"] ?? ""
-        return value.isEmpty ? nil : value
+        guard !value.isEmpty else { return nil }
+        return value.replacingOccurrences(of: "{pid}", with: String(ProcessInfo.processInfo.processIdentifier))
     }
 
     private static var dbDirectory: URL {
@@ -312,6 +316,42 @@ nonisolated final class DatabaseManager: @unchecked Sendable {
                 t.column("lastResult", .text)
             }
             try db.create(index: "automations_due", on: "automations", columns: ["enabled", "nextRunAt"], options: [.ifNotExists])
+        }
+
+        // Phase 2 step 3: usage is attributed to a tier (frontier / private /
+        // local) so the cost report can price each one. Every row before this
+        // was Claude. The upsert key stays (date, model); tier is a plain
+        // column because a model name belongs to one tier at a time.
+        migrator.registerMigration("v8_usage_tier") { db in
+            try db.alter(table: "usageStats") { t in
+                t.add(column: "tier", .text).notNull().defaults(to: "frontier")
+            }
+        }
+
+        // Phase 2 step 4: event-source cursors and the location endpoint's
+        // devices and fixes. Sources persist where they got to, never content.
+        migrator.registerMigration("v8_sources") { db in
+            try db.create(table: "source_state", ifNotExists: true) { t in
+                t.primaryKey("sourceId", .text)
+                t.column("cursor", .text)
+                t.column("updatedAt", .datetime).notNull()
+            }
+            try db.create(table: "location_devices", ifNotExists: true) { t in
+                t.primaryKey("deviceId", .text)
+                t.column("name", .text).notNull()
+                t.column("tokenHash", .text).notNull()
+                t.column("createdAt", .datetime).notNull()
+            }
+            try db.create(table: "location_fixes", ifNotExists: true) { t in
+                t.autoIncrementedPrimaryKey("id")
+                t.column("at", .datetime).notNull()
+                t.column("latitude", .double).notNull()
+                t.column("longitude", .double).notNull()
+                t.column("accuracy", .double)
+                t.column("place", .text)
+                t.column("event", .text).notNull()
+            }
+            try db.create(index: "location_fixes_at", on: "location_fixes", columns: ["at"], options: [.ifNotExists])
         }
 
         try migrator.migrate(dbQueue)
