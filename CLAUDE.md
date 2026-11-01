@@ -45,6 +45,10 @@ The central brain. Each user command flows through:
 
 The agent loop is `nonisolated` and runs off the main thread inside an `AgentSession` (`Core/Runtime/`). It never touches UI: it records through `TaskRecorder` and publishes `SessionEvent`s on the `EventBus`; `SessionEventPump` mirrors them into `TaskManager` on the main actor. `SessionManager` runs up to 3 sessions concurrently and queues the rest.
 
+### Providers (`Core/Providers/`)
+
+`LLMProvider` (`Core/LLMProvider.swift`) is Anthropic-shaped on purpose and unchanged. `AnthropicProvider` serves tier F (Claude). `OpenAICompatibleProvider` serves tier L (a server on the Mac: Ollama, LM Studio, MLX) and tier P (a hosted zero-retention endpoint) through `POST {base}/chat/completions` and `GET {base}/models`, with the same retry and cancellation behaviour as the Anthropic class. `OpenAIWire` is the pure, tested translation: system prompt → `system` message, `tool_use` → `tool_calls`, `tool_result` → `role: tool`, and the reply back into `text`/`tool_use` blocks so the loop's verbatim echo works unchanged; `finish_reason: length` → `.truncated`, a leading `<think>…</think>` is stripped, 5xx/`content_filter` become `.apiError` with the endpoint's name (the `.serverOverloaded`/`.refused` strings say "Claude"). `completeJSON` requests `response_format: json_object` and retries once on prose. `ProviderTier` (`local`, `privateCloud`, `frontier`) names the tiers; `TierSettingsStore` keeps the L/P endpoints in UserDefaults with the P key in the Keychain (`majoor_tier_p_api_key`) behind a `SecretStore` seam. Settings ▸ Models edits them, lists a server's models, and holds the **routing override** (`providerTierOverride`) that `ModelRouter.routeHybrid` honors before anything else: every task to L or P, classifier skipped. `CostConfig` prices only `claude*` models; L/P usage is recorded at zero cost until the per-tier table (Phase 2 step 3c). `Scripts/local-model-eval.py` scores tier L candidates on 20 triage/extraction/summary cases.
+
 ### Tool System (`Tools/`)
 
 40 tools across 8 files, registered via `ToolRegistry.defaultTools()`.
@@ -362,6 +366,10 @@ Fast-path rules:
 | General | Sonnet |
 
 Do not hardcode model logic elsewhere.
+
+A routing override in Settings ▸ Models (UserDefaults `providerTierOverride`) sends every task to
+tier L or P through `OpenAICompatibleProvider` and skips both paths above. Router v2 (Phase 2
+step 3) replaces it with routing by data class.
 
 ---
 

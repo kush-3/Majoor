@@ -69,6 +69,15 @@ Not code. The table in §0.1, in that order, on the mini with screen sharing for
 
 **Size:** ~500 new lines, 2 days. **Depends on:** nothing.
 
+> **Status (2026-10-31): code done** on branch `phase-2-providers`; 32 tests in `MajoorTests/ProviderTests.swift` (translation round trip, SSE with split chunks, error mapping, settings store, and the HTTP path against a loopback server). Differences from the text below, all deliberate:
+> - The tier enum is `ProviderTier` (`local`, `privateCloud`, `frontier`), because `ModelTier` already names the router's opus/sonnet/haiku choice. Step 3 should adopt `ProviderTier` rather than add a second enum.
+> - 5xx and `content_filter` map to `.apiError` carrying the endpoint's host, not `.serverOverloaded` / `.refused`, whose user-facing strings say "Claude". `LLMProvider.swift` and `AgentLoop.swift` are untouched.
+> - `CostConfig.estimateCost` now returns 0 for any model not named `claude*`, so L/P usage is recorded at zero rather than at Sonnet's rate until 3c adds the per-tier table.
+> - Instead of "force `ProviderRouter` to tier L" (2d), Settings ▸ Models has a routing override that `ModelRouter.routeHybrid` honors first; it also skips the Haiku classifier.
+> - A bare origin in the URL field gets `/v1` appended; `<think>…</think>` prefixes from local reasoning models are stripped from text.
+>
+> Still by hand: 2c (run `Scripts/local-model-eval.py` against real candidates on the mini and record the pick) and 2d's end-to-end run against Ollama with the override on.
+
 ### 2a. The provider
 
 `Core/Providers/OpenAICompatibleProvider.swift`, `nonisolated final class OpenAICompatibleProvider: LLMProvider, @unchecked Sendable` (same shape as `AnthropicProvider`): `baseURL`, `apiKey` (empty for a local server), `model`, `name`, `tier`. `complete` posts `/v1/chat/completions`; `stream` posts with `stream: true` and parses SSE `data:` lines into `StreamDelta`s (needed for chat mode on tier P).
