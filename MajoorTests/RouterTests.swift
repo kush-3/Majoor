@@ -145,7 +145,8 @@ struct ToolDataClassTests {
     @Test("every registered tool declares the class the plan assigns")
     func registry() {
         let byName = Dictionary(uniqueKeysWithValues: ToolRegistry.defaultTools().map { ($0.name, $0.dataClass) })
-        #expect(byName.count == 40)
+        #expect(byName.count == 41)
+        #expect(byName["ask_owner"] == .majoorState)
         #expect(byName["fetch_emails"] == .emailMeta)
         #expect(byName["search_emails"] == .emailMeta)
         #expect(byName["read_email"] == .emailBody)
