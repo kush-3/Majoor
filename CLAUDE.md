@@ -2,6 +2,8 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+**Resuming Majoor 2.0 work?** Read `docs/HANDOFF.md` first: where every phase stands, what is unverified, and what to pick up next.
+
 ## Build & Run
 
 This is a native macOS app built with Xcode. There is no CLI build pipeline — use Xcode or `xcodebuild`.
