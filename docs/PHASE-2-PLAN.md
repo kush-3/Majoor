@@ -1,6 +1,6 @@
 # Majoor 2.0, Phase 2 implementation plan ("Proactive")
 
-**Status:** Draft v1, 2026-10-31. Source of requirements: `docs/MAJOOR-2.0-PRD.md` v0.3 (§5.3, §5.6, §5.7, §5.8, §6, §7, §8, §9, §12, §13).
+**Status:** Draft v1, 2026-10-31; **code for steps 2–6 done 2026-10-31 on branch `phase-2-proactive`** (step 2 merged as PR #17; 3, 4, 5, 6a–6f, 6h, 6i built in parallel subagent worktrees and merged; 6g needs Phase 3). Each step's status block below lists its deviations and what is still by hand; step 1 (the Phase 1 close-out on the Mac mini) and every exit-criterion measurement remain. Source of requirements: `docs/MAJOOR-2.0-PRD.md` v0.3 (§5.3, §5.6, §5.7, §5.8, §6, §7, §8, §9, §12, §13).
 **Scope of this document:** plan only. Written against the code as it stands at the end of Phase 1 (branch `phase-1-swift6`, commit `47d354e`, PR kush-3/Majoor#16).
 
 Phase 2 goal, from PRD §12: the automations table and event sources; the local tier through an MLX server and an `OpenAICompatibleProvider` (which also serves tier P); router v2 with data classes under Strict; the morning brief, triage, the VIP nudge, the cost report, memory consolidation, the location job, and the escalation ladder's text rungs.

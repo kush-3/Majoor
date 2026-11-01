@@ -67,10 +67,10 @@ struct LocationJobTests {
     private let settings = LocationJobSettings(travelMode: .automobile, importantMarker: "!")
 
     private func harness(_ planner: FakePlanner, _ estimator: FakeEstimator, settings: LocationJobSettings? = nil,
-                         at time: Date? = nil) async throws -> (BehaviorHarness, JobDefinition) {
+                         at time: Date? = nil) async throws -> (ConsolidationHarness, JobDefinition) {
         let chosen = settings ?? self.settings
         let definition = LocationJob.definition(planner: planner, estimator: estimator, settings: { chosen })
-        let h = try await BehaviorHarness.make(definition: definition, provider: nil, now: time ?? now)
+        let h = try await ConsolidationHarness.make(definition: definition, provider: nil, now: time ?? now)
         return (h, definition)
     }
 

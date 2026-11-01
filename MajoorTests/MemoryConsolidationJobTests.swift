@@ -31,7 +31,7 @@ nonisolated final class FakeMemories: MemoryMaintenance, @unchecked Sendable {
 }
 
 /// A runner over a throwaway database with one behavior in its catalog.
-struct BehaviorHarness {
+struct ConsolidationHarness {
     let automations: AutomationStore
     let runs: JobRunStore
     let runner: JobRunner
@@ -39,7 +39,7 @@ struct BehaviorHarness {
     let spawn: SpawnBox
     let now: Date
 
-    static func make(definition: JobDefinition, provider: (any LLMProvider)?, now: Date) async throws -> BehaviorHarness {
+    static func make(definition: JobDefinition, provider: (any LLMProvider)?, now: Date) async throws -> ConsolidationHarness {
         let path = NSTemporaryDirectory() + "majoor-behaviors-\(UUID().uuidString).sqlite"
         let db = try DatabaseManager.openAndMigrate(path: path)
         let automations = AutomationStore(db: db)
@@ -57,7 +57,7 @@ struct BehaviorHarness {
             spawn: { prompt, origin in spawn.record(prompt, origin) },
             recordUsage: { _, _, _, _ in },
             now: { now }, timeZone: newYork)
-        return BehaviorHarness(automations: automations, runs: runs, runner: runner, notify: notify, spawn: spawn, now: now)
+        return ConsolidationHarness(automations: automations, runs: runs, runner: runner, notify: notify, spawn: spawn, now: now)
     }
 
     func row(_ definition: JobDefinition, scratch: String? = nil) throws -> AutomationRecord {
@@ -104,7 +104,7 @@ struct MemoryConsolidationJobTests {
             merges: #"[{"ids":["m1","m2"],"merged":"User's GitHub handle is kush-3"},{"ids":["m3","zzz"],"merged":"invented"}]"#,
             contradictions: #"[{"ids":["m5","m6"],"note":"Two different home cities"},{"ids":["m5","nope"],"note":"half invented"}]"#,
             stale: #"["m4","m2"]"#)])
-        let h = try await BehaviorHarness.make(definition: definition, provider: provider, now: night)
+        let h = try await ConsolidationHarness.make(definition: definition, provider: provider, now: night)
         let record = try h.row(definition)
 
         let outcome = await h.runner.run(record)
@@ -151,7 +151,7 @@ struct MemoryConsolidationJobTests {
         let merges = (0..<25).map { String(format: #"{"ids":["a%02d","b%02d"],"merged":"Fact %d, once"}"#, $0, $0, $0) }.joined(separator: ",")
         let stale = (25..<50).map { String(format: #""b%02d""#, $0) }.joined(separator: ",")
         let provider = CapturingProvider([fullAnswer(merges: "[\(merges)]", stale: "[\(stale)]")])
-        let h = try await BehaviorHarness.make(definition: definition, provider: provider, now: night)
+        let h = try await ConsolidationHarness.make(definition: definition, provider: provider, now: night)
         let outcome = await h.runner.run(try h.row(definition))
 
         guard case .noChange(let summary) = outcome else { Issue.record("expected no_change"); return }
@@ -171,7 +171,7 @@ struct MemoryConsolidationJobTests {
         let existing = ConsolidationState(contradictions: old, lastRunAt: localDate("2026-11-02 03:30"))
         let scratch = String(decoding: try JSONEncoder.wire.encode(existing), as: UTF8.self)
         let provider = CapturingProvider([fullAnswer(contradictions: #"[{"ids":["x1","x2"],"note":"A vs not A"}]"#)])
-        let h = try await BehaviorHarness.make(definition: definition, provider: provider, now: night)
+        let h = try await ConsolidationHarness.make(definition: definition, provider: provider, now: night)
         _ = await h.runner.run(try h.row(definition, scratch: scratch))
 
         let state = try #require(h.scratch(definition, as: ConsolidationState.self))
@@ -185,7 +185,7 @@ struct MemoryConsolidationJobTests {
         let memories = FakeMemories([])
         let definition = MemoryConsolidationJob.definition(memories: memories)
         let provider = CapturingProvider([fullAnswer()])
-        let h = try await BehaviorHarness.make(definition: definition, provider: provider, now: night)
+        let h = try await ConsolidationHarness.make(definition: definition, provider: provider, now: night)
         let outcome = await h.runner.run(try h.row(definition))
         #expect(outcome == .noChange(summary: "merged 0 group(s) (0 memories removed, 0 skipped), decayed 0, 0 contradiction(s) queued"))
         if case .string(let user) = provider.calls.first?.messages.first?.content {
