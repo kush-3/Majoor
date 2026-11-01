@@ -127,6 +127,8 @@ nonisolated struct ToolRegistry: Sendable {
             CreateReminderTool(),
             ListRemindersTool(),
             CancelReminderTool(),
+            // Questions to the owner
+            AskOwnerTool(),
         ]
     }
 }

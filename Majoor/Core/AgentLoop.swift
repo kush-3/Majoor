@@ -104,6 +104,7 @@ final nonisolated class AgentLoop: @unchecked Sendable {
     14. Memory — when the user tells you something durable about themselves (a preference, a correction, a personal fact, a project detail) or explicitly asks you to remember something, save it with save_memory. First use search_memory to check for an existing memory on the topic and update it via supersedes_id instead of saving a duplicate. Use search_memory when a task likely depends on personal context that is not already in CONTEXT FROM MEMORY. Do not save task minutiae or transient state.
     15. Confirmations — sensitive tools (sending email, deleting files or events, git push/PR, running scripts) automatically show the user an approve/deny prompt when their settings require it. Never ask for permission in a text response before calling a tool: call it, and the app will ask the user if needed. If the user denies, the tool result says so (often with feedback) — adapt and continue rather than retrying the same call.
     16. Reminders — for "remind me …" use create_reminder. Prefer delay_minutes for relative times ("in 20 minutes", "in 2 hours"); use 'when' only for an absolute local time, computed from the current date and time zone given below. Never create a calendar event for a reminder unless the user asks for a calendar event. Use list_reminders / cancel_reminder to show or cancel them.
+    17. Questions — when you are genuinely blocked on a decision only the user can make, call ask_owner once for that blocker, with concrete options when there are a few; it waits for their reply. Never use it to ask permission (the app asks for permission itself) and never ask in a text response.
 
     PIPELINE BEHAVIOR:
     When the user describes a completed action, decision, or status change that implies work across 3 or more tools/services, DO NOT immediately start executing. Instead:
@@ -199,7 +200,9 @@ final nonisolated class AgentLoop: @unchecked Sendable {
         // allows on this tier. A call to anything else is answered, never run.
         var withheldTools: [String: String] = [:]
         if let gate = decision.gate {
-            for tool in activeTools where !gate.allows(tool) {
+            // ask_owner is exempt: it sends nothing anywhere but the owner's own
+            // thread, and the owner decides what to answer.
+            for tool in activeTools where !gate.allows(tool) && tool.name != AskOwnerTool.toolName {
                 withheldTools[tool.name] = gate.refusal(toolName: tool.name, dataClass: tool.dataClass)
             }
             if !withheldTools.isEmpty {
@@ -637,13 +640,29 @@ final nonisolated class AgentLoop: @unchecked Sendable {
             // the next (uncancellable, synchronous) tool call.
             try Task.checkCancellation()
             MajoorLogger.log("🔧 Tool: \(call.toolName)")
-            await record(TaskStep(timestamp: Date(), type: .toolCall, description: "Calling \(call.toolName)",
+            // ask_owner is answered by the session's origin channel, not executed.
+            let isQuestion = call.toolName == AskOwnerTool.toolName && activeTools.contains { $0.name == AskOwnerTool.toolName }
+            let questionText = isQuestion ? AskOwnerTool.question(from: call.arguments) : nil
+            await record(TaskStep(timestamp: Date(), type: .toolCall,
+                                  description: isQuestion ? "Asked you: \(questionText ?? "(no question)")" : "Calling \(call.toolName)",
                                   detail: String(call.arguments.map { "\($0.key): \($0.value)" }.joined(separator: ", ").prefix(1000))), host: host)
             await updatePipeline(pipeline, host: host, toolName: call.toolName, arguments: call.arguments, status: .running, addCall: true)
 
             let output: String
+            var resultTitle = "Result from \(call.toolName)"
             var confirmFeedback: String? = nil  // User feedback from confirmation (if any)
-            if let tool = activeTools.first(where: { $0.name == call.toolName }) {
+            if isQuestion {
+                if let questionText {
+                    let options = AskOwnerTool.options(from: call.arguments["options"])
+                    let minutes = AskOwnerTool.timeoutMinutes(from: call.arguments["timeout_minutes"])
+                    MajoorLogger.log("❓ Asking the owner (\(minutes) min): \(questionText.prefix(120))")
+                    let answer = await host.ask(question: questionText, options: options, timeout: .seconds(minutes * 60))
+                    try Task.checkCancellation()
+                    (output, resultTitle) = AskOwnerTool.describe(answer, timeoutMinutes: minutes)
+                } else {
+                    output = "Error: ask_owner needs a non-empty question"
+                }
+            } else if let tool = activeTools.first(where: { $0.name == call.toolName }) {
                 // Normalize aliases BEFORE the policy gate — the model emits
                 // keys like "cmd" for "command", and gating on raw keys would
                 // let an aliased interpreter invocation dodge the prompt.
@@ -764,7 +783,7 @@ final nonisolated class AgentLoop: @unchecked Sendable {
             let argsPreview = call.arguments.map { "\($0.key): \($0.value)" }.joined(separator: ", ")
             summaries.append("• \(call.toolName)(\(String(argsPreview.prefix(100)))) → \(String(output.prefix(150)))")
 
-            await record(TaskStep(timestamp: Date(), type: .toolResult, description: "Result from \(call.toolName)", detail: String(output.prefix(500))), host: host)
+            await record(TaskStep(timestamp: Date(), type: .toolResult, description: resultTitle, detail: String(output.prefix(500))), host: host)
             let isError = output.lowercased().hasPrefix("error")
             await updatePipeline(pipeline, host: host, toolName: call.toolName, arguments: call.arguments,
                                  status: isError ? .failed : .completed,
