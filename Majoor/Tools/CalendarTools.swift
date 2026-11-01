@@ -129,6 +129,7 @@ private nonisolated func formatEvent(_ event: EKEvent) -> String {
 
 nonisolated struct ReadCalendarEventsTool: AgentTool {
     let name = "read_calendar_events"
+    let dataClass: DataClass = .calendar
     let description = "Read calendar events from Apple Calendar within a date range. Defaults to today if no dates provided."
     let parameters: [ToolParameter] = [
         ToolParameter(name: "start_date", description: "Start date in ISO8601 format (e.g., 2026-03-15). Defaults to today."),
@@ -177,6 +178,7 @@ nonisolated struct ReadCalendarEventsTool: AgentTool {
 
 nonisolated struct CreateCalendarEventTool: AgentTool {
     let name = "create_calendar_event"
+    let dataClass: DataClass = .calendar
     let description = "Create a new calendar event in Apple Calendar."
     let parameters: [ToolParameter] = [
         ToolParameter(name: "title", description: "Event title"),
@@ -239,6 +241,7 @@ nonisolated struct CreateCalendarEventTool: AgentTool {
 
 nonisolated struct UpdateCalendarEventTool: AgentTool {
     let name = "update_calendar_event"
+    let dataClass: DataClass = .calendar
     let description = "Update an existing calendar event by its event ID."
     let parameters: [ToolParameter] = [
         ToolParameter(name: "event_id", description: "The event identifier (from read_calendar_events)"),
@@ -281,6 +284,7 @@ nonisolated struct UpdateCalendarEventTool: AgentTool {
 
 nonisolated struct DeleteCalendarEventTool: AgentTool {
     let name = "delete_calendar_event"
+    let dataClass: DataClass = .calendar
     let description = "Delete a calendar event by its event ID. Requires user confirmation via notification."
     let parameters: [ToolParameter] = [
         ToolParameter(name: "event_id", description: "The event identifier (from read_calendar_events)"),

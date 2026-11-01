@@ -19,6 +19,7 @@ private nonisolated func isValidBranchName(_ name: String) -> Bool {
 
 nonisolated struct GitStatusTool: AgentTool {
     let name = "git_status"
+    let dataClass: DataClass = .code
     let description = "Check the current git status of a repository. Shows branch, staged/unstaged changes, and untracked files."
     let parameters = [
         ToolParameter(name: "repo_path", description: "Path to the git repository")
@@ -40,6 +41,7 @@ nonisolated struct GitStatusTool: AgentTool {
 
 nonisolated struct GitDiffTool: AgentTool {
     let name = "git_diff"
+    let dataClass: DataClass = .code
     let description = "View current changes in a git repository. Shows unstaged changes by default, or staged changes with staged=true."
     let parameters = [
         ToolParameter(name: "repo_path", description: "Path to the git repository"),
@@ -66,6 +68,7 @@ nonisolated struct GitDiffTool: AgentTool {
 
 nonisolated struct GitLogTool: AgentTool {
     let name = "git_log"
+    let dataClass: DataClass = .code
     let description = "View recent commit history of a repository."
     let parameters = [
         ToolParameter(name: "repo_path", description: "Path to the git repository"),
@@ -89,6 +92,7 @@ nonisolated struct GitLogTool: AgentTool {
 
 nonisolated struct GitBranchTool: AgentTool {
     let name = "git_create_branch"
+    let dataClass: DataClass = .code
     let description = "Create and checkout a new git branch. Branch name is automatically prefixed with 'agent/' for safety."
     let parameters = [
         ToolParameter(name: "repo_path", description: "Path to the git repository"),
@@ -114,6 +118,7 @@ nonisolated struct GitBranchTool: AgentTool {
 
 nonisolated struct GitCheckoutTool: AgentTool {
     let name = "git_checkout"
+    let dataClass: DataClass = .code
     let description = "Switch to an existing git branch."
     let parameters = [
         ToolParameter(name: "repo_path", description: "Path to the git repository"),
@@ -138,6 +143,7 @@ nonisolated struct GitCheckoutTool: AgentTool {
 
 nonisolated struct GitCommitTool: AgentTool {
     let name = "git_commit"
+    let dataClass: DataClass = .code
     let description = "Stage specified files and create a git commit. Cannot commit to main/master/develop."
     let parameters = [
         ToolParameter(name: "repo_path", description: "Path to the git repository"),
@@ -189,6 +195,7 @@ nonisolated struct GitCommitTool: AgentTool {
 
 nonisolated struct GitPushTool: AgentTool {
     let name = "git_push"
+    let dataClass: DataClass = .code
     let description = "Push the current branch to the remote repository."
     let parameters = [
         ToolParameter(name: "repo_path", description: "Path to the git repository"),
@@ -222,6 +229,7 @@ nonisolated struct GitPushTool: AgentTool {
 
 nonisolated struct GitCreatePRTool: AgentTool {
     let name = "git_create_pr"
+    let dataClass: DataClass = .code
     let description = "Create a pull request on GitHub using the gh CLI. Requires gh to be installed and authenticated."
     let parameters = [
         ToolParameter(name: "repo_path", description: "Path to the git repository"),

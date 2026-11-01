@@ -78,6 +78,7 @@ nonisolated enum ReminderError: Error, Equatable, Sendable {
 
 nonisolated struct CreateReminderTool: AgentTool {
     let name = "create_reminder"
+    let dataClass: DataClass = .majoorState
     let description = "Set a one-time reminder. Majoor delivers the message back to the user at that time on the channel they are using (panel, laptop, or iMessage). Give exactly one of 'delay_minutes' (relative, preferred for \"in 20 minutes\", \"in 2 hours\") or 'when' (an absolute local time). Use this for \"remind me\" requests instead of creating calendar events."
     let parameters = [
         ToolParameter(name: "message", description: "What to remind the user about, as they would want to read it (e.g. \"Check the oven\")"),
@@ -126,6 +127,7 @@ nonisolated struct CreateReminderTool: AgentTool {
 
 nonisolated struct ListRemindersTool: AgentTool {
     let name = "list_reminders"
+    let dataClass: DataClass = .majoorState
     let description = "List the user's upcoming reminders with their ids and delivery times."
     let parameters: [ToolParameter] = []
     let requiredParameters: [String] = []
@@ -152,6 +154,7 @@ nonisolated struct ListRemindersTool: AgentTool {
 
 nonisolated struct CancelReminderTool: AgentTool {
     let name = "cancel_reminder"
+    let dataClass: DataClass = .majoorState
     let description = "Cancel an upcoming reminder by id (from list_reminders), or every upcoming reminder whose text contains 'matching'."
     let parameters = [
         ToolParameter(name: "id", description: "The reminder id to cancel"),

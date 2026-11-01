@@ -35,12 +35,17 @@ nonisolated protocol AgentTool: Sendable {
     /// True for tools that cannot change any state — they never prompt, even
     /// in Manual permission mode. Defaults to false (see extension below).
     var isReadOnly: Bool { get }
+    /// The kind of data this tool's results or arguments carry (PRD §6). The
+    /// router offers a task only the tools whose class the privacy preset
+    /// allows on the task's tier. Defaults to `.files`.
+    var dataClass: DataClass { get }
 
     func execute(arguments: [String: String]) async throws -> ToolResult
 }
 
 extension AgentTool {
     nonisolated var isReadOnly: Bool { false }
+    nonisolated var dataClass: DataClass { .files }
 
     /// Optional human-readable preview for confirmation prompts — used when a
     /// raw argument dump would be meaningless to the user (e.g. an opaque

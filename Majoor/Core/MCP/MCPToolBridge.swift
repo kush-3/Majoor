@@ -15,6 +15,16 @@ nonisolated struct MCPToolBridge: AgentTool, Sendable {
     let requiresConfirmation = false
     let serverName: String
 
+    /// By server: a GitHub tool is code, a Slack tool is messages, Notion and
+    /// Linear (and anything unknown) are files.
+    var dataClass: DataClass {
+        switch serverName {
+        case "github": return .code
+        case "slack": return .messages
+        default: return .files
+        }
+    }
+
     /// MCP servers don't expose reliable read-only annotations through this
     /// client, so use the tool-name convention as a heuristic — otherwise
     /// Manual mode would prompt for every get/list/search call. Server-style
