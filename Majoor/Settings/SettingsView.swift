@@ -30,6 +30,8 @@ struct SettingsView: View {
             if AppMode.current == .runtime {
                 ChannelsSettingsView()
                     .tabItem { Label("Channels", systemImage: "message") }
+                LocationSettingsView()
+                    .tabItem { Label("Location", systemImage: "location") }
             }
             AboutTab()
                 .tabItem { Label("About", systemImage: "info.circle") }
